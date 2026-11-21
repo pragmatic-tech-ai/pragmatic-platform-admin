@@ -109,7 +109,7 @@ describe('DevPlatformImages', () =>
         const expected = new Map<ReleaseApp, string>([
             [ReleaseApp.PlatformAdmin, 'pragmatic-platform-admin:dev'],
             [ReleaseApp.PlatformEdge, 'pragmatic-platform-edge:dev'],
-            [ReleaseApp.EnvServer, 'pragmatic-server:dev'],
+            [ReleaseApp.EnvServer, 'pragmatic-env-server:dev'],
             [ReleaseApp.EnvGateway, 'pragmatic-env-gateway:dev'],
             [ReleaseApp.HiveAgent, 'pragmatic-hive-agent:dev'],
             [ReleaseApp.TenantAdmin, 'pragmatic-tenant-admin:dev'],
@@ -139,7 +139,7 @@ describe('DevPlatformImages', () =>
         for (const app of [ReleaseApp.HiveAgent, ReleaseApp.TenantIdp, ReleaseApp.TenantAdmin])
         {
             assert.notEqual(DevPlatformImages.Of(app), DevPlatformImages.Of(ReleaseApp.EnvServer), app)
-            assert.notEqual(DevPlatformImages.Of(app), K8sManifestBuilder.AgentImage, app)
         }
+        assert.equal(DevPlatformImages.Of(ReleaseApp.HiveAgent), K8sManifestBuilder.AgentImage, 'the tenant plane names the agent\'s own dev image')
     })
 })

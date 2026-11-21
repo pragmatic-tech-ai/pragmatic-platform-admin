@@ -1,7 +1,7 @@
 /**
  * Gated end-to-end integration smoke for the demo environment (operator-run, NOT part of `npx tsx --test`).
  *
- * Requires Docker and the built `pragmatic-server:dev` image. Run from this repository's root:
+ * Requires Docker and the built `pragmatic-env-server:dev` image. Run from this repository's root:
  *   npx tsx src/environments/seed/smoke.ts
  *
  * Brings up the demo env (SeedCli.Run Up), logs in as rep-boston / rep-atlanta / manager-north / finance using the
