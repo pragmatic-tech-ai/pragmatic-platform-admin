@@ -13,7 +13,7 @@ import { HostedHiveOrchestratorFactory } from './hosted-hive-orchestrator-factor
 import { HostedKubeconfig } from './hosted-kubeconfig.js'
 import { DevPlatformImages, ReleasePlatformImages, type IPlatformImages } from './platform-images.js'
 import { fileURLToPath } from 'node:url'
-import { DockerEnv } from '../../environments/seed/docker.js'
+import { DockerEnv } from './environments/seed/docker.js'
 import { ControlPlaneHost } from './control-plane-host.js'
 import { PlatformHiveOrchestratorFactory } from './platform-hive-orchestrator-factory.js'
 import { constants as osConstants } from 'node:os'
@@ -349,7 +349,8 @@ export class ControlPlaneServer
         // starts, and never by the edge.
         // Release images are countersigned by their registry digest (never a local docker id), into the same signature store.
         const countersigner = new PlatformReleaseCountersigner(ControlPlaneServer.ImageSignerOf(keys, new RegistryRefImageDigest(), signatures), signing.PlatformSigner.KeyRef, signatures)
-        const releases = ControlPlaneServer.ReleasesOf(process.env, join(here, TenantPlaneComposer.ParentSegment, TenantPlaneComposer.ParentSegment), deployments, countersigner)
+        // The repository root (src/ or dist/ sits directly under it): the shipped release-keys/ trust folder lives there.
+        const releases = ControlPlaneServer.ReleasesOf(process.env, join(here, TenantPlaneComposer.ParentSegment), deployments, countersigner)
         const agentChannelUrlRaw = process.env[ControlPlaneServer.AgentChannelUrlEnvVar]
         const agentChannelUrl = ControlPlaneServer.AgentChannelUrl(agentChannelPort, agentChannelUrlRaw)
         const agentChannelUrlSet = agentChannelUrlRaw !== undefined && agentChannelUrlRaw !== ''

@@ -20,7 +20,7 @@ import { ControlPlaneServer } from '../../server.js'
 /** A temp data root with a deployment registry and credential files written into it. */
 class ConfigFixture
 {
-    public static readonly RepoRoot = join(import.meta.dirname, '..', '..', '..', '..')
+    public static readonly RepoRoot = join(import.meta.dirname, '..', '..', '..')
     public static readonly Token = 'ghp_SECRET_token_in_the_file'
     public static readonly Username = 'bot'
     public static readonly CredentialVar = 'PRAGMATIC_RELEASE_CREDENTIAL_FILE'

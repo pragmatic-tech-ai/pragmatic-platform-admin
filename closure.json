@@ -1,0 +1,13 @@
+{
+  "pragmatic-platform-admin": {
+    "entrypoint": ["node", "dist/server.js"],
+    "packages": [],
+    "files": [
+      "pragmatic-platform-admin/package.json",
+      "pragmatic-platform-admin/node_modules",
+      "pragmatic-platform-admin/dist",
+      "pragmatic-platform-admin/portal/dist",
+      "pragmatic-platform-admin/release-keys"
+    ]
+  }
+}

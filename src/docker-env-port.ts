@@ -1,5 +1,5 @@
 import type { EnvDefinition, ILogProcess, IContainerProbe, IDockerEnv } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
-import { DockerEnv } from '../../environments/seed/docker.js'
+import { DockerEnv } from './environments/seed/docker.js'
 
 export class DockerEnvAdapter implements IDockerEnv, IContainerProbe
 {

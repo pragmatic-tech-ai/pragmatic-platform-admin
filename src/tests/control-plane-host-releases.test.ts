@@ -103,7 +103,7 @@ class Fx
     public static readonly InnerPath = '/secret/data/manifests.json'
     public static readonly Namespace = 'pragmatic-tech-ai'
     public static readonly RegistryUrl = 'https://ghcr.example'
-    public static readonly TrustDir = join(import.meta.dirname, '..', '..', '..', 'release-keys')
+    public static readonly TrustDir = join(import.meta.dirname, '..', '..', 'release-keys')
     public static readonly Version = '4.0.0'
     public static readonly Digest = 'sha256:' + 'c'.repeat(64)
     public static readonly BuiltAt = '2026-11-12T10:00:00.000Z'

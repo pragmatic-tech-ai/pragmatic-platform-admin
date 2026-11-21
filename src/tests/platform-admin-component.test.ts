@@ -4,8 +4,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PlatformAdminComponent } from '../platform-admin-component.js'
 import { TenantAdminEnv } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
-import { ComponentGolden } from '../../../src/component/tests/component-golden.js'
-import { ComponentSources } from '../../../src/component/tests/component-sources.js'
+import { ComponentGolden } from './component-golden.js'
+import { ComponentSources } from './component-sources.js'
 
 class PlatformAdminComponentFixture
 {
