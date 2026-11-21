@@ -16,9 +16,11 @@ class PlatformAdminComponentFixture
         .concat([join(dirname(fileURLToPath(import.meta.resolve('@pragmatic-tech-ai/pragmatic-platform-link'))), 'internal-api-link.js')])
     /**
      * PRAGMATIC_ADMIN_OPERATOR_PASSWORD: the inline alternative of operatorPassword (the declared source is the file).
-     * PRAGMATIC_AGENT_CHANNEL_PORT / _BIND: the admin role serves no agent channel (the edge image does).
+     * PRAGMATIC_AGENT_CHANNEL_PORT: the console serves no agent channel (the edge image does); the port only names it.
+     * PRAGMATIC_TENANT_PORTAL_DIR: a local-stack override of the co-hosted tenant plane's SPA folder, which the image does
+     * not ship (declaring it would change the signed descriptor).
      */
-    public static readonly Undeclared: readonly string[] = ['PRAGMATIC_ADMIN_OPERATOR_PASSWORD', 'PRAGMATIC_AGENT_CHANNEL_PORT', 'PRAGMATIC_AGENT_CHANNEL_BIND']
+    public static readonly Undeclared: readonly string[] = ['PRAGMATIC_ADMIN_OPERATOR_PASSWORD', 'PRAGMATIC_AGENT_CHANNEL_PORT', 'PRAGMATIC_TENANT_PORTAL_DIR']
     /** The co-hosted tenant plane reads its trusted-proxy flag through TenantAdminEnv.TrustedProxy. */
     public static readonly ReadThrough: readonly string[] = [TenantAdminEnv.TrustedProxy]
 }

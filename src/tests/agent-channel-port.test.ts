@@ -8,8 +8,6 @@ describe('ControlPlaneServer.ParseAgentChannelPort', () =>
     const ValidPort = 8443
     const MaxPortRaw = '65535'
     const MaxPort = 65535
-    const DefaultBind = '0.0.0.0'
-    const LoopbackBind = '127.0.0.1'
 
     it('accepts a valid port', () =>
     {
@@ -24,13 +22,6 @@ describe('ControlPlaneServer.ParseAgentChannelPort', () =>
             assert.equal(ControlPlaneServer.ParseAgentChannelPort(raw), ControlPlaneServer.AgentChannelDisabled)
         })
     }
-
-    it('defaults the bind to all interfaces and honours an override', () =>
-    {
-        assert.equal(ControlPlaneServer.ParseAgentChannelBind(undefined), DefaultBind)
-        assert.equal(ControlPlaneServer.ParseAgentChannelBind(''), DefaultBind)
-        assert.equal(ControlPlaneServer.ParseAgentChannelBind(LoopbackBind), LoopbackBind)
-    })
 
     it('derives the pod-visible channel URL: an override wins even with no own port, host.docker.internal by default', () =>
     {

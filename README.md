@@ -11,15 +11,18 @@ Split out of pragmatic-server (seed commit `chore: seed from pragmatic-server@2a
 
 ## Roles
 
-`PRAGMATIC_CONTROL_PLANE_ROLE` is read as before: `admin` (the image's value) and `all` (the single local dev
-process, also serving the agent channel and desktop discovery) start the console; `edge` is refused, since the
-platform edge has its own entry and repository (`pragmatic-platform-edge`). Retiring `all` waits for the live loop's
-move to `pragmatic-e2e`.
+The console runs one role, `admin` (the default and the image's value): the operator host, the internal API for the
+edge (when `PRAGMATIC_ADMIN_INTERNAL_PORT` is set) and the tenant plane. It never listens on the agent channel: the
+platform edge (`pragmatic-platform-edge`) serves it and answers through the internal API, and
+`PRAGMATIC_AGENT_CHANNEL_PORT` / `PRAGMATIC_AGENT_CHANNEL_URL` only name that channel in hive bundles.
+`PRAGMATIC_CONTROL_PLANE_ROLE=edge` and the retired `all` (the former single dev process that also served the agent
+channel) are refused at start. Local stacks run the console and the edge as two processes (pragmatic-e2e's live loop).
 
-The co-hosted tenant plane serves its SPA from `<repository root>/tenant-portal/dist` (`server.ts`), a folder this
-repository does not hold (the tenant portal lives in `pragmatic-tenant-admin`). The image never shipped it either, so
-nothing changes there; in a local `all` process with the tenant listener on, the tenant plane's API works but no tenant
-SPA is served unless that folder is provided.
+The co-hosted tenant plane serves its SPA from `PRAGMATIC_TENANT_PORTAL_DIR` when set, else from
+`<repository root>/tenant-portal/dist` (`server.ts`), a folder this repository does not hold (the tenant portal lives in
+`pragmatic-tenant-admin`). The image never shipped it either, so nothing changes there; pragmatic-e2e's dev and
+live-loop stacks point the variable at the tenant-admin checkout's build. Without it, the tenant plane's API works but
+no tenant SPA is served.
 
 ## Development
 
