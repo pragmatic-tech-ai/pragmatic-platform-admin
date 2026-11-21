@@ -356,7 +356,7 @@ describe('Hive tenant console (panel)', () =>
             consoleUrl: 'https://console-acme.localtest.me', devCaFile: 'C:\\data\\dev-ca\\localtest.me\\ca.crt',
         })]
         await panel.Resume()
-        assert.ok(panel.DevTrustCommand.startsWith('powershell -NoProfile -ExecutionPolicy Bypass -File admin\\control-plane\\dev\\dev-ca-trust.ps1 -Install'))
+        assert.ok(panel.DevTrustCommand.startsWith('powershell -NoProfile -ExecutionPolicy Bypass -File pragmatic-e2e\\src\\dev\\dev-ca-trust.ps1 -Install'))
         assert.ok(panel.DevTrustCommand.endsWith('-CaFile "C:\\data\\dev-ca\\localtest.me\\ca.crt"'))
     })
 

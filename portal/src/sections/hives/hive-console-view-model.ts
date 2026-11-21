@@ -60,7 +60,7 @@ export class HiveConsoleViewModel extends Observable
     private static readonly HostPrefix = 'console-'
     private static readonly HostSeparator = '.'
     private static readonly BaseDomainHint = '<base domain>'
-    private static readonly TrustCommandPrefix = 'powershell -NoProfile -ExecutionPolicy Bypass -File admin\\control-plane\\dev\\dev-ca-trust.ps1 -Install -CaFile "'
+    private static readonly TrustCommandPrefix = 'powershell -NoProfile -ExecutionPolicy Bypass -File pragmatic-e2e\\src\\dev\\dev-ca-trust.ps1 -Install -CaFile "'
     private static readonly TrustCommandSuffix = '"'
     private static readonly DefaultIngressNamespace = 'ingress-nginx'
     private static readonly RemovedText = 'The console was removed.'
