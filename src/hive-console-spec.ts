@@ -1,0 +1,137 @@
+import { DevCertificateAuthority } from './dev-certificate-authority.js'
+import { InClusterIdpSeedSource } from './in-cluster-idp-seed.js'
+import { IngressTlsPolicy, IngressTlsSource, K8sManifestBuilder, type HiveRecord, type HiveConsoleSpec } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+
+/** A console setting that cannot be used; the message is a plain sentence safe to show the operator (maps to 400). */
+export class InvalidHiveConsoleError extends Error
+{
+    private static readonly ErrorName = 'InvalidHiveConsoleError'
+
+    public constructor(message: string)
+    {
+        super(message)
+        this.name = InvalidHiveConsoleError.ErrorName
+    }
+}
+
+/** Validation and host rules of the per-hive console settings. */
+export class HiveConsoleSpecs
+{
+    private static readonly BaseDomainKey = 'baseDomain'
+    private static readonly HostKey = 'host'
+    private static readonly TlsKey = 'tls'
+    private static readonly IngressNamespaceKey = 'ingressNamespace'
+    private static readonly Dot = '.'
+    private static readonly TopKeys: ReadonlySet<string> = new Set([HiveConsoleSpecs.BaseDomainKey, HiveConsoleSpecs.HostKey, HiveConsoleSpecs.TlsKey, HiveConsoleSpecs.IngressNamespaceKey])
+    /** A DNS-1123 label: what a Kubernetes namespace name must be. */
+    private static readonly NamespacePattern = /^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/
+    private static readonly BadIngressNamespace = 'The ingress controller namespace must be a Kubernetes namespace name: lowercase letters, digits and hyphens, at most 63 characters, such as ingress-nginx.'
+    private static readonly TlsKeys: ReadonlySet<string> = new Set(['source', 'secretName', 'clusterIssuer'])
+    private static readonly UnknownField = ' is not a console setting.'
+    private static readonly UnknownTlsField = ' is not a TLS setting.'
+    private static readonly BadEffectiveHost = 'The console host this tenant would get is not a valid host name; give the console an explicit host.'
+    private static readonly MustBeObject = 'The console settings must be an object.'
+    private static readonly BadBaseDomain = 'The base domain must be a lowercase host name of at least two labels, such as example.com (not a public suffix such as co.uk).'
+    private static readonly BadHost = 'The console host must be a lowercase host name of at least two labels, such as console.example.com.'
+    private static readonly ReservedSecretName = "The TLS Secret name is reserved for the tenant's in-hive identity provider; choose another Secret name."
+    private static readonly HostOutsideDomain = 'With development TLS the console host must be the base domain or a name under it.'
+
+    public static Parse(body: unknown): HiveConsoleSpec
+    {
+        if (typeof body !== 'object' || body === null || Array.isArray(body))
+        {
+            throw new InvalidHiveConsoleError(HiveConsoleSpecs.MustBeObject)
+        }
+        const raw = body as Record<string, unknown>
+        for (const key of Object.keys(raw))
+        {
+            if (!HiveConsoleSpecs.TopKeys.has(key))
+            {
+                throw new InvalidHiveConsoleError(`"${key}"${HiveConsoleSpecs.UnknownField}`)
+            }
+        }
+        const rawTls = raw[HiveConsoleSpecs.TlsKey]
+        if (typeof rawTls === 'object' && rawTls !== null && !Array.isArray(rawTls))
+        {
+            for (const key of Object.keys(rawTls))
+            {
+                if (!HiveConsoleSpecs.TlsKeys.has(key))
+                {
+                    throw new InvalidHiveConsoleError(`"${key}"${HiveConsoleSpecs.UnknownTlsField}`)
+                }
+            }
+        }
+        const baseDomain = raw[HiveConsoleSpecs.BaseDomainKey]
+        if (typeof baseDomain !== 'string' || !DevCertificateAuthority.IsValidDomain(baseDomain))
+        {
+            throw new InvalidHiveConsoleError(HiveConsoleSpecs.BadBaseDomain)
+        }
+        const host = raw[HiveConsoleSpecs.HostKey]
+        const hasHost = host !== undefined
+        if (hasHost && (typeof host !== 'string' || !DevCertificateAuthority.IsValidDomain(host)))
+        {
+            throw new InvalidHiveConsoleError(HiveConsoleSpecs.BadHost)
+        }
+        const tls = IngressTlsPolicy.Parse(raw[HiveConsoleSpecs.TlsKey])
+        const spec: HiveConsoleSpec = hasHost ? { baseDomain, host: host as string, tls } : { baseDomain, tls }
+        const ingressNamespace = raw[HiveConsoleSpecs.IngressNamespaceKey]
+        if (ingressNamespace !== undefined)
+        {
+            if (typeof ingressNamespace !== 'string' || !HiveConsoleSpecs.NamespacePattern.test(ingressNamespace))
+            {
+                throw new InvalidHiveConsoleError(HiveConsoleSpecs.BadIngressNamespace)
+            }
+            spec.ingressNamespace = ingressNamespace
+        }
+        HiveConsoleSpecs.ValidateHostRules(spec, spec.host ?? baseDomain)
+        return spec
+    }
+
+    /** The namespace the console's NetworkPolicy admits: the configured ingress controller namespace, else ingress-nginx. */
+    public static IngressNamespaceOf(spec: HiveConsoleSpec): string
+    {
+        return spec.ingressNamespace ?? K8sManifestBuilder.IngressControllerNamespace
+    }
+
+    /** Checks the host this spec gives the tenant (DNS rules; under the base domain for development TLS); throws InvalidHiveConsoleError. */
+    public static Validate(spec: HiveConsoleSpec, tenantId: string): void
+    {
+        const host = HiveConsoleSpecs.HostOf(spec, tenantId)
+        if (!DevCertificateAuthority.IsValidDomain(host))
+        {
+            throw new InvalidHiveConsoleError(HiveConsoleSpecs.BadEffectiveHost)
+        }
+        HiveConsoleSpecs.ValidateHostRules(spec, host)
+        // The existing Secret is copied into the IdP namespace under its own name: it must never replace the IdP's own Secrets.
+        const reserved = [InClusterIdpSeedSource.TlsSecretNameOf(tenantId), InClusterIdpSeedSource.AdminSecretNameOf(tenantId)]
+        if (spec.tls.source === IngressTlsSource.ExistingSecret && reserved.includes(spec.tls.secretName as string))
+        {
+            throw new InvalidHiveConsoleError(HiveConsoleSpecs.ReservedSecretName)
+        }
+    }
+
+    private static ValidateHostRules(spec: HiveConsoleSpec, host: string): void
+    {
+        if (spec.tls.source === IngressTlsSource.Development && !HiveConsoleSpecs.IsWithin(host, spec.baseDomain))
+        {
+            throw new InvalidHiveConsoleError(HiveConsoleSpecs.HostOutsideDomain)
+        }
+    }
+
+    /** The hive (of one tenant's hives) that runs the in-hive console, if any (Plan 1 allows at most one). */
+    public static ConsoleHiveOf(hives: readonly HiveRecord[]): HiveRecord | undefined
+    {
+        return hives.find(h => h.console !== undefined)
+    }
+
+    /** The browser host of the tenant's console: the explicit host, else console-<tenant>.<baseDomain>. */
+    public static HostOf(spec: HiveConsoleSpec, tenantId: string): string
+    {
+        return spec.host ?? K8sManifestBuilder.ConsoleHostOf(tenantId, spec.baseDomain)
+    }
+
+    private static IsWithin(host: string, baseDomain: string): boolean
+    {
+        return host === baseDomain || host.endsWith(HiveConsoleSpecs.Dot + baseDomain)
+    }
+}

@@ -1,0 +1,218 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { createServer, type Server } from 'node:https'
+import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { ExecFileDockerExec, IdpContainerEnv, type IDockerExec, type IdpContainerSpec } from '../idp-container-env.js'
+import { DevCa, IdpTlsMaterial } from '@pragmatic-tech-ai/pragmatic-identity-source-oidc'
+
+class FakeExec implements IDockerExec
+{
+    public readonly Calls: string[][] = []
+    public FailWith: Error | undefined
+
+    public async Run(args: string[]): Promise<string>
+    {
+        this.Calls.push(args)
+        if (this.FailWith !== undefined)
+        {
+            throw this.FailWith
+        }
+        return ''
+    }
+}
+
+class Fixture
+{
+    public static readonly Spec: IdpContainerSpec = { tenantId: 't1', port: 9443, volumeName: 'idp-t1-data', adminTokenRef: 'admin.token', image: 'pragmatic-server:dev' }
+}
+
+class TlsFixture
+{
+    public Dir = mkdtempSync(join(tmpdir(), 'idpenv-'))
+    public Server: Server | undefined
+    public Ca: Buffer = Buffer.alloc(0)
+    public Port = 0
+
+    public async Start(status: number): Promise<void>
+    {
+        const files = DevCa.EnsureAt(this.Dir, 'host.docker.internal')
+        this.Ca = readFileSync(files.caFile)
+        const tls = IdpTlsMaterial.Load(files)
+        const server = createServer({ key: tls.key, cert: tls.cert }, (req, res) =>
+        {
+            res.statusCode = req.url === '/healthz' ? status : 404
+            res.end()
+        })
+        this.Server = server
+        await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+        this.Port = (server.address() as AddressInfo).port
+    }
+
+    public async Stop(): Promise<void>
+    {
+        const server = this.Server
+        if (server !== undefined)
+        {
+            await new Promise<void>(resolve => server.close(() => resolve()))
+        }
+        rmSync(this.Dir, { recursive: true, force: true })
+    }
+}
+
+test('RunArgs builds the exact docker run argv', () =>
+{
+    assert.deepEqual(IdpContainerEnv.RunArgs(Fixture.Spec), [
+        'run', '-d', '--name', 'pragmatic-idp-t1', '--entrypoint', 'node',
+        '-p', '9443:9443', '--no-healthcheck',
+        '--add-host', 'host.docker.internal:host-gateway',
+        '-v', 'idp-t1-data:/idp-data',
+        '-e', 'PRAGMATIC_IDP_PORT=9443',
+        '-e', 'PRAGMATIC_IDP_BASE_URL=https://host.docker.internal:9443',
+        '-e', 'PRAGMATIC_IDP_HOST=0.0.0.0',
+        '-e', 'PRAGMATIC_IDP_DATA=/idp-data',
+        '-e', 'PRAGMATIC_IDP_ADMIN_TOKEN_REF=admin.token',
+        '-e', 'PRAGMATIC_IDP_DATABASE_URL_FILE=/idp-data/secrets/database-url',
+        'pragmatic-server:dev', 'dist/bin/pragmatic-idpd.js'
+    ])
+})
+
+test('PostgresRunArgs runs the companion in the IdP container\'s network namespace, on its own volume, the password by file only', () =>
+{
+    assert.deepEqual(IdpContainerEnv.PostgresRunArgs(Fixture.Spec), [
+        'run', '-d', '--name', 'pragmatic-idp-t1-postgres',
+        '--network', 'container:pragmatic-idp-t1',
+        '-v', 'idp-t1-data-pgdata:/var/lib/postgresql/data',
+        '-v', 'idp-t1-data:/idp-data:ro',
+        '-e', 'POSTGRES_USER=tenant_idp',
+        '-e', 'POSTGRES_DB=tenant_idp',
+        '-e', 'POSTGRES_PASSWORD_FILE=/idp-data/secrets/database-password',
+        'postgres:17.12-trixie', '-c', 'listen_addresses=127.0.0.1'
+    ])
+    assert.equal(IdpContainerEnv.PostgresContainerName('pragmatic-idp-t1'), 'pragmatic-idp-t1-postgres')
+    assert.equal(IdpContainerEnv.PostgresVolumeName('idp-t1-data'), 'idp-t1-data-pgdata')
+})
+
+test('Up runs the IdP then its Postgres; Down and RemoveVolume take the companion and its volume too, tolerating absence', async () =>
+{
+    const exec = new FakeExec()
+    const env = new IdpContainerEnv(exec)
+    await env.Up(Fixture.Spec)
+    assert.deepEqual(exec.Calls[0], IdpContainerEnv.RunArgs(Fixture.Spec))
+    assert.deepEqual(exec.Calls[1], IdpContainerEnv.PostgresRunArgs(Fixture.Spec))
+    await env.Down('pragmatic-idp-t1')
+    await env.RemoveVolume('idp-t1-data')
+    assert.deepEqual(exec.Calls.slice(2), [
+        ['rm', '-f', 'pragmatic-idp-t1-postgres'],
+        ['rm', '-f', 'pragmatic-idp-t1'],
+        ['volume', 'rm', '-f', 'idp-t1-data-pgdata'],
+        ['volume', 'rm', '-f', 'idp-t1-data'],
+    ])
+    exec.FailWith = new Error('no such container')
+    await env.Down('x')
+    await env.RemoveVolume('y')
+})
+
+test('the seed leaves the database files to the IdP user alone', () =>
+{
+    const script = IdpContainerEnv.SeedScript()
+    assert.match(script, /chown 10001 "\$p" && chmod 0600 "\$p"/)
+    assert.ok(script.includes('database-password') && script.includes('database-url'))
+})
+
+test('WaitHealthy resolves on 200 over verified TLS', async () =>
+{
+    const fx = new TlsFixture()
+    try
+    {
+        await fx.Start(200)
+        await new IdpContainerEnv(new FakeExec()).WaitHealthy(fx.Port, fx.Ca, 3, 10)
+    }
+    finally
+    {
+        await fx.Stop()
+    }
+})
+
+test('WaitHealthy rejects after the attempt budget on 503', async () =>
+{
+    const fx = new TlsFixture()
+    try
+    {
+        await fx.Start(503)
+        await assert.rejects(new IdpContainerEnv(new FakeExec()).WaitHealthy(fx.Port, fx.Ca, 2, 10), /did not become healthy/)
+    }
+    finally
+    {
+        await fx.Stop()
+    }
+})
+
+test('Up propagates a docker failure with subcommand + stderr but not the argv', async () =>
+{
+    const failing = new IdpContainerEnv(new ExecFileDockerExec(process.execPath))
+    await assert.rejects(failing.Up(Fixture.Spec), (e: Error) =>
+    {
+        assert.match(e.message, /run failed/)
+        assert.ok(!e.message.includes(Fixture.Spec.adminTokenRef))
+        assert.ok(!e.message.includes(Fixture.Spec.image))
+        return true
+    })
+    const exec = new FakeExec()
+    exec.FailWith = new Error('daemon down')
+    await assert.rejects(new IdpContainerEnv(exec).Up(Fixture.Spec), /daemon down/)
+})
+
+/** Answers `docker inspect` (the container's image id) and `docker image inspect` (the tag's current id); undefined = that call fails. */
+class ImageExec implements IDockerExec
+{
+    public readonly Calls: string[][] = []
+
+    public constructor(private readonly containerImage: string | undefined, private readonly currentImage: string | undefined)
+    {
+    }
+
+    public async Run(args: string[]): Promise<string>
+    {
+        this.Calls.push(args)
+        const reply = args[0] === 'image' ? this.currentImage : this.containerImage
+        if (reply === undefined)
+        {
+            throw new Error('docker inspect failed')
+        }
+        return reply + '\n'
+    }
+}
+
+test('StaleImageOf asks docker for the container\'s image id and the current id of the image tag', async () =>
+{
+    const exec = new ImageExec('sha256:aaa', 'sha256:aaa')
+    assert.equal(await new IdpContainerEnv(exec).StaleImageOf('pragmatic-idp-t1', 'img:1'), undefined)
+    assert.equal(exec.Calls.length, 2)
+    assert.ok(exec.Calls.some(c => JSON.stringify(c) === JSON.stringify(['inspect', '--type', 'container', '--format', '{{.Image}}', 'pragmatic-idp-t1'])))
+    assert.ok(exec.Calls.some(c => JSON.stringify(c) === JSON.stringify(['image', 'inspect', '--format', '{{.Id}}', 'img:1'])))
+})
+
+test('StaleImageOf answers both ids only when both are known and differ', async () =>
+{
+    assert.deepEqual(await new IdpContainerEnv(new ImageExec('sha256:old', 'sha256:new')).StaleImageOf('c', 'img:1'), { running: 'sha256:old', current: 'sha256:new' })
+    assert.equal(await new IdpContainerEnv(new ImageExec(undefined, 'sha256:new')).StaleImageOf('c', 'img:1'), undefined)
+    assert.equal(await new IdpContainerEnv(new ImageExec('sha256:old', undefined)).StaleImageOf('c', 'img:1'), undefined)
+    assert.equal(await new IdpContainerEnv(new ImageExec('', 'sha256:new')).StaleImageOf('c', 'img:1'), undefined)
+})
+
+test('SeedVolume runs a throwaway root container copying the host dir into the volume with open perms', async () =>
+{
+    const exec = new FakeExec()
+    await new IdpContainerEnv(exec).SeedVolume('idp-t1-data', '/host/idp/t1', 'img:1')
+    const args = exec.Calls[0]
+    assert.equal(args[0], 'run')
+    assert.ok(args.includes('--rm'))
+    assert.deepEqual(args.slice(args.indexOf('--user'), args.indexOf('--user') + 2), ['--user', '0'])
+    assert.ok(args.includes('idp-t1-data:/idp-data'))
+    assert.ok(args.includes('/host/idp/t1:/seed:ro'))
+    assert.ok(args.includes('img:1'))
+    assert.match(args[args.length - 1], /cp -a \/seed\/\. \/idp-data\/ && chmod -R a\+rwX \/idp-data/)
+})

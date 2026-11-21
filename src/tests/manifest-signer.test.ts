@@ -1,0 +1,137 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import { generateKeyPairSync } from 'node:crypto'
+import { type IImageDigest, type IKeyStore, KeyNotFoundError, type ISignatureStore, ImageSigner } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { ManifestSigner } from '../manifest-signer.js'
+
+class SignerFixture
+{
+    public static readonly Image = 'registry.local/app:1'
+    public static readonly Digest = 'sha256:abc'
+    public static readonly KeyRef = 'dev-priv'
+    public static readonly MissingRef = 'no-such-key'
+    public static readonly Existing = 'pre-existing-signature'
+    public static readonly InspectFailure = 'docker inspect failed'
+    public static readonly KeyType = 'ed25519'
+    public static readonly Pkcs8Format = 'pkcs8'
+    public static readonly PemType = 'pem'
+}
+
+class FakeDigest implements IImageDigest
+{
+    public constructor(private readonly value: string | undefined)
+    {
+    }
+
+    public async Of(_imageRef: string): Promise<string>
+    {
+        if (this.value === undefined)
+        {
+            throw new Error(SignerFixture.InspectFailure)
+        }
+        return this.value
+    }
+}
+
+class MemoryStore implements ISignatureStore
+{
+    public readonly map = new Map<string, string>()
+
+    public async Get(digest: string, keyRef: string): Promise<string | undefined>
+    {
+        return this.map.get(MemoryStore.KeyOf(digest, keyRef))
+    }
+
+    public async HasKeyed(digest: string, keyRef: string): Promise<boolean>
+    {
+        return this.map.has(MemoryStore.KeyOf(digest, keyRef))
+    }
+
+    public async Put(digest: string, keyRef: string, signature: string): Promise<void>
+    {
+        this.map.set(MemoryStore.KeyOf(digest, keyRef), signature)
+    }
+
+    private static KeyOf(digest: string, keyRef: string): string
+    {
+        return JSON.stringify([digest, keyRef])
+    }
+}
+
+class MemoryKeys implements IKeyStore
+{
+    public constructor(private readonly pem: string)
+    {
+    }
+
+    public async PublicKey(ref: string): Promise<string>
+    {
+        throw new KeyNotFoundError(ref)
+    }
+
+    public async PrivateKey(ref: string): Promise<string>
+    {
+        if (ref !== SignerFixture.KeyRef)
+        {
+            throw new KeyNotFoundError(ref)
+        }
+        return this.pem
+    }
+}
+
+class SignerHarness
+{
+    public readonly store = new MemoryStore()
+    public readonly subject: ManifestSigner
+
+    public constructor(digest: string | undefined, keyRef: string)
+    {
+        const pair = generateKeyPairSync(SignerFixture.KeyType)
+        const pem = pair.privateKey.export({ type: SignerFixture.Pkcs8Format, format: SignerFixture.PemType }) as string
+        const digests = new FakeDigest(digest)
+        const signer = new ImageSigner(digests, this.store, new MemoryKeys(pem))
+        this.subject = new ManifestSigner(digests, signer, this.store, keyRef)
+    }
+}
+
+describe('ManifestSigner', () =>
+{
+    it('signs and reports signed when digest and key are available', async () =>
+    {
+        const h = new SignerHarness(SignerFixture.Digest, SignerFixture.KeyRef)
+        const result = await h.subject.SignForPublish(SignerFixture.Image)
+        assert.deepEqual(result, { digest: SignerFixture.Digest, signed: true })
+        assert.ok(await h.store.Get(SignerFixture.Digest, SignerFixture.KeyRef))
+    })
+
+    it('reports unsigned without a digest when the image cannot be inspected', async () =>
+    {
+        const h = new SignerHarness(undefined, SignerFixture.KeyRef)
+        const result = await h.subject.SignForPublish(SignerFixture.Image)
+        assert.equal(result.digest, undefined)
+        assert.equal(result.signed, false)
+    })
+
+    it('keeps the digest but reports unsigned when signing fails', async () =>
+    {
+        const h = new SignerHarness(SignerFixture.Digest, SignerFixture.MissingRef)
+        const result = await h.subject.SignForPublish(SignerFixture.Image)
+        assert.deepEqual(result, { digest: SignerFixture.Digest, signed: false })
+    })
+
+    it('reports signed from the store truthfully', async () =>
+    {
+        const h = new SignerHarness(SignerFixture.Digest, SignerFixture.MissingRef)
+        await h.store.Put(SignerFixture.Digest, SignerFixture.MissingRef, SignerFixture.Existing)
+        const result = await h.subject.SignForPublish(SignerFixture.Image)
+        assert.deepEqual(result, { digest: SignerFixture.Digest, signed: true })
+    })
+
+    it('does not count another key\'s signature as signed', async () =>
+    {
+        const h = new SignerHarness(SignerFixture.Digest, SignerFixture.MissingRef)
+        await h.store.Put(SignerFixture.Digest, 'some-other-key', SignerFixture.Existing)
+        const result = await h.subject.SignForPublish(SignerFixture.Image)
+        assert.deepEqual(result, { digest: SignerFixture.Digest, signed: false })
+    })
+})

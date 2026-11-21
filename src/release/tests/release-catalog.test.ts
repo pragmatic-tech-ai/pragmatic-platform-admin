@@ -1,0 +1,858 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import { generateKeyPairSync } from 'node:crypto'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { OciRegistryClient, type OciFetch, Channel, ReleaseDescriptorCodec, type ReleaseDescriptor, ReleasePublisher, ReleaseSignature, ReleaseApp, ReleaseApps, ReleaseTag, ReleaseTrustKeys, ImageSigner, type IImageSigner, FileKeyStore } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { FakeOciRegistry } from '../../tests/fake-oci-registry.js'
+import { FakeImageLayout, FakeReleaseImage } from '../../tests/fake-release-image.js'
+import { RolloutFixture } from '../../tests/rollout-fixture.js'
+import type { PlatformDeploymentRegistry } from '../../platform-deployment-registry.js'
+import type { PlatformDirectory } from '../../platform-directory.js'
+import { type HiveOrchestratorFactory, ReleaseState } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { ReleaseRegistryUnavailableError } from '@pragmatic-tech-ai/pragmatic-platform-link'
+import { ReleaseCatalog } from '../release-catalog.js'
+import { PlatformReleaseCountersigner, type IReleaseCountersigner } from '../release-countersigner.js'
+import { RegistryRefImageDigest } from '../../image-digest.js'
+import { FileSignatureStore } from '../../signature-store.js'
+import { PlatformSigningKey } from '../../platform-signing-key.js'
+
+class SigningKey
+{
+    public readonly Private: string
+    public readonly Public: string
+
+    public constructor(public readonly Id: string)
+    {
+        const pair = generateKeyPairSync('ed25519')
+        this.Private = pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+        this.Public = pair.publicKey.export({ type: 'spki', format: 'pem' }).toString()
+    }
+}
+
+class CatalogFixture
+{
+    public static readonly Namespace = 'pragmatic-tech-ai'
+    public static readonly V1 = '1.4.0'
+    public static readonly V2 = '1.5.0'
+    public static readonly Unseeded = '9.9.9'
+    public static readonly Early = '1.6.0-early.2'
+    public static readonly TrustedId = 'release-2026'
+    public static readonly RogueId = 'rogue-key'
+    public static readonly ServerCommit = 'a'.repeat(40)
+    public static readonly SiblingCommit = 'b'.repeat(40)
+    public static readonly SiblingRepo = 'todl'
+    public static readonly ManifestType = 'application/vnd.oci.image.manifest.v1+json'
+    public static readonly IndexType = 'application/vnd.oci.image.index.v1+json'
+    public static readonly BuiltAt = '2026-11-12T10:00:00.000Z'
+    public static readonly User = 'release-reader'
+    public static readonly Token = 'ghp_catalog_secret_token'
+    public static readonly WrongToken = 'ghp_wrong_secret_token'
+    public static readonly ImageHost = 'ghcr.io/'
+    public static readonly DigestSeparator = '@'
+    public static readonly KeyFileSuffix = '.pub.pem'
+    public static readonly ImageContentPrefix = 'image '
+    public static readonly ContentSeparator = ' '
+    public static readonly PathSeparator = '/'
+    public static readonly TempPrefix = 'release-catalog-'
+    public static readonly KeysDir = 'keys'
+    public static readonly LocalImage = 'registry/pragmatic-server:1.4.0'
+    public static readonly RegistryText = 'registry-supplied text'
+    public static readonly SomeDigest = 'sha256:' + 'a'.repeat(64)
+    public static readonly BadManifest = 'descriptor artifact invalid: not a single-layer manifest'
+    public static readonly LayerMismatch = 'descriptor artifact invalid: layer bytes do not match the manifest digest'
+    public static readonly BadAnnotations = 'descriptor artifact invalid: manifest annotations are not strings'
+    public static readonly OtherHost = 'registry.example:5000'
+    public static readonly Rebuilt = 'rebuilt'
+    public static readonly ManifestsPath = '/manifests/'
+    public static readonly Unreachable = 'connect ECONNREFUSED '
+    public static readonly SignaturesFile = 'signatures.json'
+    public static readonly SignerDown = 'signer down'
+
+    public readonly Registry = new FakeOciRegistry()
+    public readonly Images = new FakeReleaseImage(this.Registry)
+    public readonly Rogue = new SigningKey(CatalogFixture.RogueId)
+    /** When set, the catalogue's fetch throws for any URL containing it (simulating a registry that drops mid-refresh). */
+    public FailOn: string | undefined
+    /** When set, awaited before every catalogue request (to change platform state while a refresh is in flight). */
+    public BeforeRequest: ((url: string) => Promise<void>) | undefined
+
+    private constructor(public readonly Deployments: PlatformDeploymentRegistry, public readonly Trusted: SigningKey, private readonly trust: ReleaseTrustKeys)
+    {
+    }
+
+    /** Trusts exactly one key (written as `<id>.pub.pem`) over a real deployment registry in a temp directory. */
+    public static async Run(body: (fx: CatalogFixture) => Promise<void>): Promise<void>
+    {
+        const S = CatalogFixture
+        const dir = await mkdtemp(join(tmpdir(), S.TempPrefix))
+        try
+        {
+            const keysDir = join(dir, S.KeysDir)
+            const trusted = new SigningKey(S.TrustedId)
+            await mkdir(keysDir)
+            await writeFile(join(keysDir, trusted.Id + S.KeyFileSuffix), trusted.Public)
+            const directory = { GetHive: () => undefined, List: () => [] } as unknown as PlatformDirectory
+            const deployments = await RolloutFixture.Create(dir, directory, {} as HiveOrchestratorFactory)
+            await body(new CatalogFixture(deployments, trusted, ReleaseTrustKeys.FromDirectory(keysDir)))
+        }
+        finally
+        {
+            await rm(dir, { recursive: true, force: true })
+        }
+    }
+
+    public static Repo(app: string): string
+    {
+        return CatalogFixture.Namespace + CatalogFixture.PathSeparator + app
+    }
+
+    public static DescriptorRepo(): string
+    {
+        return CatalogFixture.Repo(ReleasePublisher.DescriptorRepository)
+    }
+
+
+    public Client(credential?: { username: string; token: string }): OciRegistryClient
+    {
+        const inner = this.Registry.Fetch
+        const fetchFn: OciFetch = async (url, init) =>
+        {
+            if (this.FailOn !== undefined && url.includes(this.FailOn))
+            {
+                throw new Error(CatalogFixture.Unreachable + CatalogFixture.Token)
+            }
+            await this.BeforeRequest?.(url)
+            return inner(url, init)
+        }
+        return new OciRegistryClient(this.Registry.Origin, fetchFn, credential)
+    }
+
+    public Catalog(credential?: { username: string; token: string }, imageHost?: string, countersigner?: IReleaseCountersigner): ReleaseCatalog
+    {
+        return new ReleaseCatalog(this.Client(credential), CatalogFixture.Namespace, this.trust, this.Deployments, imageHost, countersigner)
+    }
+
+    /** Apps whose image is stored as a multi-arch OCI index (as release.yml's imagetools merge produces). */
+    public readonly IndexApps = new Set<ReleaseApp>()
+
+    /**
+     * Stores (or restores: same content, same digest) one app's image under the version tag, labelled with its component
+     * digest unless `labelled` is false (as the images of the schema-1 releases are); returns its digest.
+     */
+    public SeedImage(app: ReleaseApp, version: string, labelled = true): string
+    {
+        const S = CatalogFixture
+        const layout = this.IndexApps.has(app) ? FakeImageLayout.Index : FakeImageLayout.Single
+        const content = S.ImageContentPrefix + app + S.ContentSeparator + version
+        return this.Images.Put(S.Repo(app), version, content, layout, labelled ? FakeReleaseImage.ComponentDigestOf(app) : null)
+    }
+
+    public SeedImages(version: string, labelled = true): void
+    {
+        for (const app of ReleaseApps.All)
+        {
+            this.SeedImage(app, version, labelled)
+        }
+    }
+
+    /** Publishes through the real ReleasePublisher, so the catalogue reads exactly what the release workflow writes. */
+    public async Publish(version: string, key: SigningKey = this.Trusted): Promise<{ descriptor: ReleaseDescriptor; descriptorDigest: string }>
+    {
+        this.SeedImages(version)
+        const publisher = new ReleasePublisher(this.Client(), CatalogFixture.Namespace, () => new Date(CatalogFixture.BuiltAt))
+        return publisher.Publish({
+            tag: ReleaseTag.FromVersion(version),
+            serverCommit: CatalogFixture.ServerCommit,
+            siblingCommits: { [CatalogFixture.SiblingRepo]: CatalogFixture.SiblingCommit },
+            signingKeyId: key.Id,
+            privateKeyPem: key.Private,
+            trustedPublicKeyPem: key.Public,
+        })
+    }
+
+    /** Pushes a hand-made descriptor the way the publisher does (signature over the layer digest), for shapes the publisher refuses to produce. */
+    public async PushDescriptor(tag: string, bytes: Uint8Array, key: SigningKey = this.Trusted): Promise<void>
+    {
+        const S = ReleasePublisher
+        await this.PushArtifact(tag, bytes, {
+            [S.SignatureAnnotation]: ReleaseSignature.Sign(OciRegistryClient.DigestOf(bytes), key.Private),
+            [S.KeyAnnotation]: key.Id,
+        })
+    }
+
+    /** Pushes descriptor bytes under the given annotations exactly (to drop or forge one). */
+    public async PushArtifact(tag: string, bytes: Uint8Array, annotations: Record<string, string>): Promise<void>
+    {
+        const S = ReleasePublisher
+        await this.Client().PushArtifact(CatalogFixture.DescriptorRepo(), tag, S.ArtifactType, S.LayerMediaType, bytes, annotations)
+    }
+
+    /** Stores a raw (possibly malformed) manifest under a descriptor tag. */
+    public PutRawDescriptorManifest(tag: string, manifest: unknown): void
+    {
+        this.Registry.PutManifest(CatalogFixture.DescriptorRepo(), tag, new TextEncoder().encode(JSON.stringify(manifest)), CatalogFixture.ManifestType)
+    }
+
+    /** A correctly signed descriptor for the version (images seeded), before any test mutation. */
+    public Descriptor(version: string, key: SigningKey = this.Trusted, labelled = true): ReleaseDescriptor
+    {
+        const images = {} as ReleaseDescriptor['images']
+        for (const app of ReleaseApps.All)
+        {
+            const digest = this.SeedImage(app, version, labelled)
+            images[app] = { repository: CatalogFixture.Repo(app), digest, signature: ReleaseSignature.Sign(digest, key.Private) }
+            if (labelled)
+            {
+                images[app].componentDigest = FakeReleaseImage.ComponentDigestOf(app)
+            }
+        }
+        return {
+            schema: ReleaseDescriptorCodec.CurrentSchema,
+            version,
+            channel: ReleaseTag.FromVersion(version).Channel,
+            serverCommit: CatalogFixture.ServerCommit,
+            siblingCommits: {},
+            builtAt: CatalogFixture.BuiltAt,
+            signingKeyId: key.Id,
+            images,
+        }
+    }
+
+    public Release(version: string)
+    {
+        return this.Deployments.AllManifests().find(m => m.id === version)
+    }
+
+    public Reason(version: string): string | undefined
+    {
+        return this.Release(version)?.release?.rejectedReason
+    }
+}
+
+describe('ReleaseCatalog.Refresh', () =>
+{
+    it('imports a verified release with every field from the descriptor, and a second refresh is unchanged', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const { descriptor } = await fx.Publish(CatalogFixture.V1)
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result, { imported: [CatalogFixture.V1], rejected: [], unchanged: 0, shadowed: [] })
+            const envServer = descriptor.images[ReleaseApp.EnvServer].digest
+            const images = Object.fromEntries(ReleaseDescriptorCodec.ImagesOf(descriptor).map(([app, image]) => [app, { repository: CatalogFixture.Repo(app), digest: image.digest, componentDigest: FakeReleaseImage.ComponentDigestOf(app) }]))
+            assert.equal(Object.keys(images).length, ReleaseApps.All.length)
+            assert.deepEqual(fx.Release(CatalogFixture.V1), {
+                id: CatalogFixture.V1,
+                channel: Channel.Stable,
+                image: CatalogFixture.ImageHost + CatalogFixture.Repo(ReleaseApp.EnvServer) + CatalogFixture.DigestSeparator + envServer,
+                digest: envServer,
+                signed: true,
+                publishedAt: CatalogFixture.BuiltAt,
+                release: {
+                    state: ReleaseState.Verified,
+                    serverCommit: CatalogFixture.ServerCommit,
+                    siblingCommits: { [CatalogFixture.SiblingRepo]: CatalogFixture.SiblingCommit },
+                    builtAt: CatalogFixture.BuiltAt,
+                    signingKeyId: CatalogFixture.TrustedId,
+                    images,
+                },
+            })
+            const again = await fx.Catalog().Refresh()
+            assert.deepEqual(again, { imported: [], rejected: [], unchanged: 1, shadowed: [] })
+            assert.equal(fx.Deployments.AllManifests().length, 1)
+        })
+    })
+
+    it('imports a release whose platform images are multi-arch indexes: their index digests are what is signed and verified', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            fx.IndexApps.add(ReleaseApp.PlatformAdmin)
+            fx.IndexApps.add(ReleaseApp.PlatformEdge)
+            fx.IndexApps.add(ReleaseApp.Postgres)
+            const { descriptor } = await fx.Publish(CatalogFixture.V1)
+            const indexed = ReleaseDescriptorCodec.ImagesOf(descriptor).filter(([app]) => fx.IndexApps.has(app))
+            assert.equal(indexed.length, 3)
+            for (const [app, image] of indexed)
+            {
+                assert.equal(image.digest, await fx.Client().HeadManifest(CatalogFixture.Repo(app), CatalogFixture.V1), app)
+            }
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [CatalogFixture.V1], rejected: [], unchanged: 0, shadowed: [] })
+        })
+    })
+
+    it('takes the channel from the descriptor: an early-access tag imports on the early channel', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.Early)
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Release(CatalogFixture.Early)!.channel, Channel.EarlyAccess)
+            assert.equal(fx.Release(CatalogFixture.Early)!.release!.state, ReleaseState.Verified)
+        })
+    })
+
+    it('rejects a release whose registry image digest differs from the descriptor, naming the app', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            fx.Registry.PutManifest(CatalogFixture.Repo(ReleaseApp.EnvGateway), CatalogFixture.V1, new TextEncoder().encode('rebuilt'), CatalogFixture.ManifestType)
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result, { imported: [], rejected: [CatalogFixture.V1], unchanged: 0, shadowed: [] })
+            const record = fx.Release(CatalogFixture.V1)!
+            assert.equal(record.release!.state, ReleaseState.Rejected)
+            assert.equal(record.release!.rejectedReason, 'image digest mismatch: pragmatic-env-gateway')
+            assert.equal(record.signed, false)
+        })
+    })
+
+    it('rejects a release whose image is absent from the registry under the version tag, naming the app', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const descriptor = { ...fx.Descriptor(CatalogFixture.V1), version: CatalogFixture.Unseeded }
+            await fx.PushDescriptor(CatalogFixture.Unseeded, ReleaseDescriptorCodec.Encode(descriptor))
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result, { imported: [], rejected: [CatalogFixture.Unseeded], unchanged: 0, shadowed: [] })
+            assert.equal(fx.Reason(CatalogFixture.Unseeded), 'image missing: pragmatic-platform-admin')
+        })
+    })
+
+    it('rejects an image whose signature does not verify, naming the app', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const descriptor = fx.Descriptor(CatalogFixture.V1)
+            const agent = descriptor.images[ReleaseApp.HiveAgent]
+            descriptor.images[ReleaseApp.HiveAgent] = { ...agent, signature: ReleaseSignature.Sign(agent.digest, fx.Rogue.Private) }
+            await fx.PushDescriptor(CatalogFixture.V1, ReleaseDescriptorCodec.Encode(descriptor))
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Reason(CatalogFixture.V1), 'image signature invalid: pragmatic-hive-agent')
+        })
+    })
+
+    it('rejects an image recorded under a repository other than <namespace>/<app>, naming the app', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const descriptor = fx.Descriptor(CatalogFixture.V1)
+            descriptor.images[ReleaseApp.UiUnpack] = { ...descriptor.images[ReleaseApp.UiUnpack], repository: 'elsewhere/pragmatic-ui-unpack' }
+            await fx.PushDescriptor(CatalogFixture.V1, ReleaseDescriptorCodec.Encode(descriptor))
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Reason(CatalogFixture.V1), 'image repository mismatch: pragmatic-ui-unpack')
+        })
+    })
+
+    it('rejects a descriptor signed by an untrusted key, naming the key id', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1, fx.Rogue)
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result.rejected, [CatalogFixture.V1])
+            assert.equal(fx.Reason(CatalogFixture.V1), 'untrusted signing key: ' + CatalogFixture.RogueId)
+        })
+    })
+
+    it('rejects a descriptor whose untrusted key id is not a plain identifier, without echoing the registry text', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const odd = new SigningKey('<b>evil key</b>')
+            await fx.PushDescriptor(CatalogFixture.V1, ReleaseDescriptorCodec.Encode(fx.Descriptor(CatalogFixture.V1, odd)), odd)
+            await fx.Catalog().Refresh()
+            const reason = fx.Reason(CatalogFixture.V1)!
+            assert.equal(reason, 'untrusted signing key')
+            assert.ok(!reason.includes('evil'))
+        })
+    })
+
+    it('rejects a descriptor with no signing key annotation', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const bytes = ReleaseDescriptorCodec.Encode(fx.Descriptor(CatalogFixture.V1))
+            await fx.PushArtifact(CatalogFixture.V1, bytes, { [ReleasePublisher.SignatureAnnotation]: ReleaseSignature.Sign(OciRegistryClient.DigestOf(bytes), fx.Trusted.Private) })
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Reason(CatalogFixture.V1), 'signing key missing')
+        })
+    })
+
+    it('rejects a descriptor whose signingKeyId differs from the key that signed it, naming the signing key', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const descriptor = { ...fx.Descriptor(CatalogFixture.V1), signingKeyId: CatalogFixture.RogueId }
+            await fx.PushDescriptor(CatalogFixture.V1, ReleaseDescriptorCodec.Encode(descriptor))
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Reason(CatalogFixture.V1), 'signing key mismatch: ' + CatalogFixture.TrustedId)
+        })
+    })
+
+    it('rejects a descriptor whose signature does not cover its layer, naming the key id and no signature bytes', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const bytes = ReleaseDescriptorCodec.Encode(fx.Descriptor(CatalogFixture.V1))
+            const forged = ReleaseSignature.Sign(OciRegistryClient.DigestOf(new TextEncoder().encode('other')), fx.Trusted.Private)
+            await fx.PushArtifact(CatalogFixture.V1, bytes, {
+                [ReleasePublisher.SignatureAnnotation]: forged,
+                [ReleasePublisher.KeyAnnotation]: CatalogFixture.TrustedId,
+            })
+            await fx.Catalog().Refresh()
+            const reason = fx.Reason(CatalogFixture.V1)!
+            assert.equal(reason, 'descriptor signature invalid: ' + CatalogFixture.TrustedId)
+            assert.ok(!reason.includes(forged))
+        })
+    })
+
+    it('rejects altered descriptor layer bytes with a fixed sentence', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            fx.Registry.TamperBlobs(true)
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result, { imported: [], rejected: [CatalogFixture.V1], unchanged: 0, shadowed: [] })
+            assert.equal(fx.Reason(CatalogFixture.V1), CatalogFixture.LayerMismatch)
+        })
+    })
+
+    it('rejects a descriptor whose annotations are not strings with its own fixed sentence, never the registry text', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const leak = CatalogFixture.RegistryText
+            fx.PutRawDescriptorManifest(CatalogFixture.V1, { schemaVersion: 2, layers: [{ digest: CatalogFixture.SomeDigest }], annotations: { [ReleasePublisher.KeyAnnotation]: [leak] } })
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result, { imported: [], rejected: [CatalogFixture.V1], unchanged: 0, shadowed: [] })
+            assert.equal(fx.Reason(CatalogFixture.V1), CatalogFixture.BadAnnotations)
+            assert.ok(!fx.Reason(CatalogFixture.V1)?.includes(leak))
+        })
+    })
+
+    it('records the by-digest image under the configured registry host, not always ghcr.io', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const { descriptor } = await fx.Publish(CatalogFixture.V1)
+            await fx.Catalog(undefined, CatalogFixture.OtherHost).Refresh()
+            const server = descriptor.images[ReleaseApp.EnvServer]
+            assert.equal(fx.Release(CatalogFixture.V1)?.image, CatalogFixture.OtherHost + CatalogFixture.PathSeparator + server.repository + CatalogFixture.DigestSeparator + server.digest)
+        })
+    })
+
+    it('re-inspects a rejected version on every refresh and replaces it once it verifies, counting it imported', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            const gateway = CatalogFixture.Repo(ReleaseApp.EnvGateway)
+            fx.Registry.PutManifest(gateway, CatalogFixture.V1, new TextEncoder().encode(CatalogFixture.Rebuilt), CatalogFixture.ManifestType)
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [], rejected: [CatalogFixture.V1], unchanged: 0, shadowed: [] })
+            // Still failing: the rejected record stays as it is and counts unchanged.
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [], rejected: [], unchanged: 1, shadowed: [] })
+            assert.equal(fx.Release(CatalogFixture.V1)?.release?.state, ReleaseState.Rejected)
+            // The tag points at the signed image again: the next refresh imports the verified record in its place.
+            fx.SeedImage(ReleaseApp.EnvGateway, CatalogFixture.V1)
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [CatalogFixture.V1], rejected: [], unchanged: 0, shadowed: [] })
+            assert.equal(fx.Release(CatalogFixture.V1)?.release?.state, ReleaseState.Verified)
+            assert.equal(fx.Reason(CatalogFixture.V1), undefined)
+            assert.equal(fx.Deployments.AllManifests().length, 1)
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [], rejected: [], unchanged: 1, shadowed: [] })
+        })
+    })
+
+    it('throws ReleaseRegistryUnavailableError and leaves the Rejected record as it was when the registry drops during its re-inspection', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            const gateway = CatalogFixture.Repo(ReleaseApp.EnvGateway)
+            fx.Registry.PutManifest(gateway, CatalogFixture.V1, new TextEncoder().encode(CatalogFixture.Rebuilt), CatalogFixture.ManifestType)
+            await fx.Catalog().Refresh()
+            const rejected = structuredClone(fx.Release(CatalogFixture.V1))
+            assert.equal(rejected?.release?.state, ReleaseState.Rejected)
+            fx.SeedImage(ReleaseApp.EnvGateway, CatalogFixture.V1)
+            fx.FailOn = CatalogFixture.Repo(ReleaseApp.EnvServer) + CatalogFixture.ManifestsPath
+            await assert.rejects(() => fx.Catalog().Refresh(), ReleaseRegistryUnavailableError)
+            assert.deepEqual(fx.Release(CatalogFixture.V1), rejected)
+            assert.equal(fx.Deployments.AllManifests().length, 1)
+        })
+    })
+
+    it('never re-inspects a verified version: only rejected ones are retried', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            await fx.Catalog().Refresh()
+            const before = fx.Registry.Requests.length
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [], rejected: [], unchanged: 1, shadowed: [] })
+            const pulls = fx.Registry.Requests.slice(before).filter(r => r.url.includes('/manifests/') || r.url.includes('/blobs/'))
+            assert.deepEqual(pulls, [])
+        })
+    })
+
+    it('rejects malformed descriptor artifacts (sha512 layer digest, null manifest, null layer) and still imports the good version', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const sha512 = '0.0.1'
+            const nullManifest = '0.0.2'
+            const nullLayer = '0.0.3'
+            fx.PutRawDescriptorManifest(sha512, { schemaVersion: 2, layers: [{ digest: 'sha512:' + 'a'.repeat(128) }] })
+            fx.PutRawDescriptorManifest(nullManifest, null)
+            fx.PutRawDescriptorManifest(nullLayer, { schemaVersion: 2, layers: [null] })
+            await fx.Publish(CatalogFixture.V1)
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result, { imported: [CatalogFixture.V1], rejected: [sha512, nullManifest, nullLayer], unchanged: 0, shadowed: [] })
+            for (const version of [sha512, nullManifest, nullLayer])
+            {
+                assert.equal(fx.Reason(version), CatalogFixture.BadManifest)
+            }
+        })
+    })
+
+    it('rejects a descriptor that does not decode, with the codec reason', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.PushDescriptor(CatalogFixture.V1, new TextEncoder().encode('{"schema":3}'))
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Reason(CatalogFixture.V1), 'descriptor invalid: schema must be 1 or 2')
+        })
+    })
+
+    it('rejects a descriptor whose version or channel disagrees with its tag', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const descriptor = fx.Descriptor(CatalogFixture.V1)
+            await fx.PushDescriptor(CatalogFixture.V2, ReleaseDescriptorCodec.Encode(descriptor))
+            await fx.PushDescriptor(CatalogFixture.V1, ReleaseDescriptorCodec.Encode({ ...descriptor, channel: Channel.EarlyAccess }))
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Reason(CatalogFixture.V2), 'descriptor version mismatch')
+            assert.equal(fx.Reason(CatalogFixture.V1), 'descriptor channel mismatch')
+        })
+    })
+
+    it('ignores tags that are not release versions, and an absent descriptor repository lists nothing', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [], rejected: [], unchanged: 0, shadowed: [] })
+            await fx.Publish(CatalogFixture.V1)
+            fx.Registry.SetTags(CatalogFixture.DescriptorRepo(), ['latest', CatalogFixture.V1, 'release-notes'])
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result, { imported: [CatalogFixture.V1], rejected: [], unchanged: 0, shadowed: [] })
+            assert.deepEqual(fx.Deployments.AllManifests().map(m => m.id), [CatalogFixture.V1])
+        })
+    })
+
+    it('skips a listed version whose descriptor has vanished (404) before the pull', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            fx.Registry.SetTags(CatalogFixture.DescriptorRepo(), [CatalogFixture.V1])
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [], rejected: [], unchanged: 0, shadowed: [] })
+            assert.deepEqual(fx.Deployments.AllManifests(), [])
+        })
+    })
+
+    it('reports a registry release hidden by a locally published manifest of the same id as shadowed, and leaves the local record', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Deployments.Publish(CatalogFixture.V1, CatalogFixture.LocalImage)
+            await fx.Publish(CatalogFixture.V1)
+            await fx.Publish(CatalogFixture.V2)
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result, { imported: [CatalogFixture.V2], rejected: [], unchanged: 0, shadowed: [CatalogFixture.V1] })
+            const local = fx.Release(CatalogFixture.V1)!
+            assert.equal(local.image, CatalogFixture.LocalImage)
+            assert.equal(local.release, undefined)
+        })
+    })
+
+    it('counts a version recorded by someone else during the refresh as unchanged and imports the rest', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            await fx.Publish(CatalogFixture.V2)
+            let raced = false
+            fx.BeforeRequest = async url =>
+            {
+                if (!raced && url.includes('/manifests/' + CatalogFixture.V2))
+                {
+                    raced = true
+                    await fx.Deployments.Publish(CatalogFixture.V1, CatalogFixture.LocalImage)
+                }
+            }
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result, { imported: [CatalogFixture.V2], rejected: [], unchanged: 1, shadowed: [] })
+            assert.equal(fx.Release(CatalogFixture.V1)!.image, CatalogFixture.LocalImage)
+        })
+    })
+
+    it('throws ReleaseRegistryUnavailableError and imports nothing when the registry drops mid-refresh', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            await fx.Publish(CatalogFixture.V2)
+            fx.FailOn = '/manifests/' + CatalogFixture.V2
+            await assert.rejects(fx.Catalog().Refresh(), (err: Error) =>
+                err instanceof ReleaseRegistryUnavailableError && !err.message.includes(CatalogFixture.Token) && !err.message.includes(CatalogFixture.Unreachable.trim()))
+            assert.deepEqual(fx.Deployments.AllManifests(), [])
+        })
+    })
+
+    it('throws ReleaseRegistryUnavailableError without the token when the credential is refused', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            fx.Registry.RequireBearer(CatalogFixture.User, CatalogFixture.Token)
+            await assert.rejects(fx.Catalog({ username: CatalogFixture.User, token: CatalogFixture.WrongToken }).Refresh(), (err: Error) =>
+                err instanceof ReleaseRegistryUnavailableError && !err.message.includes(CatalogFixture.WrongToken) && !err.message.includes(CatalogFixture.Token))
+            assert.deepEqual(fx.Deployments.AllManifests(), [])
+            const result = await fx.Catalog({ username: CatalogFixture.User, token: CatalogFixture.Token }).Refresh()
+            assert.deepEqual(result.imported, [CatalogFixture.V1])
+        })
+    })
+})
+
+describe('ReleaseCatalog countersigning', () =>
+{
+    class RejectingSigner implements IImageSigner
+    {
+        public Calls = 0
+
+        public async Sign(): Promise<void>
+        {
+            this.Calls++
+            throw new Error(CatalogFixture.SignerDown)
+        }
+    }
+
+    class CountingSigner implements IImageSigner
+    {
+        public Calls = 0
+
+        public constructor(private readonly inner: IImageSigner)
+        {
+        }
+
+        public async Sign(imageRef: string, keyRef: string): Promise<void>
+        {
+            this.Calls++
+            await this.inner.Sign(imageRef, keyRef)
+        }
+    }
+
+    class CountingCountersigner implements IReleaseCountersigner
+    {
+        public Calls = 0
+
+        public async Countersign(): Promise<void>
+        {
+            this.Calls++
+        }
+    }
+
+    it('countersigns every image of an imported release', async () =>
+    {
+        const dir = await mkdtemp(join(tmpdir(), CatalogFixture.TempPrefix))
+        try
+        {
+            await CatalogFixture.Run(async fx =>
+            {
+                const keysDir = join(dir, CatalogFixture.KeysDir)
+                await PlatformSigningKey.Ensure(keysDir, PlatformSigningKey.DefaultRef)
+                const store = new FileSignatureStore(join(dir, CatalogFixture.SignaturesFile))
+                const signer = new ImageSigner(new RegistryRefImageDigest(), store, new FileKeyStore(keysDir))
+                const { descriptor } = await fx.Publish(CatalogFixture.V1)
+                await fx.Catalog(undefined, undefined, new PlatformReleaseCountersigner(signer, PlatformSigningKey.DefaultRef)).Refresh()
+                assert.equal(ReleaseApps.All.length, 9)
+                for (const [app, image] of ReleaseDescriptorCodec.ImagesOf(descriptor))
+                {
+                    assert.ok(await store.Get(image.digest, PlatformSigningKey.DefaultRef) !== undefined, app)
+                }
+            })
+        }
+        finally
+        {
+            await rm(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('countersigns an already-imported release on a later refresh, once', async () =>
+    {
+        const dir = await mkdtemp(join(tmpdir(), CatalogFixture.TempPrefix))
+        try
+        {
+            await CatalogFixture.Run(async fx =>
+            {
+                const keysDir = join(dir, CatalogFixture.KeysDir)
+                await PlatformSigningKey.Ensure(keysDir, PlatformSigningKey.DefaultRef)
+                const store = new FileSignatureStore(join(dir, CatalogFixture.SignaturesFile))
+                const signer = new CountingSigner(new ImageSigner(new RegistryRefImageDigest(), store, new FileKeyStore(keysDir)))
+                const { descriptor } = await fx.Publish(CatalogFixture.V1)
+                await fx.Catalog().Refresh()
+                const countersigner = new PlatformReleaseCountersigner(signer, PlatformSigningKey.DefaultRef, store)
+                await fx.Catalog(undefined, undefined, countersigner).Refresh()
+                assert.equal(signer.Calls, 9)
+                for (const [app, image] of ReleaseDescriptorCodec.ImagesOf(descriptor))
+                {
+                    assert.ok(await store.HasKeyed(image.digest, PlatformSigningKey.DefaultRef), app)
+                }
+                await fx.Catalog(undefined, undefined, countersigner).Refresh()
+                assert.equal(signer.Calls, 9)
+            })
+        }
+        finally
+        {
+            await rm(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('a countersign failure keeps the import', async t =>
+    {
+        t.mock.method(console, 'warn', () => undefined)
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            const signer = new RejectingSigner()
+            const result = await fx.Catalog(undefined, undefined, new PlatformReleaseCountersigner(signer, PlatformSigningKey.DefaultRef)).Refresh()
+            assert.deepEqual(result.imported, [CatalogFixture.V1])
+            assert.equal(signer.Calls, 9)
+            assert.equal(fx.Release(CatalogFixture.V1)?.release?.state, ReleaseState.Verified)
+        })
+    })
+
+    it('a schema-1 release (published before pragmatic-postgres) imports and is countersigned with its eight images', async () =>
+    {
+        const dir = await mkdtemp(join(tmpdir(), CatalogFixture.TempPrefix))
+        try
+        {
+            await CatalogFixture.Run(async fx =>
+            {
+                const keysDir = join(dir, CatalogFixture.KeysDir)
+                await PlatformSigningKey.Ensure(keysDir, PlatformSigningKey.DefaultRef)
+                const store = new FileSignatureStore(join(dir, CatalogFixture.SignaturesFile))
+                const signer = new CountingSigner(new ImageSigner(new RegistryRefImageDigest(), store, new FileKeyStore(keysDir)))
+                const descriptor = { ...fx.Descriptor(CatalogFixture.V1, fx.Trusted, false), schema: 1 as const }
+                delete descriptor.images[ReleaseApp.Postgres]
+                await fx.PushDescriptor(CatalogFixture.V1, ReleaseDescriptorCodec.Encode(descriptor))
+                const result = await fx.Catalog(undefined, undefined, new PlatformReleaseCountersigner(signer, PlatformSigningKey.DefaultRef, store)).Refresh()
+                assert.deepEqual(result.imported, [CatalogFixture.V1])
+                const images = fx.Release(CatalogFixture.V1)?.release?.images ?? {}
+                assert.deepEqual(Object.keys(images).sort(), [...ReleaseApps.NodeApps].sort())
+                assert.equal(signer.Calls, 8)
+            })
+        }
+        finally
+        {
+            await rm(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('schema 2 binds image and component descriptor: a published release verifies its labels and records the digests', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            fx.IndexApps.add(ReleaseApp.PlatformAdmin)
+            await fx.Publish(CatalogFixture.V1)
+            assert.deepEqual((await fx.Catalog().Refresh()).imported, [CatalogFixture.V1])
+            const images = fx.Release(CatalogFixture.V1)?.release?.images ?? {}
+            for (const app of ReleaseApps.All)
+            {
+                assert.equal(images[app]?.componentDigest, FakeReleaseImage.ComponentDigestOf(app), app)
+            }
+        })
+    })
+
+    it('a tampered component digest in a published descriptor fails its signature', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const { descriptor } = await fx.Publish(CatalogFixture.V1)
+            const pulled = await fx.Client().PullArtifactLayer(CatalogFixture.DescriptorRepo(), CatalogFixture.V1)
+            const tampered = structuredClone(descriptor)
+            tampered.images[ReleaseApp.TenantIdp].componentDigest = FakeReleaseImage.ComponentDigestOf(ReleaseApp.EnvServer)
+            await fx.PushArtifact(CatalogFixture.V1, ReleaseDescriptorCodec.Encode(tampered), pulled.annotations)
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Reason(CatalogFixture.V1), 'descriptor signature invalid: ' + CatalogFixture.TrustedId)
+        })
+    })
+
+    it('a signed component digest that is not the image label is rejected, naming the app', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const descriptor = fx.Descriptor(CatalogFixture.V1)
+            descriptor.images[ReleaseApp.TenantIdp].componentDigest = FakeReleaseImage.ComponentDigestOf(ReleaseApp.EnvServer)
+            await fx.PushDescriptor(CatalogFixture.V1, ReleaseDescriptorCodec.Encode(descriptor))
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Reason(CatalogFixture.V1), 'component descriptor digest mismatch: pragmatic-tenant-idp')
+        })
+    })
+
+    it('a schema-2 release whose image carries no component label, or an unreadable one, is rejected naming the app', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const descriptor = fx.Descriptor(CatalogFixture.V1)
+            const gateway = CatalogFixture.Repo(ReleaseApp.EnvGateway)
+            const unlabelled = fx.Images.Put(gateway, CatalogFixture.V1, CatalogFixture.Rebuilt, FakeImageLayout.Single, null)
+            descriptor.images[ReleaseApp.EnvGateway].digest = unlabelled
+            descriptor.images[ReleaseApp.EnvGateway].signature = ReleaseSignature.Sign(unlabelled, fx.Trusted.Private)
+            await fx.PushDescriptor(CatalogFixture.V1, ReleaseDescriptorCodec.Encode(descriptor))
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Reason(CatalogFixture.V1), 'component descriptor label missing: pragmatic-env-gateway')
+        })
+        await CatalogFixture.Run(async fx =>
+        {
+            const descriptor = fx.Descriptor(CatalogFixture.V1)
+            const gateway = CatalogFixture.Repo(ReleaseApp.EnvGateway)
+            const manifest = { schemaVersion: 2, config: { digest: CatalogFixture.SomeDigest } }
+            const missingConfig = fx.Registry.PutManifest(gateway, CatalogFixture.V1, new TextEncoder().encode(JSON.stringify(manifest)), CatalogFixture.ManifestType)
+            descriptor.images[ReleaseApp.EnvGateway].digest = missingConfig
+            descriptor.images[ReleaseApp.EnvGateway].signature = ReleaseSignature.Sign(missingConfig, fx.Trusted.Private)
+            await fx.PushDescriptor(CatalogFixture.V1, ReleaseDescriptorCodec.Encode(descriptor))
+            await fx.Catalog().Refresh()
+            assert.equal(fx.Reason(CatalogFixture.V1), 'component descriptor label unreadable: pragmatic-env-gateway')
+        })
+    })
+
+    it('a schema-1 release over unlabelled images still verifies and records no component digest', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const descriptor = { ...fx.Descriptor(CatalogFixture.V1, fx.Trusted, false), schema: 1 as const }
+            delete descriptor.images[ReleaseApp.Postgres]
+            await fx.PushDescriptor(CatalogFixture.V1, ReleaseDescriptorCodec.Encode(descriptor))
+            assert.deepEqual((await fx.Catalog().Refresh()).imported, [CatalogFixture.V1])
+            const images = fx.Release(CatalogFixture.V1)?.release?.images ?? {}
+            assert.ok(Object.values(images).every(image => image !== undefined && !('componentDigest' in image)))
+        })
+    })
+
+    it('a rejected release is not countersigned', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            fx.Registry.PutManifest(CatalogFixture.Repo(ReleaseApp.EnvGateway), CatalogFixture.V1, new TextEncoder().encode(CatalogFixture.Rebuilt), CatalogFixture.ManifestType)
+            const countersigner = new CountingCountersigner()
+            const result = await fx.Catalog(undefined, undefined, countersigner).Refresh()
+            assert.deepEqual(result.rejected, [CatalogFixture.V1])
+            assert.equal(countersigner.Calls, 0)
+        })
+    })
+})

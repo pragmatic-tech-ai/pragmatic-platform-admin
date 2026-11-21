@@ -1,0 +1,363 @@
+import { RelayCommand } from '@pragmatic-tech-ai/mural/runtime'
+import type { DialogService } from '@pragmatic-tech-ai/mural/framework/shell/services/dialog-service.js'
+import { Observable } from '@pragmatic-tech-ai/todl-runtime'
+import { ApiError } from '../api-client.js'
+import { PortalNameConfirmDialogViewModel } from './portal-name-confirm-dialog-view-model.js'
+import type { PortalDialogViewModel } from './portal-dialog-view-model.js'
+import type { PortalSessionService } from './portal-session-service.js'
+
+// The four states every screen presents. Denied is covered by disabled commands.
+export enum PageState
+{
+    Loading,
+    Empty,
+    Populated,
+    Error,
+}
+
+// An irreversible action confirmed by typing the target's name.
+export interface INameConfirmRequest
+{
+    readonly Expected: string
+    readonly Title: string
+    readonly Message: string
+    // Runs inside the dialog once the name matches; a refusal shows there.
+    // Receives the trimmed reason when ReasonLabel asks for one.
+    readonly Action: (reason: string) => Promise<void>
+    // Runs after the dialog closes confirmed (e.g. back to the list).
+    readonly OnConfirmed: () => Promise<void>
+    // The confirm button's label; Delete when omitted.
+    readonly ConfirmLabel?: string
+    // When set, the dialog also requires a reason under this label.
+    readonly ReasonLabel?: string
+}
+
+// Base for every page view-model a section presents. Refresh() runs LoadCore()
+// through the shared state machine: Loading -> Populated | Empty, or Error with
+// its message. A 401 anywhere expires the session (the page reloads to login).
+// Commands run through Guard(), which reports failures in CommandErrorText.
+export abstract class PortalPageViewModel extends Observable
+{
+    private static readonly StateProperty = 'State'
+    private static readonly ErrorTextProperty = 'ErrorText'
+    private static readonly CommandErrorTextProperty = 'CommandErrorText'
+    private static readonly IsLoadingProperty = 'IsLoading'
+    private static readonly IsEmptyProperty = 'IsEmpty'
+    private static readonly IsPopulatedProperty = 'IsPopulated'
+    private static readonly IsErrorProperty = 'IsError'
+    private static readonly NoDialogsMessage = 'Dialogs are not available yet. Try again once the page has finished loading.'
+
+    protected readonly Session: PortalSessionService
+    private state = PageState.Loading
+    private errorText = ''
+    private commandErrorText = ''
+    private loadGeneration = 0
+    private mutating = false
+    private showing = false
+    private readonly mutatingCommands: RelayCommand[] = []
+
+    public constructor(session: PortalSessionService)
+    {
+        super()
+        this.Session = session
+    }
+
+    public get State(): PageState
+    {
+        return this.state
+    }
+
+    public get ErrorText(): string
+    {
+        return this.errorText
+    }
+
+    // Why the last guarded command failed; '' when none. A failed command
+    // leaves the page's State and content as they were.
+    public get CommandErrorText(): string
+    {
+        return this.commandErrorText
+    }
+
+    // Whether the signed-in operator may run this page's mutating commands.
+    public get CanMutate(): boolean
+    {
+        return this.Session.CanMutate
+    }
+
+    // Why this page's mutating commands are disabled; '' when they are not.
+    public get DeniedReason(): string
+    {
+        return this.Session.DeniedReason
+    }
+
+    // Per-state flags for the template's Visibility bindings.
+    public get IsLoading(): boolean
+    {
+        return this.state === PageState.Loading
+    }
+
+    public get IsEmpty(): boolean
+    {
+        return this.state === PageState.Empty
+    }
+
+    public get IsPopulated(): boolean
+    {
+        return this.state === PageState.Populated
+    }
+
+    public get IsError(): boolean
+    {
+        return this.state === PageState.Error
+    }
+
+    // Loads the page. When a newer Refresh() starts before this one settles,
+    // this one's result or error is discarded. A Populated page reloads
+    // quietly: it stays Populated (its content showing) until the load lands,
+    // and only then switches, to Empty or Error when the result says so.
+    public async Refresh(): Promise<void>
+    {
+        const generation = ++this.loadGeneration
+        this.SetErrorText('')
+        if (this.state !== PageState.Populated)
+        {
+            this.SetState(PageState.Loading)
+        }
+        try
+        {
+            const hasContent = await this.LoadCore()
+            if (generation !== this.loadGeneration)
+            {
+                return
+            }
+            this.SetState(hasContent ? PageState.Populated : PageState.Empty)
+        }
+        catch (e)
+        {
+            if (generation !== this.loadGeneration)
+            {
+                return
+            }
+            if (this.TryExpire(e))
+            {
+                return
+            }
+            this.SetErrorText(PortalPageViewModel.MessageOf(e))
+            this.SetState(PageState.Error)
+        }
+    }
+
+    // Whether the page is on screen: its section is the active one and it is
+    // the section's current page.
+    public get IsShowing(): boolean
+    {
+        return this.showing
+    }
+
+    // Called by the section when the page comes on screen (presented, returned
+    // to, or its section re-activated). Idempotent: OnShown runs once per
+    // appearance.
+    public NotifyShown(): void
+    {
+        if (this.showing)
+        {
+            return
+        }
+        this.showing = true
+        this.OnShown()
+    }
+
+    // Called by the section when the page leaves the screen (covered by
+    // another page, popped, or its section left). Idempotent.
+    public NotifyHidden(): void
+    {
+        if (!this.showing)
+        {
+            return
+        }
+        this.showing = false
+        this.OnHidden()
+    }
+
+    // The page came on screen; e.g. resume polling. No-op by default.
+    protected OnShown(): void
+    {
+    }
+
+    // The page left the screen; e.g. stop polling. No-op by default.
+    protected OnHidden(): void
+    {
+    }
+
+    // The generation of the latest Refresh(). A LoadCore that applies data
+    // after an await captures it first and skips applying when it changed.
+    protected get LoadGeneration(): number
+    {
+        return this.loadGeneration
+    }
+
+    // Loads the page's data; true when there is content to show.
+    protected abstract LoadCore(): Promise<boolean>
+
+    // Runs a command body: a 401 expires the session; any other failure sets
+    // CommandErrorText and leaves State as it was.
+    protected async Guard(action: () => Promise<void>): Promise<void>
+    {
+        this.SetCommandErrorText('')
+        try
+        {
+            await action()
+        }
+        catch (e)
+        {
+            if (this.TryExpire(e))
+            {
+                return
+            }
+            this.SetCommandErrorText(PortalPageViewModel.MessageOf(e))
+        }
+    }
+
+    // A mutating command: disabled, and a no-op when executed anyway, while the
+    // operator may not mutate, `enabled` says no, or any of this page's
+    // mutating commands is still running. Its body runs through Guard. The
+    // in-flight lock outlives a dismissed dialog: a submit still in flight
+    // after Escape keeps every mutating command of the page disabled until it
+    // settles, so a second action can never overtake (and drop) the first's
+    // one-time result.
+    protected MutatingCommand(run: () => Promise<void>, enabled?: () => boolean): RelayCommand
+    {
+        const can = (): boolean => this.Session.CanMutate && !this.mutating && (enabled === undefined || enabled())
+        const command = new RelayCommand(() =>
+        {
+            if (can())
+            {
+                void this.RunMutating(run)
+            }
+        }, can)
+        this.mutatingCommands.push(command)
+        return command
+    }
+
+    // Opens a create dialog (loading its choices first); when it produces a
+    // result, hands it to onCreated. Run it inside a command's Guard: a
+    // missing DialogService or a failure is reported in CommandErrorText.
+    protected async OpenCreate<T>(
+        dialogs: DialogService | undefined,
+        create: (dialogs: DialogService) => PortalDialogViewModel<T>,
+        title: string,
+        onCreated: (result: T) => Promise<void>,
+    ): Promise<void>
+    {
+        const dialog = create(PortalPageViewModel.RequireDialogs(dialogs))
+        await dialog.Load()
+        const result = await dialog.Open(title)
+        if (result !== undefined)
+        {
+            await onCreated(result)
+        }
+    }
+
+    // Asks for the target's name before an irreversible action; runs
+    // OnConfirmed once the dialog closes confirmed. Run it inside a Guard.
+    protected async ConfirmByName(dialogs: DialogService | undefined, request: INameConfirmRequest): Promise<void>
+    {
+        const confirm = new PortalNameConfirmDialogViewModel(this.Session, PortalPageViewModel.RequireDialogs(dialogs), request)
+        if (await confirm.Open(request.Title) === PortalNameConfirmDialogViewModel.Confirmed)
+        {
+            await request.OnConfirmed()
+        }
+    }
+
+    private async RunMutating(run: () => Promise<void>): Promise<void>
+    {
+        this.SetMutating(true)
+        try
+        {
+            await this.Guard(run)
+        }
+        finally
+        {
+            this.SetMutating(false)
+        }
+    }
+
+    private SetMutating(next: boolean): void
+    {
+        if (this.mutating === next)
+        {
+            return
+        }
+        this.mutating = next
+        for (const command of this.mutatingCommands)
+        {
+            command.RaiseCanExecuteChanged()
+        }
+    }
+
+    private static RequireDialogs(dialogs: DialogService | undefined): DialogService
+    {
+        if (dialogs === undefined)
+        {
+            throw new Error(PortalPageViewModel.NoDialogsMessage)
+        }
+        return dialogs
+    }
+
+    private TryExpire(e: unknown): boolean
+    {
+        if (e instanceof ApiError && e.Status === ApiError.UnauthorizedStatus)
+        {
+            this.Session.Expire()
+            return true
+        }
+        return false
+    }
+
+    private static MessageOf(e: unknown): string
+    {
+        return e instanceof Error ? e.message : String(e)
+    }
+
+    private SetState(next: PageState): void
+    {
+        const old = this.state
+        if (old === next)
+        {
+            return
+        }
+        const wasLoading = this.IsLoading
+        const wasEmpty = this.IsEmpty
+        const wasPopulated = this.IsPopulated
+        const wasError = this.IsError
+        this.state = next
+        this.RaisePropertyChanged(PortalPageViewModel.StateProperty, old, next)
+        this.RaisePropertyChanged(PortalPageViewModel.IsLoadingProperty, wasLoading, this.IsLoading)
+        this.RaisePropertyChanged(PortalPageViewModel.IsEmptyProperty, wasEmpty, this.IsEmpty)
+        this.RaisePropertyChanged(PortalPageViewModel.IsPopulatedProperty, wasPopulated, this.IsPopulated)
+        this.RaisePropertyChanged(PortalPageViewModel.IsErrorProperty, wasError, this.IsError)
+    }
+
+    private SetCommandErrorText(next: string): void
+    {
+        const old = this.commandErrorText
+        if (old === next)
+        {
+            return
+        }
+        this.commandErrorText = next
+        this.RaisePropertyChanged(PortalPageViewModel.CommandErrorTextProperty, old, next)
+    }
+
+    private SetErrorText(next: string): void
+    {
+        const old = this.errorText
+        if (old === next)
+        {
+            return
+        }
+        this.errorText = next
+        this.RaisePropertyChanged(PortalPageViewModel.ErrorTextProperty, old, next)
+    }
+}

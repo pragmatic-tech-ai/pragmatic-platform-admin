@@ -1,0 +1,383 @@
+import type { ClientRegistry } from './client-registry.js'
+import type { TenantRegistry } from './tenant-registry.js'
+import type { HiveRegistry } from './hive-registry.js'
+import { type EnvironmentRecord, HivePlacementError, RecordId, type ClientRecord, type TenantRecord, type HiveRecord, type ClusterSpec, type RegistrySpec, K8sManifestBuilder, EmailDomainPolicy, type HiveConsoleSpec, type ITenantRecordSource } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
+import { HiveConsoleSpecs } from './hive-console-spec.js'
+
+export interface IEnvironmentLookup
+{
+    List(): readonly EnvironmentRecord[]
+}
+
+// The kinds of platform record, as named in error messages.
+export enum RecordKind
+{
+    Client = 'Client',
+    Tenant = 'Tenant',
+    Hive = 'Hive',
+}
+
+export class RecordExistsError extends Error
+{
+    private static readonly ErrorName = 'RecordExistsError'
+    private static readonly Quote = '"'
+    private static readonly MessageSuffix = ' already exists'
+
+    public constructor(public readonly kind: RecordKind, id: string)
+    {
+        super(kind + ' ' + RecordExistsError.Quote + id + RecordExistsError.Quote + RecordExistsError.MessageSuffix)
+        this.name = RecordExistsError.ErrorName
+    }
+}
+
+export class TenantClientMismatchError extends Error
+{
+    private static readonly ErrorName = 'TenantClientMismatchError'
+    private static readonly Quote = '"'
+    private static readonly MessageMiddle = ' does not belong to client '
+
+    public constructor(tenantId: string, clientId: string)
+    {
+        const Q = TenantClientMismatchError.Quote
+        super(RecordKind.Tenant + ' ' + Q + tenantId + Q + TenantClientMismatchError.MessageMiddle + Q + clientId + Q)
+        this.name = TenantClientMismatchError.ErrorName
+    }
+}
+
+export class UnknownClientError extends Error
+{
+    private static readonly ErrorName = 'UnknownClientError'
+    private static readonly MessagePrefix = 'Unknown client: '
+
+    public constructor(id: string)
+    {
+        super(UnknownClientError.MessagePrefix + id)
+        this.name = UnknownClientError.ErrorName
+    }
+}
+
+export class UnknownTenantError extends Error
+{
+    private static readonly ErrorName = 'UnknownTenantError'
+    private static readonly MessagePrefix = 'Unknown tenant: '
+
+    public constructor(id: string)
+    {
+        super(UnknownTenantError.MessagePrefix + id)
+        this.name = UnknownTenantError.ErrorName
+    }
+}
+
+export class ClientHasTenantsError extends Error
+{
+    private static readonly ErrorName = 'ClientHasTenantsError'
+    private static readonly MessagePrefix = 'Client still has tenants: '
+
+    public constructor(id: string)
+    {
+        super(ClientHasTenantsError.MessagePrefix + id)
+        this.name = ClientHasTenantsError.ErrorName
+    }
+}
+
+export class TenantHasHivesError extends Error
+{
+    private static readonly ErrorName = 'TenantHasHivesError'
+    private static readonly MessagePrefix = 'Tenant still has hives: '
+
+    public constructor(id: string)
+    {
+        super(TenantHasHivesError.MessagePrefix + id)
+        this.name = TenantHasHivesError.ErrorName
+    }
+}
+
+export class HiveHasEnvironmentsError extends Error
+{
+    private static readonly ErrorName = 'HiveHasEnvironmentsError'
+    private static readonly MessagePrefix = 'Hive still has environments: '
+
+    public constructor(id: string)
+    {
+        super(HiveHasEnvironmentsError.MessagePrefix + id)
+        this.name = HiveHasEnvironmentsError.ErrorName
+    }
+}
+
+/** The tenant already runs its console in another hive. */
+export class InHiveConsoleTakenError extends Error
+{
+    private static readonly ErrorName = 'InHiveConsoleTakenError'
+
+    public constructor(tenantId: string, hiveId: string)
+    {
+        super(`Tenant ${tenantId} already runs its console in hive ${hiveId}; a tenant has one console.`)
+        this.name = InHiveConsoleTakenError.ErrorName
+    }
+}
+
+export class PlatformDirectory implements ITenantRecordSource
+{
+    private defaultTrustRootRef: string | undefined
+
+    public constructor(
+        private readonly clients: ClientRegistry,
+        private readonly tenants: TenantRegistry,
+        private readonly hives: HiveRegistry,
+        private readonly environments: IEnvironmentLookup,
+        private readonly now: () => Date = () => new Date())
+    {
+    }
+
+    public async Load(): Promise<void>
+    {
+        await this.clients.Load()
+        await this.tenants.Load()
+        await this.hives.Load()
+        this.AssertOneConsolePerTenant()
+    }
+
+    private AssertOneConsolePerTenant(): void
+    {
+        const owners = new Map<string, string>()
+        for (const hive of this.hives.List())
+        {
+            if (hive.console === undefined)
+            {
+                continue
+            }
+            const first = owners.get(hive.tenantId)
+            if (first !== undefined)
+            {
+                throw new InHiveConsoleTakenError(hive.tenantId, first)
+            }
+            owners.set(hive.tenantId, hive.id)
+        }
+    }
+
+    /**
+     * Makes `ref` (the platform signing key) the trust root of every hive that has none, now and for hives created
+     * later without one, so each hive can run the images the platform signs. A hive given its own trust root keeps it.
+     * Returns the ids of the hives that were given the default.
+     */
+    public async UseDefaultTrustRoot(ref: string): Promise<string[]>
+    {
+        this.defaultTrustRootRef = ref
+        const adopted: string[] = []
+        for (const hive of this.hives.List())
+        {
+            if (hive.trustRootRef === undefined || hive.trustRootRef === '')
+            {
+                await this.hives.Put({ ...hive, trustRootRef: ref })
+                adopted.push(hive.id)
+            }
+        }
+        return adopted
+    }
+
+    public ListClients(): readonly ClientRecord[]
+    {
+        return this.clients.List()
+    }
+
+    public GetClient(id: string): ClientRecord | undefined
+    {
+        return this.clients.Get(id)
+    }
+
+    public async CreateClient(input: { id: string; displayName: string; subscriptionRef?: string }): Promise<ClientRecord>
+    {
+        this.AssertNew(RecordKind.Client, input.id, this.clients.Get(input.id))
+        const record: ClientRecord = { id: input.id, displayName: input.displayName, subscriptionRef: input.subscriptionRef, createdAt: this.Stamp() }
+        await this.clients.Put(record)
+        return record
+    }
+
+    public async DeleteClient(id: string): Promise<void>
+    {
+        if (this.tenants.List().some(t => t.clientId === id))
+        {
+            throw new ClientHasTenantsError(id)
+        }
+        await this.clients.Remove(id)
+    }
+
+    public ListTenants(clientId?: string): readonly TenantRecord[]
+    {
+        const all = this.tenants.List()
+        return clientId === undefined ? all : all.filter(t => t.clientId === clientId)
+    }
+
+    public GetTenant(id: string): TenantRecord | undefined
+    {
+        return this.tenants.Get(id)
+    }
+
+    /** Records a tenant; with an Owner (email and principal) when its sign-in runs in its hive rather than in a platform IdP. */
+    public async CreateTenant(input: { id: string; clientId: string; displayName: string; ownerEmail?: string; ownerPrincipalId?: string }): Promise<TenantRecord>
+    {
+        this.AssertNew(RecordKind.Tenant, input.id, this.tenants.Get(input.id))
+        if (this.clients.Get(input.clientId) === undefined)
+        {
+            throw new UnknownClientError(input.clientId)
+        }
+        const record: TenantRecord = { id: input.id, clientId: input.clientId, displayName: input.displayName, createdAt: this.Stamp() }
+        if (input.ownerEmail !== undefined && input.ownerPrincipalId !== undefined)
+        {
+            record.ownerEmail = input.ownerEmail
+            record.ownerPrincipalId = input.ownerPrincipalId
+        }
+        await this.tenants.Put(record)
+        return record
+    }
+
+    public async CreateProvisionedTenant(input: { id: string; clientId: string; displayName: string; ownerEmail: string; ownerPrincipalId: string; idpBaseUrl: string; idpCaRef?: string; idpAdminTokenRef?: string }): Promise<TenantRecord>
+    {
+        this.AssertCanCreateTenant(input.id, input.clientId)
+        const record: TenantRecord = {
+            id: input.id,
+            clientId: input.clientId,
+            displayName: input.displayName,
+            createdAt: this.Stamp(),
+            ownerEmail: input.ownerEmail,
+            ownerPrincipalId: input.ownerPrincipalId,
+            idpBaseUrl: input.idpBaseUrl,
+            idpCaRef: input.idpCaRef,
+            idpAdminTokenRef: input.idpAdminTokenRef
+        }
+        await this.tenants.Put(record)
+        return record
+    }
+
+    /** Read-only pre-flight: throws RecordExistsError for a duplicate id and UnknownClientError for a missing parent client. */
+    public AssertCanCreateTenant(id: string, clientId: string): void
+    {
+        this.AssertNew(RecordKind.Tenant, id, this.tenants.Get(id))
+        if (this.clients.Get(clientId) === undefined)
+        {
+            throw new UnknownClientError(clientId)
+        }
+    }
+
+    /** Throws TenantHasHivesError while the tenant still owns hives; the host runs this before any teardown. */
+    public AssertTenantDeletable(id: string): void
+    {
+        if (this.hives.List().some(h => h.tenantId === id))
+        {
+            throw new TenantHasHivesError(id)
+        }
+    }
+
+    /** Parse via EmailDomainPolicy; an empty list removes the field. UnknownTenantError for an unknown id. */
+    public async SetTenantEmailDomains(tenantId: string, domains: unknown): Promise<TenantRecord>
+    {
+        const tenant = this.tenants.Get(tenantId)
+        if (tenant === undefined)
+        {
+            throw new UnknownTenantError(tenantId)
+        }
+        const parsed = EmailDomainPolicy.Parse(domains)
+        const { emailDomains: _previous, ...rest } = tenant
+        const updated: TenantRecord = parsed.length === 0 ? rest : { ...rest, emailDomains: parsed }
+        await this.tenants.Put(updated)
+        return updated
+    }
+
+    public async DeleteTenant(id: string): Promise<void>
+    {
+        this.AssertTenantDeletable(id)
+        await this.tenants.Remove(id)
+    }
+
+    public ListHives(tenantId?: string): readonly HiveRecord[]
+    {
+        const all = this.hives.List()
+        return tenantId === undefined ? all : all.filter(h => h.tenantId === tenantId)
+    }
+
+    public GetHive(id: string): HiveRecord | undefined
+    {
+        return this.hives.Get(id)
+    }
+
+    public async CreateHive(input: { id: string; tenantId: string; displayName: string; cluster: ClusterSpec; registry: RegistrySpec; trustRootRef?: string }): Promise<HiveRecord>
+    {
+        // The id becomes Kubernetes names and the pragmatic/hive label value: it must be a valid one.
+        K8sManifestBuilder.AssertValidHiveId(input.id)
+        this.AssertNew(RecordKind.Hive, input.id, this.hives.Get(input.id))
+        if (this.tenants.Get(input.tenantId) === undefined)
+        {
+            throw new UnknownTenantError(input.tenantId)
+        }
+        const record: HiveRecord = {
+            id: input.id,
+            tenantId: input.tenantId,
+            displayName: input.displayName,
+            cluster: input.cluster,
+            registry: input.registry,
+            trustRootRef: input.trustRootRef === undefined || input.trustRootRef === '' ? this.defaultTrustRootRef : input.trustRootRef,
+            createdAt: this.Stamp()
+        }
+        await this.hives.Put(record)
+        return record
+    }
+
+    /** Sets (or, with undefined, clears) where the hive serves its tenant's console; a tenant has one console across its hives. */
+    public async SetHiveConsole(hiveId: string, console: HiveConsoleSpec | undefined): Promise<HiveRecord>
+    {
+        const hive = this.hives.Get(hiveId)
+        if (hive === undefined)
+        {
+            throw new UnknownHiveError(hiveId)
+        }
+        if (console !== undefined)
+        {
+            HiveConsoleSpecs.Validate(console, hive.tenantId)
+        }
+        const other = this.hives.List().find(h => h.tenantId === hive.tenantId && h.id !== hiveId && h.console !== undefined)
+        if (console !== undefined && other !== undefined)
+        {
+            throw new InHiveConsoleTakenError(hive.tenantId, other.id)
+        }
+        const { console: _previous, ...rest } = hive
+        const updated: HiveRecord = console === undefined ? rest : { ...rest, console }
+        await this.hives.Put(updated)
+        return updated
+    }
+
+    public async DeleteHive(id: string): Promise<void>
+    {
+        this.AssertHiveDeletable(id)
+        await this.hives.Remove(id)
+    }
+
+    /** Throws HiveHasEnvironmentsError while any environment is still placed on the hive. */
+    public AssertHiveDeletable(id: string): void
+    {
+        if (this.environments.List().some(e => e.hiveId === id))
+        {
+            throw new HiveHasEnvironmentsError(id)
+        }
+    }
+
+    public ValidateHivePlacement(tenantId: string, hiveId: string): void
+    {
+        const hive = this.hives.Get(hiveId)
+        HivePlacementError.Assert(hive, tenantId, hiveId)
+    }
+
+    private AssertNew(kind: RecordKind, id: string, existing: unknown): void
+    {
+        RecordId.Validate(id)
+        if (existing !== undefined)
+        {
+            throw new RecordExistsError(kind, id)
+        }
+    }
+
+    private Stamp(): string
+    {
+        return this.now().toISOString()
+    }
+}

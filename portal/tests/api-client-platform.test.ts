@@ -1,0 +1,378 @@
+import { afterEach, describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import { ApiError, ControlPlaneClient, ControlPlaneErrors } from '../src/api-client.js'
+import { AgentInstallState, AgentInstallStep } from '../src/portal-types.js'
+import type { AgentInstallStatusDto, GatingDto, HiveDto, HiveRolloutDto, ManifestDto, OperatorSummaryDto, ReleaseRefreshDto, SelectionDto, TenantDto } from '../src/portal-types.js'
+
+type Recorded = { route: string; init: RequestInit | undefined }
+
+class FetchStub
+{
+    public static readonly Original = globalThis.fetch
+    public static Calls: Recorded[] = []
+
+    public static Install(payload: unknown, status: number = 200): void
+    {
+        FetchStub.Calls = []
+        globalThis.fetch = (async (route: string, init?: RequestInit) =>
+        {
+            FetchStub.Calls.push({ route, init })
+            return { ok: status >= 200 && status < 300, status, json: async () => payload } as Response
+        }) as typeof fetch
+    }
+
+    public static Restore(): void
+    {
+        globalThis.fetch = FetchStub.Original
+    }
+}
+
+describe('ControlPlaneClient platform records', () =>
+{
+    afterEach(() => { FetchStub.Restore() })
+
+    it('ListClients GETs /api/clients', async () =>
+    {
+        FetchStub.Install([{ id: 'c1', displayName: 'Acme' }])
+        const clients = await new ControlPlaneClient().ListClients()
+        assert.equal(FetchStub.Calls[0]!.route, '/api/clients')
+        assert.equal(FetchStub.Calls[0]!.init?.method, 'GET')
+        assert.deepEqual(clients, [{ id: 'c1', displayName: 'Acme' }])
+    })
+
+    it('CreateClient POSTs the body', async () =>
+    {
+        FetchStub.Install({ id: 'c1', displayName: 'Acme', subscriptionRef: 'sub' })
+        const dto = await new ControlPlaneClient().CreateClient('c1', 'Acme', 'sub')
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/clients')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(JSON.parse(call.init?.body as string), { id: 'c1', displayName: 'Acme', subscriptionRef: 'sub' })
+        assert.equal(dto.id, 'c1')
+    })
+
+    it('CreateClient omits an absent subscriptionRef', async () =>
+    {
+        FetchStub.Install({ id: 'c1', displayName: 'Acme' })
+        await new ControlPlaneClient().CreateClient('c1', 'Acme')
+        assert.deepEqual(JSON.parse(FetchStub.Calls[0]!.init?.body as string), { id: 'c1', displayName: 'Acme' })
+    })
+
+    it('CreateOperator POSTs email, password and role', async () =>
+    {
+        FetchStub.Install({ email: 'a@x.test' })
+        await new ControlPlaneClient().CreateOperator('a@x.test', 'pw', 'readonly')
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/operators')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(JSON.parse(call.init?.body as string), { email: 'a@x.test', password: 'pw', role: 'readonly' })
+    })
+
+    it('SetOperatorRole POSTs email and role to the role route', async () =>
+    {
+        FetchStub.Install({ ok: true })
+        await new ControlPlaneClient().SetOperatorRole('a@x.test', 'full')
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/operators/role')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(JSON.parse(call.init?.body as string), { email: 'a@x.test', role: 'full' })
+    })
+
+    it('ResetOperatorPassword POSTs email and returns the parsed password', async () =>
+    {
+        FetchStub.Install({ password: 'one-time-pw' })
+        const result = await new ControlPlaneClient().ResetOperatorPassword('a@x.test')
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/operators/password-reset')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(JSON.parse(call.init?.body as string), { email: 'a@x.test' })
+        assert.deepEqual(result, { password: 'one-time-pw' })
+    })
+
+    it('SetOperatorDisabled POSTs email and the boolean', async () =>
+    {
+        FetchStub.Install({ ok: true })
+        await new ControlPlaneClient().SetOperatorDisabled('a@x.test', true)
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/operators/disabled')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(JSON.parse(call.init?.body as string), { email: 'a@x.test', disabled: true })
+    })
+
+    it('RevokeOperatorSessions POSTs email to the revoke route', async () =>
+    {
+        FetchStub.Install({ ok: true })
+        await new ControlPlaneClient().RevokeOperatorSessions('a@x.test')
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/operators/revoke-sessions')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(JSON.parse(call.init?.body as string), { email: 'a@x.test' })
+    })
+
+    it('DeleteClient DELETEs the item route', async () =>
+    {
+        FetchStub.Install({ ok: true })
+        await new ControlPlaneClient().DeleteClient('c 1')
+        assert.equal(FetchStub.Calls[0]!.route, '/api/clients/c%201')
+        assert.equal(FetchStub.Calls[0]!.init?.method, 'DELETE')
+    })
+
+    it('ListTenants returns all when no client is given', async () =>
+    {
+        const all: TenantDto[] = [{ id: 't1', clientId: 'c1', displayName: 'T1' }, { id: 't2', clientId: 'c2', displayName: 'T2' }]
+        FetchStub.Install(all)
+        const result = await new ControlPlaneClient().ListTenants()
+        assert.equal(FetchStub.Calls[0]!.route, '/api/tenants')
+        assert.deepEqual(result, all)
+    })
+
+    it('ListTenants filters client-side by clientId', async () =>
+    {
+        FetchStub.Install([{ id: 't1', clientId: 'c1', displayName: 'T1' }, { id: 't2', clientId: 'c2', displayName: 'T2' }])
+        const result = await new ControlPlaneClient().ListTenants('c2')
+        assert.deepEqual(result.map(t => t.id), ['t2'])
+    })
+
+    it('CreateTenant POSTs the body', async () =>
+    {
+        FetchStub.Install({ id: 't1', clientId: 'c1', displayName: 'T1', owner: { email: 'o@x.test', principalId: 'owner', password: 'pw-once' } })
+        const dto = await new ControlPlaneClient().CreateTenant('t1', 'c1', 'T1', 'o@x.test')
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/tenants')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(JSON.parse(call.init?.body as string), { id: 't1', clientId: 'c1', displayName: 'T1', ownerEmail: 'o@x.test' })
+        assert.equal(dto.clientId, 'c1')
+        assert.equal(dto.owner.password, 'pw-once')
+    })
+
+    it('DeleteTenant DELETEs the item route', async () =>
+    {
+        FetchStub.Install({ ok: true })
+        await new ControlPlaneClient().DeleteTenant('t1')
+        assert.equal(FetchStub.Calls[0]!.route, '/api/tenants/t1')
+        assert.equal(FetchStub.Calls[0]!.init?.method, 'DELETE')
+    })
+
+    it('ListHives filters client-side by tenantId', async () =>
+    {
+        const hive = (id: string, tenantId: string): HiveDto => ({ id, tenantId, displayName: id, cluster: { backend: 'local', mode: 'attach' }, registry: { mode: 'attach' } })
+        FetchStub.Install([hive('h1', 't1'), hive('h2', 't2')])
+        const client = new ControlPlaneClient()
+        assert.deepEqual((await client.ListHives('t1')).map(h => h.id), ['h1'])
+        assert.equal(FetchStub.Calls[0]!.route, '/api/hives')
+        assert.equal((await client.ListHives()).length, 2)
+    })
+
+    it('CreateHive POSTs the full input', async () =>
+    {
+        const input: HiveDto = { id: 'h1', tenantId: 't1', displayName: 'H', cluster: { backend: 'aks', mode: 'provision', configRef: 'cfg' }, registry: { mode: 'attach', endpoint: 'e', credentialRef: 'k' }, trustRootRef: 'root' }
+        FetchStub.Install(input)
+        const dto = await new ControlPlaneClient().CreateHive(input)
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/hives')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(JSON.parse(call.init?.body as string), input)
+        assert.equal(dto.cluster.backend, 'aks')
+    })
+
+    it('DeleteHive DELETEs the item route', async () =>
+    {
+        FetchStub.Install({ ok: true })
+        await new ControlPlaneClient().DeleteHive('h1')
+        assert.equal(FetchStub.Calls[0]!.route, '/api/hives/h1')
+        assert.equal(FetchStub.Calls[0]!.init?.method, 'DELETE')
+    })
+
+    it('ListManifests GETs /api/manifests and returns the parsed array', async () =>
+    {
+        const payload: ManifestDto[] = [{ id: 'v1', image: 'img1', publishedAt: '2026-01-01T00:00:00.000Z' }]
+        FetchStub.Install(payload)
+        const manifests = await new ControlPlaneClient().ListManifests()
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/manifests')
+        assert.equal(call.init?.method, 'GET')
+        assert.equal(call.init?.body, undefined)
+        assert.equal(call.init?.credentials, 'same-origin')
+        assert.deepEqual(manifests, payload)
+    })
+
+    it('RefreshReleases POSTs /api/releases/refresh and returns the counts', async () =>
+    {
+        const payload: ReleaseRefreshDto = { imported: ['1.5.0'], rejected: [], unchanged: 2, shadowed: ['1.4.0'] }
+        FetchStub.Install(payload)
+        const result = await new ControlPlaneClient().RefreshReleases()
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/releases/refresh')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(result, payload)
+    })
+
+    it('RefreshReleases surfaces the server sentence of a 409 or 502 as an ApiError', async () =>
+    {
+        for (const [status, sentence] of [[409, 'No release registry is configured.'], [502, 'The release registry is unavailable.']] as const)
+        {
+            FetchStub.Install({ error: sentence }, status)
+            await assert.rejects(new ControlPlaneClient().RefreshReleases(), (e: unknown) => e instanceof ApiError && e.Status === status && e.message === sentence)
+        }
+    })
+
+    it('the client no longer publishes manifests by hand', () =>
+    {
+        assert.equal('PublishManifest' in ControlPlaneClient.prototype, false)
+    })
+
+    it('Gate POSTs the version to the tenant gating route', async () =>
+    {
+        FetchStub.Install({})
+        await new ControlPlaneClient().Gate('t1', '1.2.0')
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/tenants/t1/gating')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(JSON.parse(call.init?.body as string), { version: '1.2.0' })
+    })
+
+    it('Ungate DELETEs the gating item route', async () =>
+    {
+        FetchStub.Install({})
+        await new ControlPlaneClient().Ungate('t1', '1.2.0')
+        assert.equal(FetchStub.Calls[0]!.route, '/api/tenants/t1/gating/1.2.0')
+        assert.equal(FetchStub.Calls[0]!.init?.method, 'DELETE')
+    })
+
+    it('Ungate path-encodes the version', async () =>
+    {
+        FetchStub.Install({})
+        await new ControlPlaneClient().Ungate('t1', 'a/b+c')
+        assert.equal(FetchStub.Calls[0]!.route, '/api/tenants/t1/gating/a%2Fb%2Bc')
+    })
+
+    it('SetManifestWithdrawn(true, reason) POSTs the withdrawn route with a reason body', async () =>
+    {
+        FetchStub.Install({ id: '1.0.0', image: 'img:1.0.0', publishedAt: '2026-01-01T00:00:00.000Z' })
+        const dto = await new ControlPlaneClient().SetManifestWithdrawn('1.0.0', true, 'bad build')
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/manifests/1.0.0/withdrawn')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(JSON.parse(call.init?.body as string), { reason: 'bad build' })
+        assert.equal(dto.id, '1.0.0')
+    })
+
+    it('SetManifestWithdrawn(false) DELETEs the withdrawn route', async () =>
+    {
+        FetchStub.Install({ id: '1.0.0', image: 'img:1.0.0', publishedAt: '2026-01-01T00:00:00.000Z' })
+        await new ControlPlaneClient().SetManifestWithdrawn('1.0.0', false)
+        assert.equal(FetchStub.Calls[0]!.route, '/api/manifests/1.0.0/withdrawn')
+        assert.equal(FetchStub.Calls[0]!.init?.method, 'DELETE')
+        assert.equal(FetchStub.Calls[0]!.init?.body, '{}')
+    })
+
+    it('SetManifestWithdrawn path-encodes the version', async () =>
+    {
+        FetchStub.Install({ id: 'a/b', image: 'i', publishedAt: '2026-01-01T00:00:00.000Z' })
+        await new ControlPlaneClient().SetManifestWithdrawn('a/b', true)
+        assert.equal(FetchStub.Calls[0]!.route, '/api/manifests/a%2Fb/withdrawn')
+    })
+
+    it('ListOperators GETs /api/operators and returns the parsed array', async () =>
+    {
+        const payload: OperatorSummaryDto[] = [{ email: 'a@b.c', role: 'full' }, { email: 'd@e.f', role: 'readonly' }]
+        FetchStub.Install(payload)
+        const operators = await new ControlPlaneClient().ListOperators()
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/operators')
+        assert.equal(call.init?.method, 'GET')
+        assert.equal(call.init?.body, undefined)
+        assert.equal(call.init?.credentials, 'same-origin')
+        assert.deepEqual(operators, payload)
+    })
+
+    it('ListGating GETs /api/gating and returns the parsed array', async () =>
+    {
+        const payload: GatingDto[] = [{ tenantId: 't1', version: 'v1', gatedAt: '2026-01-01T00:00:00.000Z' }]
+        FetchStub.Install(payload)
+        const gating = await new ControlPlaneClient().ListGating()
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/gating')
+        assert.equal(call.init?.method, 'GET')
+        assert.equal(call.init?.body, undefined)
+        assert.equal(call.init?.credentials, 'same-origin')
+        assert.deepEqual(gating, payload)
+    })
+
+    it('ListSelections GETs /api/selections and returns the parsed array', async () =>
+    {
+        const payload: SelectionDto[] = [{ hiveId: 'h1', targetVersion: 'v1', selectedAt: '2026-01-01T00:00:00.000Z' }]
+        FetchStub.Install(payload)
+        const selections = await new ControlPlaneClient().ListSelections()
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/selections')
+        assert.equal(call.init?.method, 'GET')
+        assert.equal(call.init?.body, undefined)
+        assert.equal(call.init?.credentials, 'same-origin')
+        assert.deepEqual(selections, payload)
+    })
+
+    it('ListRollouts GETs /api/rollouts and returns the parsed array', async () =>
+    {
+        const payload: HiveRolloutDto[] = [{ hiveId: 'h1', targetVersion: 'v1', environments: [{ environmentName: 'prod', runningImage: 'img:1', obsolete: false, ready: true }] }]
+        FetchStub.Install(payload)
+        const rollouts = await new ControlPlaneClient().ListRollouts()
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/rollouts')
+        assert.equal(call.init?.method, 'GET')
+        assert.equal(call.init?.body, undefined)
+        assert.equal(call.init?.credentials, 'same-origin')
+        assert.deepEqual(rollouts, payload)
+    })
+
+    it('StartAgentInstall POSTs /api/hives/ID/agent-install and returns the status', async () =>
+    {
+        const payload: AgentInstallStatusDto = { state: AgentInstallState.Installing, step: AgentInstallStep.PreparingCluster, startedAt: '2026-11-03T10:00:00.000Z' }
+        FetchStub.Install(payload)
+        const status = await new ControlPlaneClient().StartAgentInstall('h 1')
+        const call = FetchStub.Calls[0]!
+        assert.equal(call.route, '/api/hives/h%201/agent-install')
+        assert.equal(call.init?.method, 'POST')
+        assert.deepEqual(status, payload)
+    })
+
+    it('GetAgentInstall GETs the status, and reads a 404 as no install yet', async () =>
+    {
+        const payload: AgentInstallStatusDto = { state: AgentInstallState.Connected, step: AgentInstallStep.WaitingForCheckIn, startedAt: '2026-11-03T10:00:00.000Z', finishedAt: '2026-11-03T10:01:00.000Z' }
+        FetchStub.Install(payload)
+        assert.deepEqual(await new ControlPlaneClient().GetAgentInstall('h1'), payload)
+        assert.equal(FetchStub.Calls[0]!.route, '/api/hives/h1/agent-install')
+        assert.equal(FetchStub.Calls[0]!.init?.method, 'GET')
+        globalThis.fetch = (async () => ({ ok: false, status: 404, json: async () => ({ error: 'Not found' }) }) as Response) as typeof fetch
+        assert.equal(await new ControlPlaneClient().GetAgentInstall('h1'), null)
+        globalThis.fetch = (async () => ({ ok: false, status: 500, json: async () => ({ error: 'boom' }) }) as Response) as typeof fetch
+        await assert.rejects(new ControlPlaneClient().GetAgentInstall('h1'), (e: unknown) => e instanceof ApiError && e.Status === 500)
+    })
+
+    it('DeleteHive DELETEs the hive; with force it adds ?force=true (delete anyway)', async () =>
+    {
+        FetchStub.Install({ ok: true, retained: [] })
+        const outcome = await new ControlPlaneClient().DeleteHive('h 1')
+        assert.deepEqual(outcome, { ok: true, retained: [] })
+        await new ControlPlaneClient().DeleteHive('h 1', true)
+        assert.deepEqual(FetchStub.Calls.map(c => [c.route, c.init?.method]), [['/api/hives/h%201', 'DELETE'], ['/api/hives/h%201?force=true', 'DELETE']])
+    })
+
+    it('an error reply carries the server code on ApiError.Code', async () =>
+    {
+        globalThis.fetch = (async () => ({ ok: false, status: 409, json: async () => ({ error: 'Could not remove', code: 'agent-uninstall-failed' }) }) as Response) as typeof fetch
+        const err = await new ControlPlaneClient().DeleteHive('h1').then(() => undefined, (e: unknown) => e)
+        assert.ok(err instanceof ApiError)
+        assert.equal(err.Code, ControlPlaneErrors.AgentUninstallFailedCode)
+        assert.equal(err.message, 'Could not remove')
+    })
+
+    it('ResetOwnerPassword POSTs /api/tenants/ID/owner-password and returns the one-time reply', async () =>
+    {
+        FetchStub.Install({ ownerEmail: 'o@x.test', ownerPassword: 'pw-once' })
+        const reset = await new ControlPlaneClient().ResetOwnerPassword('t 1')
+        assert.equal(FetchStub.Calls[0]!.route, '/api/tenants/t%201/owner-password')
+        assert.equal(FetchStub.Calls[0]!.init?.method, 'POST')
+        assert.deepEqual(reset, { ownerEmail: 'o@x.test', ownerPassword: 'pw-once' })
+    })
+})

@@ -1,0 +1,351 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { ConsoleAdvertReceiver, ConsoleNotEnabledError, InvalidConsoleAdvertError, type IConsoleAdvertDirectory, type IConsoleDomainVerifications, type IOwnerResetSource } from '../console-advert-receiver.js'
+import { type DomainVerificationAnswer, DomainApprovalState, DomainVerificationUnavailableError, IngressTlsSource, type HiveRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { ConsoleAdvertRegistry } from '../console-advert-registry.js'
+
+const Fp = 'c'.repeat(64)
+const GoodUrl = 'https://console-acme.localtest.me'
+
+class ReceiverFixture
+{
+    public dir = ''
+    public registry!: ConsoleAdvertRegistry
+    public receiver!: ConsoleAdvertReceiver
+
+    public static async Run(body: (f: ReceiverFixture) => Promise<void>, withConsole = true, specOver: Record<string, unknown> = {}): Promise<void>
+    {
+        const f = new ReceiverFixture()
+        f.dir = await mkdtemp(join(tmpdir(), 'advert-receiver-'))
+        f.registry = new ConsoleAdvertRegistry(join(f.dir, ConsoleAdvertRegistry.FileName))
+        const hive = {
+            id: 'h1',
+            tenantId: 'acme',
+            ...(withConsole ? { console: { baseDomain: 'localtest.me', tls: { source: IngressTlsSource.Development }, ...specOver } } : {}),
+        } as unknown as HiveRecord
+        const directory: IConsoleAdvertDirectory = { GetHive: id => (id === 'h1' ? hive : undefined) }
+        f.receiver = new ConsoleAdvertReceiver(directory, f.registry, () => new Date('2026-11-04T12:00:00.000Z'))
+        try
+        {
+            await body(f)
+        }
+        finally
+        {
+            await rm(f.dir, { recursive: true, force: true })
+        }
+    }
+
+    public static Body(over: Record<string, unknown> = {}): Record<string, unknown>
+    {
+        return { consoleUrl: GoodUrl, fingerprints: [Fp], emailDomains: ['acme.test'], ...over }
+    }
+}
+
+test('stores a valid advert with the host lower-cased', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        const outcome = await f.receiver.Receive('h1', ReceiverFixture.Body({ consoleUrl: 'https://Console-Acme.localtest.me/' }))
+        assert.equal(outcome.record.consoleUrl, GoodUrl)
+        assert.equal(outcome.record.tenantId, 'acme')
+        assert.equal(outcome.record.hiveId, 'h1')
+        assert.equal(outcome.record.reportedAt, '2026-11-04T12:00:00.000Z')
+        assert.equal(f.registry.List().length, 1)
+    })
+})
+
+test('refuses a hive without the console enabled', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        await assert.rejects(() => f.receiver.Receive('h1', ReceiverFixture.Body()), ConsoleNotEnabledError)
+        await assert.rejects(() => f.receiver.Receive('nope', ReceiverFixture.Body()), ConsoleNotEnabledError)
+        assert.equal(f.registry.List().length, 0)
+    }, false)
+})
+
+test('refuses another host, http, a path, a query, a port or user info and keeps the previous advert', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        await f.receiver.Receive('h1', ReceiverFixture.Body())
+        const bad = ['https://evil.test', 'http://console-acme.localtest.me', 'https://console-acme.localtest.me/x', 'https://console-acme.localtest.me/?a=1',
+            'https://console-acme.localtest.me:8443', 'https://u:p@console-acme.localtest.me', 'https://' + 'a'.repeat(2050), 'not a url']
+        for (const consoleUrl of bad)
+        {
+            await assert.rejects(() => f.receiver.Receive('h1', ReceiverFixture.Body({ consoleUrl, fingerprints: [] })), InvalidConsoleAdvertError, consoleUrl)
+        }
+        assert.equal((f.registry.ForTenant('acme') as { reportedAt: string }).reportedAt, '2026-11-04T12:00:00.000Z')
+        assert.deepEqual(f.registry.ForTenant('acme')?.fingerprints, [Fp])
+    })
+})
+
+test('refuses a body of the wrong shape', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        const bodies: unknown[] = [undefined, null, [], 'x', { consoleUrl: GoodUrl }, ReceiverFixture.Body({ consoleUrl: 5 }),
+            ReceiverFixture.Body({ fingerprints: 'x' }), ReceiverFixture.Body({ emailDomains: [1] })]
+        for (const body of bodies)
+        {
+            await assert.rejects(() => f.receiver.Receive('h1', body), InvalidConsoleAdvertError)
+        }
+    })
+})
+
+test('refuses malformed or too many fingerprints', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        const bad = [['a'.repeat(63)], ['A'.repeat(64)], Array.from({ length: 10001 }, (_, i) => i.toString(16).padStart(64, '0'))]
+        for (const fingerprints of bad)
+        {
+            await assert.rejects(() => f.receiver.Receive('h1', ReceiverFixture.Body({ fingerprints })), InvalidConsoleAdvertError)
+        }
+        assert.equal(f.registry.List().length, 0)
+    })
+})
+
+test('dedupes fingerprints', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        const outcome = await f.receiver.Receive('h1', ReceiverFixture.Body({ fingerprints: ['d'.repeat(64), Fp, Fp] }))
+        assert.deepEqual(outcome.record.fingerprints, [Fp, 'd'.repeat(64)])
+    })
+})
+
+test('drops refused email domains and reports them', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        const outcome = await f.receiver.Receive('h1', ReceiverFixture.Body({ emailDomains: ['acme.test', 'gmail.com', 'bad..x'] }))
+        assert.deepEqual(outcome.record.emailDomains, ['acme.test'])
+        assert.deepEqual(outcome.refusedEmailDomains, ['gmail.com', 'bad..x'])
+    })
+})
+
+test('refuses more than 20 email domains', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        const emailDomains = Array.from({ length: 21 }, (_, i) => `d${i}.acme.test`)
+        await assert.rejects(() => f.receiver.Receive('h1', ReceiverFixture.Body({ emailDomains })), InvalidConsoleAdvertError)
+    })
+})
+
+test('error messages never carry submitted values', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        await assert.rejects(
+            () => f.receiver.Receive('h1', ReceiverFixture.Body({ consoleUrl: 'https://evil.test', fingerprints: [Fp] })),
+            (err: Error) => !err.message.includes('evil.test') && !err.message.includes(Fp))
+        await assert.rejects(
+            () => f.receiver.Receive('h1', ReceiverFixture.Body({ fingerprints: ['zz' + Fp] })),
+            (err: Error) => !err.message.includes(Fp))
+    })
+})
+
+test('an explicit host override is the expected host', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        const outcome = await f.receiver.Receive('h1', ReceiverFixture.Body({ consoleUrl: 'https://Tenant.Localtest.me' }))
+        assert.equal(outcome.record.consoleUrl, 'https://tenant.localtest.me')
+        await assert.rejects(() => f.receiver.Receive('h1', ReceiverFixture.Body()), InvalidConsoleAdvertError)
+    }, true, { host: 'tenant.localtest.me' })
+})
+
+test('a spec with an ingressNamespace still expects the derived host', async () =>
+{
+    await ReceiverFixture.Run(async f =>
+    {
+        const outcome = await f.receiver.Receive('h1', ReceiverFixture.Body())
+        assert.equal(outcome.record.consoleUrl, GoodUrl)
+    }, true, { ingressNamespace: 'ingress-nginx' })
+})
+
+/** A registry that lets the hive lose its console while a report is in flight (a removal racing the advert). */
+class RacingRegistry extends ConsoleAdvertRegistry
+{
+    public constructor(filePath: string, private readonly race: () => void)
+    {
+        super(filePath)
+    }
+
+    public override async Report(...args: Parameters<ConsoleAdvertRegistry['Report']>): ReturnType<ConsoleAdvertRegistry['Report']>
+    {
+        this.race()
+        await Promise.resolve()
+        return await super.Report(...args)
+    }
+}
+
+test('refuses an advert whose hive lost its console before the write, so a late advert cannot outlive the removal', async () =>
+{
+    const dir = await mkdtemp(join(tmpdir(), 'advert-receiver-race-'))
+    try
+    {
+        let hive: HiveRecord | undefined = {
+            id: 'h1', tenantId: 'acme', console: { baseDomain: 'localtest.me', tls: { source: IngressTlsSource.Development } },
+        } as unknown as HiveRecord
+        const directory: IConsoleAdvertDirectory = { GetHive: id => (id === 'h1' ? hive : undefined) }
+        for (const race of [() => { hive = { ...hive, console: undefined } as unknown as HiveRecord }, () => { hive = undefined }])
+        {
+            hive = { id: 'h1', tenantId: 'acme', console: { baseDomain: 'localtest.me', tls: { source: IngressTlsSource.Development } } } as unknown as HiveRecord
+            const registry = new RacingRegistry(join(dir, ConsoleAdvertRegistry.FileName), race)
+            const receiver = new ConsoleAdvertReceiver(directory, registry, () => new Date('2026-11-04T12:00:00.000Z'))
+            await assert.rejects(() => receiver.Receive('h1', ReceiverFixture.Body()), ConsoleNotEnabledError)
+            assert.equal(registry.List().length, 0)
+        }
+    }
+    finally
+    {
+        await rm(dir, { recursive: true, force: true })
+    }
+})
+
+test('the outcome carries the tenant last Owner reset, and none when there is none', async () =>
+{
+    const dir = await mkdtemp(join(tmpdir(), 'advert-receiver-reset-'))
+    try
+    {
+        const hive = { id: 'h1', tenantId: 'acme', console: { baseDomain: 'localtest.me', tls: { source: IngressTlsSource.Development } } } as unknown as HiveRecord
+        const directory: IConsoleAdvertDirectory = { GetHive: id => (id === 'h1' ? hive : undefined) }
+        const resets = new Map<string, string>()
+        const source: IOwnerResetSource = { Of: tenantId => resets.get(tenantId) }
+        const receiver = new ConsoleAdvertReceiver(directory, new ConsoleAdvertRegistry(join(dir, ConsoleAdvertRegistry.FileName)), () => new Date('2026-11-04T12:00:00.000Z'), source)
+        assert.equal('ownerResetAt' in await receiver.Receive('h1', ReceiverFixture.Body()), false)
+        resets.set('acme', '2026-11-04T10:00:00.000Z')
+        resets.set('other', '2026-11-04T11:00:00.000Z')
+        assert.equal((await receiver.Receive('h1', ReceiverFixture.Body())).ownerResetAt, '2026-11-04T10:00:00.000Z')
+    }
+    finally
+    {
+        await rm(dir, { recursive: true, force: true })
+    }
+})
+
+/** Records what the receiver forwards and answers a fixed verification per domain. */
+class FakeDomains implements IConsoleDomainVerifications
+{
+    public readonly Answered: Array<{ tenantId: string; domains: readonly string[] }> = []
+    public readonly Verified: Array<{ tenantId: string; domain: string }> = []
+
+    public static AnswerOf(domain: string): DomainVerificationAnswer
+    {
+        return { domain, token: 'tok-' + domain, verified: false, state: DomainApprovalState.Pending }
+    }
+
+    public AnswersFor(tenantId: string, domains: readonly string[]): Promise<DomainVerificationAnswer[]>
+    {
+        this.Answered.push({ tenantId, domains })
+        return Promise.resolve(domains.map(d => FakeDomains.AnswerOf(d)))
+    }
+
+    public VerifyDomain(tenantId: string, domain: string): Promise<DomainVerificationAnswer>
+    {
+        this.Verified.push({ tenantId, domain })
+        return Promise.resolve(FakeDomains.AnswerOf(domain))
+    }
+}
+
+class DomainsReceiverFixture
+{
+    public static async Run(withConsole: boolean, withDomains: boolean, body: (receiver: ConsoleAdvertReceiver, domains: FakeDomains) => Promise<void>): Promise<void>
+    {
+        const dir = await mkdtemp(join(tmpdir(), 'advert-receiver-domains-'))
+        try
+        {
+            const hive = { id: 'h1', tenantId: 'acme', ...(withConsole ? { console: { baseDomain: 'localtest.me', tls: { source: IngressTlsSource.Development } } } : {}) } as unknown as HiveRecord
+            const directory: IConsoleAdvertDirectory = { GetHive: id => (id === 'h1' ? hive : undefined) }
+            const domains = new FakeDomains()
+            const receiver = new ConsoleAdvertReceiver(directory, new ConsoleAdvertRegistry(join(dir, ConsoleAdvertRegistry.FileName)), () => new Date('2026-11-04T12:00:00.000Z'), undefined,
+                withDomains ? domains : undefined)
+            await body(receiver, domains)
+        }
+        finally
+        {
+            await rm(dir, { recursive: true, force: true })
+        }
+    }
+}
+
+test('the outcome carries one verification answer per accepted domain, with tokens', async () =>
+{
+    await DomainsReceiverFixture.Run(true, true, async (receiver, domains) =>
+    {
+        const outcome = await receiver.Receive('h1', ReceiverFixture.Body({ emailDomains: ['acme.test', 'gmail.com', 'two.acme.test'] }))
+        assert.deepEqual(outcome.domainVerifications, [FakeDomains.AnswerOf('acme.test'), FakeDomains.AnswerOf('two.acme.test')])
+        assert.deepEqual(domains.Answered, [{ tenantId: 'acme', domains: ['acme.test', 'two.acme.test'] }])
+    })
+})
+
+test('without a verification source the outcome has no domainVerifications', async () =>
+{
+    await DomainsReceiverFixture.Run(true, false, async receiver =>
+    {
+        assert.equal('domainVerifications' in await receiver.Receive('h1', ReceiverFixture.Body()), false)
+    })
+})
+
+test('a refused advert write (console removed mid-report) never asks for verification answers', async () =>
+{
+    const dir = await mkdtemp(join(tmpdir(), 'advert-receiver-refused-'))
+    try
+    {
+        const hive = { id: 'h1', tenantId: 'acme', console: { baseDomain: 'localtest.me', tls: { source: IngressTlsSource.Development } } } as unknown as HiveRecord
+        const gone = { id: 'h1', tenantId: 'acme' } as unknown as HiveRecord
+        let reads = 0
+        const directory: IConsoleAdvertDirectory = { GetHive: () => (reads++ === 0 ? hive : gone) }
+        const domains = new FakeDomains()
+        const receiver = new ConsoleAdvertReceiver(directory, new ConsoleAdvertRegistry(join(dir, ConsoleAdvertRegistry.FileName)), () => new Date('2026-11-04T12:00:00.000Z'), undefined, domains)
+        await assert.rejects(() => receiver.Receive('h1', ReceiverFixture.Body()), ConsoleNotEnabledError)
+        assert.deepEqual(domains.Answered, [])
+    }
+    finally
+    {
+        await rm(dir, { recursive: true, force: true })
+    }
+})
+
+test('VerifyDomain forwards the hive tenant and the domain only', async () =>
+{
+    await DomainsReceiverFixture.Run(true, true, async (receiver, domains) =>
+    {
+        const answer = await receiver.VerifyDomain('h1', { domain: 'acme.test', token: 'forged', tenantId: 'other' })
+        assert.deepEqual(answer, FakeDomains.AnswerOf('acme.test'))
+        assert.deepEqual(domains.Verified, [{ tenantId: 'acme', domain: 'acme.test' }])
+    })
+})
+
+test('VerifyDomain refuses a hive without a console (409 error) and a malformed body', async () =>
+{
+    await DomainsReceiverFixture.Run(false, true, async (receiver, domains) =>
+    {
+        await assert.rejects(() => receiver.VerifyDomain('h1', { domain: 'acme.test' }), ConsoleNotEnabledError)
+        await assert.rejects(() => receiver.VerifyDomain('nope', { domain: 'acme.test' }), ConsoleNotEnabledError)
+        assert.deepEqual(domains.Verified, [])
+    })
+    await DomainsReceiverFixture.Run(true, true, async (receiver, domains) =>
+    {
+        const bodies: unknown[] = [undefined, null, [], 'x', {}, { domain: 5 }]
+        for (const body of bodies)
+        {
+            await assert.rejects(() => receiver.VerifyDomain('h1', body), InvalidConsoleAdvertError)
+        }
+        assert.deepEqual(domains.Verified, [])
+    })
+})
+
+test('VerifyDomain without a verification source is unavailable', async () =>
+{
+    await DomainsReceiverFixture.Run(true, false, async receiver =>
+    {
+        await assert.rejects(() => receiver.VerifyDomain('h1', { domain: 'acme.test' }), DomainVerificationUnavailableError)
+    })
+})

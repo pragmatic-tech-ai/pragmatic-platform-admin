@@ -1,0 +1,80 @@
+import { OneTimeSecretPageViewModel } from '@pragmatic-tech-ai/pragmatic-app-shell'
+import type { TenantsSectionService } from './tenants-section-service.js'
+
+// Why an Owner password is being shown: the tenant was just created, or the
+// operator reset it.
+export enum OwnerPasswordKind
+{
+    Created,
+    Reset,
+}
+
+// A tenant's Owner password, shown once (see OneTimeSecretPageViewModel).
+// Confirming clears it: after creation it moves on to the tenant's detail;
+// after a reset it returns to the detail it was opened from.
+export class OwnerPasswordRevealPageViewModel extends OneTimeSecretPageViewModel
+{
+    private static readonly CreatedHeading = 'Tenant created'
+    private static readonly ResetHeading = 'Owner password reset'
+    private static readonly CreatedContinue = 'Continue to the tenant'
+    private static readonly ResetContinue = 'Back to the tenant'
+    private static readonly NoWarning = ''
+    private static readonly NoticeText = "This password is shown once. Copy it now and pass it to the tenant's Owner over a secure channel. It cannot be shown again."
+
+    public constructor(
+        private readonly section: TenantsSectionService,
+        public readonly TenantId: string,
+        public readonly Email: string,
+        value: string,
+        public readonly Kind: OwnerPasswordKind = OwnerPasswordKind.Created,
+        private readonly warning: string = OwnerPasswordRevealPageViewModel.NoWarning)
+    {
+        super(section, value)
+    }
+
+    // What the operator must know beyond the password (e.g. the Owner's old sessions could not be ended); '' when nothing.
+    public get Warning(): string
+    {
+        return this.warning
+    }
+
+    public get HasWarning(): boolean
+    {
+        return this.warning.length > 0
+    }
+
+    public get Heading(): string
+    {
+        return this.Kind === OwnerPasswordKind.Reset ? OwnerPasswordRevealPageViewModel.ResetHeading : OwnerPasswordRevealPageViewModel.CreatedHeading
+    }
+
+    public get Title(): string
+    {
+        return this.Heading
+    }
+
+    public get Notice(): string
+    {
+        return OwnerPasswordRevealPageViewModel.NoticeText
+    }
+
+    public get ConfirmLabel(): string
+    {
+        return this.ContinueLabel
+    }
+
+    public get ContinueLabel(): string
+    {
+        return this.Kind === OwnerPasswordKind.Reset ? OwnerPasswordRevealPageViewModel.ResetContinue : OwnerPasswordRevealPageViewModel.CreatedContinue
+    }
+
+    protected override OnSaved(): void
+    {
+        if (this.Kind === OwnerPasswordKind.Reset)
+        {
+            void this.section.BackAndRefresh()
+            return
+        }
+        this.section.ShowTenantAfterReveal(this.TenantId)
+    }
+}

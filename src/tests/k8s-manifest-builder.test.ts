@@ -1,0 +1,695 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { K8sManifestBuilder, InvalidRecordIdError, KindClusterName, EnvServerSeedSource, IngressTlsSource, type EnvironmentWorkload, type IdpWorkloadSpec } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { InClusterIdpSeedSource } from '../in-cluster-idp-seed.js'
+
+type K8sObject = {
+    kind: string
+    metadata: { name: string; namespace?: string; labels?: Record<string, string> }
+    spec: any
+}
+
+class Fixture
+{
+    public static readonly SecretValue = 's3cr3t-value-token'
+
+    public static Workload(withDb: boolean): EnvironmentWorkload
+    {
+        const workload: EnvironmentWorkload = {
+            environmentName: 'dev1',
+            environmentId: 'env-dev1-id',
+            hiveId: 'hive-a',
+            image: 'pragmatic-server:dev',
+            serverPort: 8080,
+            env: { PRAGMATIC_PORT: '8080', OTHER: 'x' },
+            secretRefs: ['admin-secret'],
+        }
+        if (withDb)
+        {
+            workload.database = { image: 'postgres:16', user: 'app', database: 'appdb', passwordRef: 'db-pass-ref' }
+        }
+        return workload
+    }
+
+    public static Items(withDb: boolean): K8sObject[]
+    {
+        const doc = JSON.parse(new K8sManifestBuilder().Render(Fixture.Workload(withDb)))
+        assert.equal(doc.apiVersion, 'v1')
+        assert.equal(doc.kind, 'List')
+        return doc.items
+    }
+}
+
+describe('K8sManifestBuilder', () =>
+{
+    it('the environment Namespace enforces the baseline Pod Security level', () =>
+    {
+        for (const withDb of [false, true])
+        {
+            const ns = Fixture.Items(withDb).find(i => i.kind === 'Namespace')!
+            assert.deepEqual(ns.metadata.labels, {
+                'pragmatic/environment': 'dev1',
+                'pragmatic/hive': 'hive-a',
+                'pod-security.kubernetes.io/enforce': 'baseline',
+                'pod-security.kubernetes.io/enforce-version': 'latest',
+            })
+        }
+    })
+
+    it('no environment pod asks for anything the baseline Pod Security level forbids', () =>
+    {
+        const workload = { ...Fixture.Workload(true), federation: { baseDomain: 'hive.test', caSecretName: 'ca' } }
+        const items = JSON.parse(new K8sManifestBuilder().Render(workload)).items as any[]
+        const pods = items.filter(i => i.kind === 'Deployment' || i.kind === 'StatefulSet').map(i => i.spec.template.spec)
+        assert.equal(pods.length, 2)
+        for (const pod of pods)
+        {
+            assert.equal(pod.hostNetwork, undefined)
+            assert.equal(pod.hostPID, undefined)
+            assert.equal(pod.hostIPC, undefined)
+            assert.ok(!(pod.volumes ?? []).some((v: any) => v.hostPath !== undefined))
+            for (const c of [...(pod.initContainers ?? []), ...pod.containers])
+            {
+                assert.notEqual(c.securityContext?.privileged, true)
+                assert.equal(c.securityContext?.capabilities?.add, undefined)
+                assert.ok(!(c.ports ?? []).some((p: any) => p.hostPort !== undefined))
+            }
+        }
+    })
+
+    it('renders all five objects when a database is present', () =>
+    {
+        const items = Fixture.Items(true)
+        assert.deepEqual(items.map(i => i.kind), ['Namespace', 'Deployment', 'Service', 'StatefulSet', 'Service', 'PersistentVolumeClaim'])
+        const server = items[2]!
+        assert.equal(server.spec.type, 'ClusterIP')
+        assert.equal(server.spec.ports[0].port, 8080)
+        const pgSvc = items[4]!
+        assert.equal(pgSvc.spec.clusterIP, 'None')
+    })
+
+    it('renders only namespace, deployment and service without a database', () =>
+    {
+        assert.deepEqual(Fixture.Items(false).map(i => i.kind), ['Namespace', 'Deployment', 'Service', 'PersistentVolumeClaim'])
+    })
+
+    it('renders an RFC-1123 secretKeyRef name for a slash-bearing passwordRef, without collisions', () =>
+    {
+        const render = (ref: string): string =>
+        {
+            const w = Fixture.Workload(true)
+            w.database!.passwordRef = ref
+            const items = JSON.parse(new K8sManifestBuilder().Render(w)).items as K8sObject[]
+            const sts = items.find(i => i.kind === 'StatefulSet')!
+            return sts.spec.template.spec.containers[0].env.find((e: any) => e.valueFrom).valueFrom.secretKeyRef.name
+        }
+        const rfc1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
+        const a = render('Tenant_A/appdb/password')
+        const b = render('tenant-a/appdb/password')
+        assert.match(a, rfc1123)
+        assert.match(b, rfc1123)
+        assert.notEqual(a, b)
+        assert.equal(render('db-pass-ref'), 'db-pass-ref')
+    })
+
+    it('labels the namespace', () =>
+    {
+        const ns = Fixture.Items(false)[0]!
+        assert.equal(ns.metadata.name, 'pragmatic-env-dev1')
+        assert.equal(ns.metadata.name, K8sManifestBuilder.NamespaceOf('dev1'))
+        assert.equal(ns.metadata.labels!['pragmatic/environment'], 'dev1')
+        assert.equal(ns.metadata.labels!['pragmatic/hive'], 'hive-a')
+    })
+
+    it('renders the server deployment', () =>
+    {
+        const dep = Fixture.Items(false)[1]!
+        assert.equal(dep.metadata.name, K8sManifestBuilder.ServerDeploymentOf('dev1'))
+        assert.equal(dep.metadata.namespace, K8sManifestBuilder.NamespaceOf('dev1'))
+        assert.equal(dep.spec.replicas, 1)
+        const c = dep.spec.template.spec.containers[0]
+        assert.equal(c.name, K8sManifestBuilder.ServerContainerName)
+        assert.equal(c.image, 'pragmatic-server:dev')
+        assert.equal(c.imagePullPolicy, 'IfNotPresent')
+        assert.equal(c.ports[0].containerPort, 8080)
+        assert.deepEqual(c.env.map((e: any) => e.name), ['PRAGMATIC_PORT', 'OTHER', 'PRAGMATIC_BASE_DIR', 'PRAGMATIC_ENVIRONMENTS_FILE', 'PRAGMATIC_MASTER_KEY_FILE', 'PRAGMATIC_PROVISIONED_SECRETS_FILE', 'PRAGMATIC_DEPLOYMENT_MODE'])
+        assert.equal(c.readinessProbe.httpGet.path, '/healthz')
+        assert.equal(c.readinessProbe.httpGet.port, 8080)
+    })
+
+    it('references the postgres password by secretKeyRef only', () =>
+    {
+        const text = new K8sManifestBuilder().Render(Fixture.Workload(true))
+        assert.ok(!text.includes(Fixture.SecretValue))
+        const sts = (JSON.parse(text).items as K8sObject[])[3]!
+        const c = sts.spec.template.spec.containers[0]
+        assert.equal(c.image, 'postgres:16')
+        const byName = (n: string) => c.env.find((e: any) => e.name === n)
+        assert.equal(byName('POSTGRES_USER').value, 'app')
+        assert.equal(byName('POSTGRES_DB').value, 'appdb')
+        const pw = byName('POSTGRES_PASSWORD')
+        assert.equal(pw.value, undefined)
+        assert.equal(pw.valueFrom.secretKeyRef.name, 'db-pass-ref')
+        assert.ok(sts.spec.volumeClaimTemplates[0].spec.resources.requests.storage)
+    })
+})
+
+describe('K8sManifestBuilder server boot wiring', () =>
+{
+    const pod = (items: K8sObject[]) => items.find(i => i.kind === 'Deployment')!.spec.template.spec
+
+    it('injects the five boot env vars, three server mounts and four volumes (incl. init-only seed)', () =>
+    {
+        const spec = pod(Fixture.Items(false))
+        const c = spec.containers[0]
+        const val = (n: string) => c.env.find((e: any) => e.name === n).value
+        assert.equal(val('PRAGMATIC_PORT'), '8080')
+        assert.equal(val('PRAGMATIC_BASE_DIR'), '/pragmatic/data')
+        assert.equal(val('PRAGMATIC_ENVIRONMENTS_FILE'), '/pragmatic/config/environments.json')
+        assert.equal(val('PRAGMATIC_MASTER_KEY_FILE'), '/pragmatic/secrets/master.key')
+        assert.equal(val('PRAGMATIC_PROVISIONED_SECRETS_FILE'), '/pragmatic/secrets/provisioned-secrets.json')
+        assert.equal(val('PRAGMATIC_DEPLOYMENT_MODE'), 'local')
+        assert.deepEqual(c.volumeMounts.map((m: any) => m.mountPath), ['/pragmatic/config', '/pragmatic/secrets', '/pragmatic/data'])
+        assert.equal(spec.volumes.length, 4)
+        assert.equal(spec.volumes[0].configMap.name, EnvServerSeedSource.ConfigMapNameOf('dev1'))
+        assert.equal(spec.volumes[1].secret.secretName, EnvServerSeedSource.SecretNameOf('dev1'))
+        assert.equal(spec.volumes[2].persistentVolumeClaim.claimName, K8sManifestBuilder.ServerDataClaimNameOf('dev1'))
+        assert.deepEqual(c.volumeMounts.map((m: any) => m.name), spec.volumes.slice(0, 3).map((v: any) => v.name))
+    })
+
+    it('sets fsGroup so the non-root server reads the 0440 secrets and writes the data PVC', () =>
+    {
+        const spec = pod(Fixture.Items(false))
+        assert.equal(spec.securityContext.fsGroup, 10001)
+        assert.equal(spec.volumes[1].secret.defaultMode, 0o440)
+    })
+
+    it('backs the base dir with a standalone PVC, not volumeClaimTemplates, and keeps the db password ref', () =>
+    {
+        const items = Fixture.Items(true)
+        const pvc = items.find(i => i.kind === 'PersistentVolumeClaim')!
+        assert.equal(pvc.metadata.name, K8sManifestBuilder.ServerDataClaimNameOf('dev1'))
+        assert.equal(pvc.metadata.namespace, K8sManifestBuilder.NamespaceOf('dev1'))
+        assert.deepEqual(pvc.spec.accessModes, ['ReadWriteOnce'])
+        const dep = items.find(i => i.kind === 'Deployment')!
+        assert.equal(dep.spec.volumeClaimTemplates, undefined)
+        const sts = items.find(i => i.kind === 'StatefulSet')!
+        const pw = sts.spec.template.spec.containers[0].env.find((e: any) => e.name === 'POSTGRES_PASSWORD')
+        assert.equal(pw.valueFrom.secretKeyRef.name, 'db-pass-ref')
+        assert.equal(sts.spec.volumeClaimTemplates.length, 1)
+    })
+})
+
+describe('K8sManifestBuilder.RenderHiveAgent', () =>
+{
+    const Registry = 'http://host.docker.internal:7000'
+    const TokenSecret = 'agent-token-secret'
+    const HiveId = 'hive-a'
+
+    class HiveFixture
+    {
+        public static Items(): any[]
+        {
+            const doc = JSON.parse(new K8sManifestBuilder().RenderHiveAgent(HiveId, Registry, TokenSecret, K8sManifestBuilder.AgentImage))
+            assert.equal(doc.apiVersion, 'v1')
+            assert.equal(doc.kind, 'List')
+            return doc.items
+        }
+
+        public static Of(kind: string): any
+        {
+            const found = HiveFixture.Items().filter(i => i.kind === kind)
+            assert.equal(found.length, 1)
+            return found[0]
+        }
+    }
+
+    it('emits Namespace, SA, ClusterRole, ClusterRoleBinding and Deployment; all but the shared Namespace hive-labeled', () =>
+    {
+        const items = HiveFixture.Items()
+        assert.deepEqual(items.map(i => i.kind), ['Namespace', 'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Deployment'])
+        assert.equal(items[0].metadata.labels, undefined)
+        for (const i of items.slice(1))
+        {
+            assert.equal(i.metadata.labels['pragmatic/hive'], HiveId)
+            assert.equal(i.metadata.labels['pragmatic/environment'], undefined)
+        }
+        assert.equal(HiveFixture.Of('ClusterRole').metadata.namespace, undefined)
+        assert.equal(HiveFixture.Of('ClusterRoleBinding').metadata.namespace, undefined)
+    })
+
+    it('ClusterRole allows only get/list/patch on apps/deployments', () =>
+    {
+        const role = HiveFixture.Of('ClusterRole')
+        assert.equal(role.rules.length, 1)
+        assert.deepEqual(role.rules[0], { apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list', 'patch'] })
+    })
+
+    it('ClusterRoleBinding binds the ClusterRole to the service account', () =>
+    {
+        const crb = HiveFixture.Of('ClusterRoleBinding')
+        const sa = HiveFixture.Of('ServiceAccount')
+        const role = HiveFixture.Of('ClusterRole')
+        assert.deepEqual(crb.roleRef, { apiGroup: 'rbac.authorization.k8s.io', kind: 'ClusterRole', name: role.metadata.name })
+        assert.deepEqual(crb.subjects, [{ kind: 'ServiceAccount', name: sa.metadata.name, namespace: sa.metadata.namespace }])
+        assert.equal(sa.metadata.name, K8sManifestBuilder.HiveAgentNameOf(HiveId))
+        assert.equal(role.metadata.name, K8sManifestBuilder.HiveAgentNameOf(HiveId))
+    })
+
+    it('deployment env has hive id, registry url, secret token and no env name', () =>
+    {
+        const dep = HiveFixture.Of('Deployment')
+        const pod = dep.spec.template.spec
+        assert.equal(pod.serviceAccountName, K8sManifestBuilder.HiveAgentNameOf(HiveId))
+        const c = pod.containers[0]
+        assert.deepEqual(c.command, ['node', 'dist/bin/pragmatic-agentd.js'])
+        const byName = (n: string) => c.env.find((e: any) => e.name === n)
+        assert.equal(byName('PRAGMATIC_AGENT_HIVE_ID').value, HiveId)
+        assert.equal(byName('PRAGMATIC_AGENT_REGISTRY_URL').value, Registry)
+        assert.equal(byName('PRAGMATIC_AGENT_ENV_NAME'), undefined)
+        const token = byName('PRAGMATIC_AGENT_TOKEN')
+        assert.equal(token.value, undefined)
+        assert.equal(token.valueFrom.secretKeyRef.name, TokenSecret)
+    })
+
+    it('env server deployment carries the hive and environment labels on its metadata', () =>
+    {
+        const dep = Fixture.Items(false)[1]!
+        assert.equal(dep.metadata.labels!['pragmatic/hive'], HiveId)
+        assert.equal(dep.metadata.labels!['pragmatic/environment'], 'dev1')
+    })
+})
+
+describe('K8sManifestBuilder.RenderIdp', () =>
+{
+    const Spec: IdpWorkloadSpec = {
+        tenantId: 't1', hiveId: 'hive-a', image: 'pragmatic-server:dev', port: 9443,
+        adminTokenSecretName: 'idp-admin-secret', adminTokenRef: 'admin-token', tlsSecretName: 'idp-tls-secret',
+        database: { image: 'pragmatic-postgres:local', secretName: 'pragmatic-idp-t1-postgres' }
+    }
+
+    const Items = (): any[] => JSON.parse(new K8sManifestBuilder().RenderIdp(Spec)).items
+    const Of = (kind: string): any => Items().find((i: any) => i.kind === kind)
+    const Pod = (): any => Of('Deployment').spec.template.spec
+
+    it('emits Namespace, ServiceAccount, both PVCs, the Postgres ConfigMap, Deployment and Service, all hive-labeled', () =>
+    {
+        const items = Items()
+        assert.deepEqual(items.map(i => i.kind), ['Namespace', 'ServiceAccount', 'PersistentVolumeClaim', 'PersistentVolumeClaim', 'ConfigMap', 'Deployment', 'Service'])
+        for (const i of items)
+        {
+            assert.equal(i.metadata.labels['pragmatic/hive'], 'hive-a', i.kind)
+            assert.equal(i.metadata.labels['pragmatic/environment'], undefined, i.kind)
+        }
+        assert.equal(items[0].metadata.name, 'pragmatic-idp-t1')
+    })
+
+    it('with baseDomain the IdP Deployment env serves the split: BASE_URL=browser, INTERNAL_URL=internal', () =>
+    {
+        const dep = JSON.parse(new K8sManifestBuilder().RenderIdp({ ...Spec, baseDomain: 'd.localtest' })).items.find((i: any) => i.kind === 'Deployment')
+        const env = dep.spec.template.spec.containers[0].env as { name: string; value: string }[]
+        const val = (n: string): string | undefined => env.find(e => e.name === n)?.value
+        assert.equal(val('PRAGMATIC_IDP_BASE_URL'), K8sManifestBuilder.IdpBrowserUrlOf('t1', 'd.localtest'))
+        assert.equal(val('PRAGMATIC_IDP_INTERNAL_URL'), K8sManifestBuilder.IdpBaseUrlOf('t1', 9443))
+    })
+
+    it('without baseDomain the IdP Deployment env is single-host: BASE_URL=internal, no INTERNAL_URL', () =>
+    {
+        const dep = Items().find((i: any) => i.kind === 'Deployment')
+        const env = dep.spec.template.spec.containers[0].env as { name: string; value: string }[]
+        const val = (n: string): string | undefined => env.find(e => e.name === n)?.value
+        assert.equal(val('PRAGMATIC_IDP_BASE_URL'), K8sManifestBuilder.IdpBaseUrlOf('t1', 9443))
+        assert.equal(val('PRAGMATIC_IDP_INTERNAL_URL'), undefined)
+    })
+
+    it('with baseDomain emits exactly one ssl-passthrough nginx Ingress routing the browser host to the IdP Service', () =>
+    {
+        const items = JSON.parse(new K8sManifestBuilder().RenderIdp({ ...Spec, baseDomain: 'd.localtest' })).items
+        const ingresses = items.filter((i: any) => i.kind === 'Ingress')
+        assert.equal(ingresses.length, 1)
+        const ing = ingresses[0]
+        assert.equal(ing.apiVersion, 'networking.k8s.io/v1')
+        assert.equal(ing.metadata.namespace, 'pragmatic-idp-t1')
+        assert.equal(ing.metadata.annotations['nginx.ingress.kubernetes.io/ssl-passthrough'], 'true')
+        assert.equal(ing.spec.ingressClassName, 'nginx')
+        assert.equal(ing.spec.rules.length, 1)
+        assert.equal(ing.spec.rules[0].host, 'idp-t1.d.localtest')
+        const path = ing.spec.rules[0].http.paths[0]
+        assert.equal(path.path, '/')
+        assert.equal(path.pathType, 'Prefix')
+        assert.equal(path.backend.service.name, 'pragmatic-idp-t1')
+        assert.equal(path.backend.service.port.number, 9443)
+    })
+
+    it('IdP Ingress with TLS settings terminates and re-encrypts', () =>
+    {
+        const spec: IdpWorkloadSpec = { ...Spec, baseDomain: 'd.localtest', ingressTls: { source: IngressTlsSource.Development } }
+        const ing = JSON.parse(new K8sManifestBuilder().RenderIdp(spec)).items.find((i: any) => i.kind === 'Ingress')
+        assert.equal(ing.metadata.annotations['nginx.ingress.kubernetes.io/ssl-passthrough'], undefined)
+        assert.equal(ing.metadata.annotations['nginx.ingress.kubernetes.io/backend-protocol'], 'HTTPS')
+        assert.deepEqual(ing.spec.tls, [{ hosts: ['idp-t1.d.localtest'], secretName: 'pragmatic-dev-tls' }])
+        // The re-encrypt hop verifies the IdP certificate against the ca.crt in the IdP's own TLS Secret, by its Service-DNS name.
+        const a = ing.metadata.annotations
+        assert.equal(a['nginx.ingress.kubernetes.io/proxy-ssl-secret'], 'pragmatic-idp-t1/idp-tls-secret')
+        assert.equal(a['nginx.ingress.kubernetes.io/proxy-ssl-verify'], 'on')
+        assert.equal(a['nginx.ingress.kubernetes.io/proxy-ssl-name'], new URL(K8sManifestBuilder.IdpBaseUrlOf('t1', 9443)).hostname)
+        assert.equal(a['nginx.ingress.kubernetes.io/proxy-ssl-server-name'], 'on')
+    })
+
+    it('IdP Ingress with cert-manager carries the issuer annotation and a Secret distinct from the IdP key Secret', () =>
+    {
+        const spec: IdpWorkloadSpec = { ...Spec, baseDomain: 'd.localtest', ingressTls: { source: IngressTlsSource.CertManager, clusterIssuer: 'le' } }
+        const ing = JSON.parse(new K8sManifestBuilder().RenderIdp(spec)).items.find((i: any) => i.kind === 'Ingress')
+        assert.equal(ing.metadata.annotations['cert-manager.io/cluster-issuer'], 'le')
+        assert.equal(ing.spec.tls[0].secretName, 'pragmatic-idp-t1-ingress-tls')
+        assert.notEqual(ing.spec.tls[0].secretName, InClusterIdpSeedSource.TlsSecretNameOf('t1'))
+    })
+
+    it('IdP Ingress without TLS settings stays passthrough', () =>
+    {
+        const ing = JSON.parse(new K8sManifestBuilder().RenderIdp({ ...Spec, baseDomain: 'd.localtest' })).items.find((i: any) => i.kind === 'Ingress')
+        assert.equal(ing.metadata.annotations['nginx.ingress.kubernetes.io/ssl-passthrough'], 'true')
+        assert.equal(ing.metadata.annotations['nginx.ingress.kubernetes.io/backend-protocol'], undefined)
+        assert.equal(ing.spec.tls, undefined)
+    })
+
+    it('without baseDomain emits no Ingress', () =>
+    {
+        const items = Items()
+        assert.ok(items.every((i: any) => i.kind !== 'Ingress'))
+        assert.equal(items.length, 7)
+    })
+
+    it('IdpBrowserUrlOf is the idp-<tenant>.<baseDomain> browser origin, distinct from the internal base', () =>
+    {
+        assert.equal(K8sManifestBuilder.IdpBrowserUrlOf('t1', 'd.localtest'), 'https://idp-t1.d.localtest')
+        assert.equal(K8sManifestBuilder.IdpBrowserUrlOf('t1', 'd.localtest', 8443), 'https://idp-t1.d.localtest:8443')
+        assert.notEqual(K8sManifestBuilder.IdpBrowserUrlOf('t1', 'd.localtest'), K8sManifestBuilder.IdpBaseUrlOf('t1', 9443))
+    })
+
+    it('Service is ClusterIP and its DNS name matches IdpBaseUrlOf', () =>
+    {
+        const svc = Of('Service')
+        assert.equal(svc.spec.type, 'ClusterIP')
+        assert.equal(svc.spec.ports[0].port, 9443)
+        assert.equal(K8sManifestBuilder.IdpBaseUrlOf('t1', 9443), `https://${svc.metadata.name}.${svc.metadata.namespace}.svc.cluster.local:9443`)
+    })
+
+    it('carries secrets only as volume refs, never inline, and runs least-privilege', () =>
+    {
+        const raw = new K8sManifestBuilder().RenderIdp(Spec)
+        const pod = Pod()
+        const secretNames = pod.volumes.filter((v: any) => v.secret).map((v: any) => v.secret.secretName).sort()
+        assert.deepEqual(secretNames, ['idp-admin-secret', 'idp-tls-secret', 'pragmatic-idp-t1-postgres', 'pragmatic-idp-t1-postgres'])
+        assert.equal(pod.automountServiceAccountToken, false)
+        assert.equal(pod.securityContext.fsGroup, 1000)
+        assert.equal(pod.volumes.find((v: any) => v.secret).secret.defaultMode, 0o440)
+        const sc = pod.containers[0].securityContext
+        assert.equal(sc.runAsNonRoot, true)
+        assert.equal(sc.runAsUser, 1000)
+        assert.deepEqual(sc.capabilities.drop, ['ALL'])
+        assert.equal(sc.seccompProfile.type, 'RuntimeDefault')
+        assert.equal(pod.containers[0].securityContext.allowPrivilegeEscalation, false)
+        assert.equal(pod.containers[0].securityContext.readOnlyRootFilesystem, true)
+        const env = pod.containers[0].env
+        assert.ok(env.every((e: any) => e.valueFrom === undefined))
+        assert.equal(env.find((e: any) => e.name === 'PRAGMATIC_IDP_ADMIN_TOKEN_REF').value, 'admin-token')
+        assert.equal(env.find((e: any) => e.name === 'PRAGMATIC_IDP_BASE_URL').value, K8sManifestBuilder.IdpBaseUrlOf('t1', 9443))
+        assert.ok(!raw.includes('ClusterRole') && !raw.includes('RoleBinding'))
+    })
+
+    it('the IdP reads its database URL from the mounted url key only, never the passwords', () =>
+    {
+        const pod = Pod()
+        const idp = pod.containers[0]
+        const env = idp.env as { name: string; value: string }[]
+        assert.equal(env.find(e => e.name === 'PRAGMATIC_IDP_DATABASE_URL_FILE')?.value, '/run/secrets/pragmatic-tenant-idp-database/database-url')
+        const mount = idp.volumeMounts.find((m: any) => m.mountPath === '/run/secrets/pragmatic-tenant-idp-database')
+        assert.equal(mount.readOnly, true)
+        const volume = pod.volumes.find((v: any) => v.name === mount.name)
+        assert.equal(volume.secret.secretName, 'pragmatic-idp-t1-postgres')
+        assert.deepEqual(volume.secret.items, [{ key: 'database-url', path: 'database-url' }])
+    })
+
+    it('mounts the realm configuration ConfigMap optionally and read-only at the default configuration folder', () =>
+    {
+        const pod = Pod()
+        const mount = pod.containers[0].volumeMounts.find((m: any) => m.mountPath === '/etc/pragmatic/configuration')
+        assert.equal(mount.readOnly, true)
+        const volume = pod.volumes.find((v: any) => v.name === mount.name)
+        assert.deepEqual(volume.configMap, { name: 'pragmatic-config-pragmatic-tenant-idp', optional: true })
+    })
+
+    it('runs a pragmatic-postgres sidecar: non-root 999, read-only root, loopback only, data on its own claim', () =>
+    {
+        const pod = Pod()
+        assert.equal(pod.containers.length, 2)
+        const pg = pod.containers[1]
+        assert.equal(pg.name, 'postgres')
+        assert.equal(pg.image, 'pragmatic-postgres:local')
+        assert.deepEqual(pg.args, ['postgres', '-c', 'listen_addresses=127.0.0.1'])
+        assert.equal(pg.securityContext.runAsNonRoot, true)
+        assert.equal(pg.securityContext.runAsUser, 999)
+        assert.equal(pg.securityContext.runAsGroup, 999)
+        assert.equal(pg.securityContext.readOnlyRootFilesystem, true)
+        assert.equal(pg.securityContext.allowPrivilegeEscalation, false)
+        assert.deepEqual(pg.securityContext.capabilities.drop, ['ALL'])
+        assert.deepEqual(pg.env, [{ name: 'PGDATA', value: '/var/lib/postgresql/data/pgdata' }])
+        assert.equal(pg.ports, undefined)
+        const byPath = (path: string): any => pg.volumeMounts.find((m: any) => m.mountPath === path)
+        const volumeOf = (path: string): any => pod.volumes.find((v: any) => v.name === byPath(path).name)
+        assert.equal(volumeOf('/var/lib/postgresql/data').persistentVolumeClaim.claimName, 'pragmatic-idp-t1-postgres')
+        assert.ok(volumeOf('/var/run/postgresql').emptyDir)
+        assert.ok(volumeOf('/tmp').emptyDir)
+        assert.notEqual(byPath('/tmp').name, pod.containers[0].volumeMounts.find((m: any) => m.mountPath === '/tmp').name)
+        assert.equal(byPath('/etc/pragmatic-postgres').readOnly, true)
+        assert.equal(volumeOf('/etc/pragmatic-postgres').configMap.name, 'pragmatic-idp-t1-postgres')
+        assert.equal(byPath('/run/secrets/pragmatic-postgres').readOnly, true)
+        const secrets = volumeOf('/run/secrets/pragmatic-postgres').secret
+        assert.equal(secrets.secretName, 'pragmatic-idp-t1-postgres')
+        assert.deepEqual(secrets.items, [{ key: 'superuser', path: 'superuser' }, { key: 'password', path: 'applications/pragmatic-tenant-idp' }])
+        // The IdP container never sees the superuser or role password files.
+        assert.ok(!pod.containers[0].volumeMounts.some((m: any) => m.name === byPath('/run/secrets/pragmatic-postgres').name))
+    })
+
+    it('the Postgres ConfigMap names the one application; its own 1Gi claim sits beside the unchanged 256Mi data claim', () =>
+    {
+        const items = Items()
+        const config = items.find((i: any) => i.kind === 'ConfigMap')
+        assert.equal(config.metadata.name, 'pragmatic-idp-t1-postgres')
+        assert.equal(config.metadata.namespace, 'pragmatic-idp-t1')
+        assert.deepEqual(config.data, { 'applications.conf': 'pragmatic-tenant-idp tenant_idp tenant_idp\n' })
+        const claims = items.filter((i: any) => i.kind === 'PersistentVolumeClaim')
+        assert.deepEqual(claims.map((c: any) => [c.metadata.name, c.spec.resources.requests.storage]), [
+            ['pragmatic-idp-t1-data', '256Mi'],
+            ['pragmatic-idp-t1-postgres', '1Gi'],
+        ])
+    })
+})
+
+describe('K8sManifestBuilder server seed init-container', () =>
+{
+    class SeedFixture
+    {
+        public static Pod(): any
+        {
+            const deployment = Fixture.Items(false).find(i => i.kind === 'Deployment')!
+            return deployment.spec.template.spec
+        }
+    }
+
+    it('renders a hardened init-container keyed on environmentId, not environmentName', () =>
+    {
+        const pod = SeedFixture.Pod()
+        assert.equal(pod.initContainers.length, 1)
+        const init = pod.initContainers[0]
+        assert.equal(init.image, pod.containers[0].image)
+        const dest = '/pragmatic/data/env-dev1-id'
+        assert.ok(init.command.includes(dest))
+        assert.ok(!init.command.some((c: string) => c.includes('/pragmatic/data/dev1')))
+        const seedMount = init.volumeMounts.find((m: any) => m.mountPath === '/pragmatic/seed')
+        assert.equal(seedMount.readOnly, true)
+        const dataMount = init.volumeMounts.find((m: any) => m.mountPath === '/pragmatic/data')
+        assert.equal(dataMount.readOnly, undefined)
+        const dataVolume = pod.volumes.find((v: any) => v.name === dataMount.name)
+        assert.equal(dataVolume.persistentVolumeClaim.claimName, K8sManifestBuilder.ServerDataClaimNameOf('dev1'))
+        assert.equal(init.securityContext.runAsUser, 10001)
+        assert.equal(init.securityContext.readOnlyRootFilesystem, true)
+        assert.deepEqual(init.securityContext.capabilities.drop, ['ALL'])
+    })
+
+    it('guards the unpack on the .env-seeded marker', () =>
+    {
+        const init = SeedFixture.Pod().initContainers[0]
+        const script = init.command.find((c: string) => c.includes('.env-seeded'))
+        assert.ok(script)
+        assert.ok(script.includes('existsSync'))
+        assert.equal(init.command[init.command.length - 1], `/pragmatic/seed/${EnvServerSeedSource.SeedKey}`)
+    })
+
+    it('mounts a volume referencing the seed Secret', () =>
+    {
+        const pod = SeedFixture.Pod()
+        const init = pod.initContainers[0]
+        const mount = init.volumeMounts.find((m: any) => m.mountPath === '/pragmatic/seed')
+        const volume = pod.volumes.find((v: any) => v.name === mount.name)
+        assert.equal(volume.secret.secretName, EnvServerSeedSource.SeedSecretNameOf('dev1'))
+    })
+})
+
+describe('K8sManifestBuilder seed script behaviour', () =>
+{
+    class ScriptFixture
+    {
+        public static Run(dest: string, seed: string): ReturnType<typeof spawnSync>
+        {
+            return spawnSync(process.execPath, ['-e', K8sManifestBuilder.ServerSeedScript, dest, seed], { encoding: 'utf8' })
+        }
+
+        public static Seed(root: string, entries: Record<string, string>): string
+        {
+            const map: Record<string, string> = {}
+            for (const [k, v] of Object.entries(entries))
+            {
+                map[k] = Buffer.from(v).toString('base64')
+            }
+            const path = join(root, 'seed.json')
+            writeFileSync(path, JSON.stringify(map))
+            return path
+        }
+    }
+
+    it('unpacks nested entries and writes the marker on first run, then leaves modified files alone', () =>
+    {
+        const root = mkdtempSync(join(tmpdir(), 'seed-'))
+        const dest = join(root, 'data', 'env-1')
+        const seed = ScriptFixture.Seed(root, { 'packages/x/0.1.0/model.json': 'A', 'applications/x/application.json': 'B' })
+        assert.equal(ScriptFixture.Run(dest, seed).status, 0)
+        assert.equal(readFileSync(join(dest, 'packages/x/0.1.0/model.json'), 'utf8'), 'A')
+        assert.equal(readFileSync(join(dest, 'applications/x/application.json'), 'utf8'), 'B')
+        assert.ok(existsSync(join(dest, '.env-seeded')))
+        writeFileSync(join(dest, 'packages/x/0.1.0/model.json'), 'LIVE')
+        assert.equal(ScriptFixture.Run(dest, seed).status, 0)
+        assert.equal(readFileSync(join(dest, 'packages/x/0.1.0/model.json'), 'utf8'), 'LIVE')
+    })
+
+    it('rejects an escaping entry and writes no marker', () =>
+    {
+        const root = mkdtempSync(join(tmpdir(), 'seed-'))
+        const dest = join(root, 'data', 'env-1')
+        const seed = ScriptFixture.Seed(root, { '../escape': 'X' })
+        const result = ScriptFixture.Run(dest, seed)
+        assert.notEqual(result.status, 0)
+        assert.ok(!existsSync(join(dest, '.env-seeded')))
+        assert.ok(!existsSync(join(root, 'data', 'escape')))
+    })
+})
+
+class FederatedEnv
+{
+    public static Items(): any[]
+    {
+        return JSON.parse(new K8sManifestBuilder().Render({ ...Fixture.Workload(false), federation: { baseDomain: 'hive.test', caSecretName: 'dev1-idp-ca' } })).items
+    }
+}
+
+describe('K8sManifestBuilder federated served environment', () =>
+{
+    it('mounts a ca.crt-only Secret read-only and sets NODE_EXTRA_CA_CERTS to it (never the IdP server key)', () =>
+    {
+        const deployment = FederatedEnv.Items().find((i: any) => i.kind === 'Deployment')
+        const pod = deployment.spec.template.spec
+        const container = pod.containers[0]
+        assert.equal(container.env.find((e: any) => e.name === 'NODE_EXTRA_CA_CERTS').value, '/etc/idp-ca/ca.crt')
+        const mount = container.volumeMounts.find((m: any) => m.mountPath === '/etc/idp-ca')
+        assert.equal(mount.readOnly, true)
+        const volume = pod.volumes.find((v: any) => v.name === mount.name)
+        assert.equal(volume.secret.secretName, 'dev1-idp-ca')
+        assert.deepEqual(volume.secret.items, [{ key: 'ca.crt', path: 'ca.crt' }])
+        assert.ok(!JSON.stringify(deployment).includes('server.key'))
+    })
+
+    it('renders one TLS-TERMINATING Ingress for <environmentId>.<baseDomain> to the HTTP env Service', () =>
+    {
+        const ingresses = FederatedEnv.Items().filter((i: any) => i.kind === 'Ingress')
+        assert.equal(ingresses.length, 1)
+        const ing = ingresses[0]
+        // The env server speaks HTTP, so the ingress must TERMINATE TLS (tls section), NOT passthrough
+        // (passthrough would hand raw TLS to an HTTP backend and break the browser handshake).
+        assert.equal(ing.metadata.annotations?.['nginx.ingress.kubernetes.io/ssl-passthrough'], undefined)
+        assert.deepEqual(ing.spec.tls, [{ hosts: ['env-dev1-id.hive.test'] }])
+        assert.equal(ing.spec.ingressClassName, 'nginx')
+        assert.equal(ing.spec.rules[0].host, 'env-dev1-id.hive.test')
+        assert.equal(ing.spec.rules[0].http.paths[0].backend.service.name, K8sManifestBuilder.ServerDeploymentOf('dev1'))
+        assert.equal(ing.spec.rules[0].http.paths[0].backend.service.port.number, 8080)
+    })
+
+    it('env Ingress carries the TLS Secret and cert-manager annotation', () =>
+    {
+        const workload: EnvironmentWorkload = {
+            ...Fixture.Workload(false),
+            federation: { baseDomain: 'hive.test', caSecretName: 'dev1-idp-ca', ingressTls: { source: IngressTlsSource.CertManager, clusterIssuer: 'letsencrypt' } },
+        }
+        const ing = JSON.parse(new K8sManifestBuilder().Render(workload)).items.find((i: any) => i.kind === 'Ingress')
+        assert.equal(ing.metadata.annotations['cert-manager.io/cluster-issuer'], 'letsencrypt')
+        assert.equal(ing.spec.tls[0].secretName, `${K8sManifestBuilder.ServerDeploymentOf('dev1')}-ingress-tls`)
+        assert.deepEqual(ing.spec.tls[0].hosts, ['env-dev1-id.hive.test'])
+    })
+
+    it('env Ingress without TLS settings is unchanged', () =>
+    {
+        const ing = FederatedEnv.Items().find((i: any) => i.kind === 'Ingress')
+        assert.equal(ing.spec.tls[0].secretName, undefined)
+        assert.equal(ing.metadata.annotations, undefined)
+    })
+
+    it('a non-federated env has no Ingress, no CA mount and no NODE_EXTRA_CA_CERTS', () =>
+    {
+        const items = Fixture.Items(false)
+        assert.ok(items.every((i: any) => i.kind !== 'Ingress'))
+        const text = JSON.stringify(items)
+        assert.ok(!text.includes('NODE_EXTRA_CA_CERTS'))
+        assert.ok(!text.includes('/etc/idp-ca'))
+    })
+})
+
+describe('K8sManifestBuilder hive ids', () =>
+{
+    it('accepts lowercase RFC 1123 labels of at most 63 characters', () =>
+    {
+        for (const id of ['b', 'h1', 'acme-hive', 'default-pragmatic-hive', 'a'.repeat(K8sManifestBuilder.HiveIdMaxLength)])
+        {
+            assert.equal(K8sManifestBuilder.IsValidHiveId(id), true, id)
+        }
+    })
+
+    it('refuses ids that would widen a selector or break a name (=b, "b ", upper case, edge dashes, underscores, too long)', () =>
+    {
+        for (const id of ['', '=b', 'b ', ' b', 'b,c', 'B', '-b', 'b-', 'a_b', 'a.b', 'a/b', 'a'.repeat(K8sManifestBuilder.HiveIdMaxLength + 1), 'a'.repeat(63)])
+        {
+            assert.equal(K8sManifestBuilder.IsValidHiveId(id), false, JSON.stringify(id))
+            assert.throws(() => K8sManifestBuilder.AssertValidHiveId(id), InvalidRecordIdError)
+        }
+    })
+
+    it('caps the id at the tightest derived limit (34): the kind cluster name, and the agent name used as a label value', () =>
+    {
+        assert.equal(K8sManifestBuilder.HiveIdMaxLength, 34)
+        const longest = 'a'.repeat(K8sManifestBuilder.HiveIdMaxLength)
+        assert.ok(K8sManifestBuilder.HiveAgentNameOf(longest).length <= 63)
+        assert.doesNotThrow(() => KindClusterName.For(longest))
+        assert.throws(() => KindClusterName.For(longest + 'a'))
+        assert.match(String((() => { try { K8sManifestBuilder.AssertValidHiveId(longest + 'a') } catch (e) { return (e as Error).message } return '' })()), /at most 34 characters/)
+    })
+
+    it('never builds a selector for an unsafe id: pragmatic/hive==b would match hive b', () =>
+    {
+        assert.equal(K8sManifestBuilder.HiveLabelSelectorOf('b'), 'pragmatic/hive=b')
+        assert.throws(() => K8sManifestBuilder.HiveLabelSelectorOf('=b'), InvalidRecordIdError)
+        assert.throws(() => K8sManifestBuilder.HiveLabelSelectorOf('b '), InvalidRecordIdError)
+    })
+})

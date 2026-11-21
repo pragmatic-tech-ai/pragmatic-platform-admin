@@ -1,0 +1,246 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { KindHiveOrchestrator } from '../kind-hive-orchestrator.js'
+import type { IKind, KindClusterConfig } from '../kind.js'
+import type { IHiveOrchestrator, WorkloadHealth, EnvironmentWorkload } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import type { IKubectl } from '@pragmatic-tech-ai/pragmatic-kube'
+
+class FakeKind implements IKind
+{
+    public clusters: string[] = []
+    public created: string[] = []
+    public deleted: string[] = []
+    public loaded: { image: string; clusterName: string }[] = []
+    public failLoad = false
+
+    public async CreateCluster(name: string, _config?: KindClusterConfig): Promise<void>
+    {
+        this.created.push(name)
+        this.clusters.push(name)
+    }
+
+    public async DeleteCluster(name: string): Promise<void>
+    {
+        this.deleted.push(name)
+    }
+
+    public async ListClusters(): Promise<readonly string[]>
+    {
+        return this.clusters
+    }
+
+    public async LoadImage(image: string, clusterName: string): Promise<void>
+    {
+        if (this.failLoad)
+        {
+            throw new Error('load failed')
+        }
+        this.loaded.push({ image, clusterName })
+    }
+}
+
+class FakeInner implements IHiveOrchestrator
+{
+    public readonly Kubectl = undefined as unknown as IKubectl
+    public calls: string[] = []
+    public health: WorkloadHealth = { ready: true, runningImage: 'img:1', detail: 'ok' }
+
+    public async Apply(_w: EnvironmentWorkload): Promise<void>
+    {
+        this.calls.push('Apply')
+    }
+
+    public async WaitHealthy(_w: EnvironmentWorkload): Promise<void>
+    {
+        this.calls.push('WaitHealthy')
+    }
+
+    public async Health(_w: EnvironmentWorkload): Promise<WorkloadHealth>
+    {
+        this.calls.push('Health')
+        return this.health
+    }
+
+    public async Roll(_w: EnvironmentWorkload, _image: string): Promise<void>
+    {
+        this.calls.push('Roll')
+    }
+
+    public async ScaleDatabase(_w: EnvironmentWorkload, _replicas: number): Promise<void>
+    {
+        this.calls.push('ScaleDatabase')
+    }
+
+    public async Scale(_w: EnvironmentWorkload, _replicas: number): Promise<void>
+    {
+        this.calls.push('Scale')
+    }
+
+    public async Teardown(_w: EnvironmentWorkload): Promise<void>
+    {
+        this.calls.push('Teardown')
+    }
+
+    public async PrepareAgent(_image: string): Promise<void>
+    {
+        this.calls.push('PrepareAgent')
+    }
+}
+
+class Fixture
+{
+    public static readonly Cluster = 'hive-a'
+    public readonly kind = new FakeKind()
+    public readonly inner = new FakeInner()
+    public readonly sut = new KindHiveOrchestrator(this.kind, Fixture.Cluster, this.inner)
+    public static readonly Workload: EnvironmentWorkload = {
+        environmentName: 'dev',
+        environmentId: 'dev-id',
+        hiveId: 'h1',
+        image: 'pragmatic-server:dev',
+        serverPort: 8080,
+        env: {},
+        secretRefs: [],
+    }
+}
+
+test('Apply creates the cluster when absent then delegates Apply', async () =>
+{
+    const f = new Fixture()
+    await f.sut.Apply(Fixture.Workload)
+    assert.ok(f.kind.created.includes(Fixture.Cluster))
+    assert.ok(f.inner.calls.includes('Apply'))
+})
+
+test('Apply does not recreate when the cluster already exists', async () =>
+{
+    const f = new Fixture()
+    f.kind.clusters = [Fixture.Cluster]
+    await f.sut.Apply(Fixture.Workload)
+    assert.deepEqual(f.kind.created, [])
+    assert.ok(f.inner.calls.includes('Apply'))
+})
+
+test('Apply still delegates when the image load fails (best-effort: a registry-only image is pulled by the node)', async () =>
+{
+    const f = new Fixture()
+    f.kind.failLoad = true
+    await f.sut.Apply(Fixture.Workload)
+    assert.deepEqual(f.kind.loaded, [])
+    assert.ok(f.inner.calls.includes('Apply'))
+})
+
+test('Health returns not-ready without calling inner when the cluster is absent', async () =>
+{
+    const f = new Fixture()
+    const h = await f.sut.Health(Fixture.Workload)
+    assert.equal(h.ready, false)
+    assert.equal(h.runningImage, undefined)
+    assert.equal(h.detail, 'cluster not provisioned')
+    assert.ok(!f.inner.calls.includes('Health'))
+})
+
+test('Health delegates to inner when the cluster exists', async () =>
+{
+    const f = new Fixture()
+    f.kind.clusters = [Fixture.Cluster]
+    const h = await f.sut.Health(Fixture.Workload)
+    assert.ok(f.inner.calls.includes('Health'))
+    assert.equal(h, f.inner.health)
+})
+
+test('Teardown delegates to inner and never deletes the cluster', async () =>
+{
+    const f = new Fixture()
+    await f.sut.Teardown(Fixture.Workload)
+    assert.ok(f.inner.calls.includes('Teardown'))
+    assert.deepEqual(f.kind.deleted, [])
+})
+
+test('DestroyCluster deletes the cluster', async () =>
+{
+    const f = new Fixture()
+    await f.sut.DestroyCluster()
+    assert.ok(f.kind.deleted.includes(Fixture.Cluster))
+})
+
+test('Roll and WaitHealthy delegate to inner', async () =>
+{
+    const f = new Fixture()
+    await f.sut.Roll(Fixture.Workload, 'img:2')
+    await f.sut.WaitHealthy(Fixture.Workload)
+    assert.ok(f.inner.calls.includes('Roll'))
+    assert.ok(f.inner.calls.includes('WaitHealthy'))
+})
+
+test('Scale delegates to inner without ensuring the cluster', async () =>
+{
+    const f = new Fixture()
+    await f.sut.Scale(Fixture.Workload, 0)
+    assert.deepEqual(f.inner.calls, ['Scale'])
+    assert.deepEqual(f.kind.created, [])
+})
+
+test('ClusterName exposes the constructed name', () =>
+{
+    assert.equal(new Fixture().sut.ClusterName, Fixture.Cluster)
+})
+
+test('concurrent Apply on a fresh cluster creates it once', async () =>
+{
+    const f = new Fixture()
+    await Promise.all([f.sut.Apply(Fixture.Workload), f.sut.Apply(Fixture.Workload)])
+    assert.deepEqual(f.kind.created, [Fixture.Cluster])
+})
+
+test('Apply loads the workload image into the cluster before delegating Apply', async () =>
+{
+    const f = new Fixture()
+    const order: string[] = []
+    f.kind.LoadImage = async (image: string, clusterName: string) =>
+    {
+        order.push('LoadImage:' + image + '@' + clusterName)
+    }
+    f.inner.Apply = async () =>
+    {
+        order.push('Apply')
+    }
+    await f.sut.Apply(Fixture.Workload)
+    assert.deepEqual(order, ['LoadImage:pragmatic-server:dev@' + Fixture.Cluster, 'Apply'])
+})
+
+test('Apply is repeatable: a second Apply loads the image again without failing', async () =>
+{
+    const f = new Fixture()
+    f.kind.clusters = [Fixture.Cluster]
+    await f.sut.Apply(Fixture.Workload)
+    await f.sut.Apply(Fixture.Workload)
+    assert.equal(f.kind.loaded.length, 2)
+})
+
+test('PrepareAgent creates the cluster when absent and loads the agent image, without touching inner', async () =>
+{
+    const f = new Fixture()
+    await f.sut.PrepareAgent('pragmatic-server:dev')
+    assert.deepEqual(f.kind.created, [Fixture.Cluster])
+    assert.deepEqual(f.kind.loaded, [{ image: 'pragmatic-server:dev', clusterName: Fixture.Cluster }])
+    assert.deepEqual(f.inner.calls, [])
+})
+
+test('PrepareAgent reuses an existing cluster and tolerates a failed image load (best-effort)', async () =>
+{
+    const f = new Fixture()
+    f.kind.clusters = [Fixture.Cluster]
+    f.kind.failLoad = true
+    await f.sut.PrepareAgent('pragmatic-server:dev')
+    assert.deepEqual(f.kind.created, [])
+    assert.deepEqual(f.kind.loaded, [])
+})
+
+test('ScaleDatabase delegates to inner without ensuring the cluster', async () =>
+{
+    const f = new Fixture()
+    await f.sut.ScaleDatabase(Fixture.Workload, 1)
+    assert.deepEqual(f.inner.calls, ['ScaleDatabase'])
+    assert.deepEqual(f.kind.created, [])
+})
