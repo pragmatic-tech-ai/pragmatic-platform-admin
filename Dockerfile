@@ -53,14 +53,8 @@ RUN [ "sha256:$(sha256sum /component/component.json | cut -d ' ' -f 1)" = "$COMP
 
 # Production dependencies only; source maps and build info dropped.
 FROM compile AS build
-# Kept across the prune: esbuild @esbuild typescript, dev dependencies the runtime imports (TODL loads esbuild and typescript at
-# module load), stashed before it and restored after it.
-RUN set -e; mkdir /runtime-dev-stash; \
-    for pkg in esbuild @esbuild typescript; do cp -a "node_modules/$pkg" "/runtime-dev-stash/$pkg"; done; \
-    npm prune --omit=dev --no-audit --no-fund; \
-    for pkg in esbuild @esbuild typescript; do rm -rf "node_modules/$pkg"; cp -a "/runtime-dev-stash/$pkg" "node_modules/$pkg"; done; \
-    rm -rf /runtime-dev-stash; \
-    find . -type f \( -name '*.map' -o -name '*.tsbuildinfo' \) -delete
+RUN npm prune --omit=dev --no-audit --no-fund \
+    && find . -type f \( -name '*.map' -o -name '*.tsbuildinfo' \) -delete
 
 # The provisioning CLIs the admin drives remote targets with (spec D26): kubectl, kind and the docker CLI (client only;
 # no daemon runs in or next to admin). Each download is checked against a pinned sha256 for the build's TARGETARCH.

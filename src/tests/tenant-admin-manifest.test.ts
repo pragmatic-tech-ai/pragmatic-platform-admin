@@ -63,11 +63,12 @@ describe('K8sManifestBuilder.RenderTenantAdmin', () =>
         assert.equal(TenantAdminFixture.Of('Service').metadata.name, 'pragmatic-tenant-admin-acme')
     })
 
-    it('runs the tenant-admin entrypoint hardened: non-root, no caps, seccomp, read-only rootfs, API token mounted for the console', () =>
+    it('runs the tenant-admin image by its own ENTRYPOINT, hardened: non-root, no caps, seccomp, read-only rootfs, API token mounted for the console', () =>
     {
         const pod = TenantAdminFixture.Of('Deployment').spec.template.spec
         const c = pod.containers[0]
-        assert.deepEqual(c.command, ['node', 'dist-tenant-admin/admin/control-plane/bin/pragmatic-tenant-admind.js'])
+        assert.equal(c.command, undefined)
+        assert.equal(c.args, undefined)
         assert.equal(c.securityContext.runAsNonRoot, true)
         assert.equal(c.securityContext.allowPrivilegeEscalation, false)
         assert.deepEqual(c.securityContext.capabilities, { drop: ['ALL'] })
