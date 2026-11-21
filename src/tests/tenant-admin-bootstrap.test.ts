@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { inspect } from 'node:util'
 import { K8sManifestBuilder, TenantAdminDatabaseSecret, IdpDatabaseSecret, HiveBackend, InfraMode, type HiveRecord, type TenantRecord, IngressTlsSource, type IngressTls, TenantAdminEnv } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { TenantAdminBootstrap, type IHiveRegistrar, type TenantBootstrap, type TenantBootstrapInput } from '../tenant-admin-bootstrap.js'
+import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { DevPlatformImages } from '../platform-images.js'
 
 class FakeRegistrar implements IHiveRegistrar
 {
@@ -43,13 +45,13 @@ class BootstrapFixture
         const input: TenantBootstrapInput = {
             tenant: BootstrapFixture.Tenant(),
             hive: BootstrapFixture.Hive(),
-            tenantAdminImage: 'pragmatic-server:dev',
+            tenantAdminImage: 'pragmatic-tenant-admin:dev',
             tenantPlanePort: 8443,
             baseDomain: 'tenants.test',
             externalScheme: 'https',
             channelUrl: 'http://channel.example:7000',
             idp: {
-                image: 'pragmatic-server:dev', port: 9443, tlsSecretName: 'idp-tls', adminTokenSecretName: 'idp-admin', adminTokenRef: 'tok-ref',
+                image: 'pragmatic-tenant-idp:dev', port: 9443, tlsSecretName: 'idp-tls', adminTokenSecretName: 'idp-admin', adminTokenRef: 'tok-ref',
                 database: { image: 'pragmatic-postgres:idp', secretName: 'idp-db' },
             },
             trustRootPublicKey: BootstrapFixture.TrustRootPem,
@@ -159,6 +161,18 @@ describe('TenantAdminBootstrap.GenerateBootstrap', () =>
             K8sManifestBuilder.IdpNameOf('acme'),
             K8sManifestBuilder.TenantAdminNameOf('acme'),
         ].sort())
+    })
+
+    it('renders the hive agent from the given image, else from the dev image of the hive agent (never the env server image)', async () =>
+    {
+        const AgentImageOf = (b: TenantBootstrap): string =>
+            BootstrapFixture.Items(b.manifest).find(i => i.kind === 'Deployment' && i.metadata.name === K8sManifestBuilder.HiveAgentNameOf('hive-a')).spec.template.spec.containers[0].image
+        const dev = await new TenantAdminBootstrap(new FakeRegistrar()).GenerateBootstrap(BootstrapFixture.Input())
+        assert.equal(AgentImageOf(dev), DevPlatformImages.Of(ReleaseApp.HiveAgent))
+        assert.equal(AgentImageOf(dev), 'pragmatic-hive-agent:dev')
+        const pinned = 'ghcr.io/pragmatic-tech-ai/pragmatic-hive-agent@sha256:' + 'a'.repeat(64)
+        const release = await new TenantAdminBootstrap(new FakeRegistrar()).GenerateBootstrap({ ...BootstrapFixture.Input(), agentImage: pinned })
+        assert.equal(AgentImageOf(release), pinned)
     })
 
     it('the manifest carries secret REFS only: no Secret objects and no secret bytes', async () =>

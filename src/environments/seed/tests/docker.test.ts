@@ -2,6 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ChildProcessSpawn, DockerEnv, EnvKind, EnvironmentPurposeName, type IProcessSpawn } from '../docker.js'
 import { type ILogProcess, EnvConventions } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { DevPlatformImages } from '../../../platform-images.js'
 
 const Demo = { name: 'demo', kind: EnvKind.Demo, environmentId: 'contoso', purpose: EnvironmentPurposeName.Runtime, hostPort: 8081 }
 
@@ -15,6 +17,20 @@ test('RunArgs maps bundle + env + port into a correct docker run invocation', ()
     assert.ok(args.some(a => a === 'PRAGMATIC_ENVIRONMENTS_FILE=/cfg/environments.json'))
     assert.ok(args.includes(DockerEnv.ImageName))
     assert.ok(args.includes('-v') && args.some(a => a.includes(EnvConventions.VolumeName(Demo))))
+})
+
+test('the local environments run the env server dev image, the one the platform images name', () =>
+{
+    assert.equal(DockerEnv.ImageName, DevPlatformImages.Of(ReleaseApp.EnvServer))
+})
+
+test('BuildCommand names the dev image builder of pragmatic-e2e for pragmatic-env-server, not a monorepo Dockerfile', () =>
+{
+    const text = DockerEnv.BuildCommand()
+    assert.ok(text.includes('npx tsx src/dev/dev-images.ts pragmatic-env-server'), text)
+    assert.ok(text.includes('pragmatic-e2e'), text)
+    assert.ok(!text.includes('docker/Dockerfile'), text)
+    assert.ok(!text.includes('pragmatic-server/'), text)
 })
 
 test('container and volume names are environment-scoped and distinct across envs', () =>

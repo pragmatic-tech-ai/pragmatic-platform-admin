@@ -287,7 +287,7 @@ describe('K8sManifestBuilder.RenderHiveAgent', () =>
 describe('K8sManifestBuilder.RenderIdp', () =>
 {
     const Spec: IdpWorkloadSpec = {
-        tenantId: 't1', hiveId: 'hive-a', image: 'pragmatic-server:dev', port: 9443,
+        tenantId: 't1', hiveId: 'hive-a', image: 'pragmatic-tenant-idp:dev', port: 9443,
         adminTokenSecretName: 'idp-admin-secret', adminTokenRef: 'admin-token', tlsSecretName: 'idp-tls-secret',
         database: { image: 'pragmatic-postgres:local', secretName: 'pragmatic-idp-t1-postgres' }
     }

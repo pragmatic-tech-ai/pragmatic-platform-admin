@@ -82,6 +82,8 @@ class SigningFx
 {
     public static readonly PlatformKey = 'platform-signing'
     public static readonly Workload = { ...Fx.Workload, image: 'pragmatic-server:dev' } as unknown as EnvironmentWorkload
+    /** A workload deploying an app: its pod also runs the UI unpack init container from its own (dev) image. */
+    public static readonly AppWorkload = { ...SigningFx.Workload, appDeployment: { appName: 'northwind', unpackImage: 'pragmatic-ui-unpack:dev' } } as unknown as EnvironmentWorkload
     public static readonly Hive = { id: 'h1', registry: { mode: InfraMode.Attach, endpoint: 'reg.local:5000' }, trustRootRef: 'platform-signing' } as unknown as HiveRecord
     public static readonly OwnKeyHive = { id: 'h1', registry: { mode: InfraMode.Attach }, trustRootRef: 'acme-key' } as unknown as HiveRecord
     public static readonly UntrustedHive = { id: 'h1', registry: { mode: InfraMode.Attach } } as unknown as HiveRecord
@@ -211,6 +213,17 @@ test('BringUp signs the server image, as the hive pulls it, with the platform ke
     await h.Runtime.BringUp(h.Ctx)
     assert.deepEqual(signer.Signed, [['reg.local:5000/pragmatic-server:dev', 'platform-signing']])
     assert.deepEqual(h.Orchestrator.Order.slice(0, 2), ['Sign', 'Apply'])
+})
+
+test('BringUp signs the UI unpack image beside the server image, as the hive pulls both, for a workload deploying an app', async () =>
+{
+    const signer = new FakeSigner()
+    const h = new Harness(true, SigningFx.AppWorkload, SigningFx.Hive, signer)
+    signer.Log = h.Orchestrator.Order
+    await h.Runtime.Prepare(h.Ctx)
+    await h.Runtime.BringUp(h.Ctx)
+    assert.deepEqual(signer.Signed, [['reg.local:5000/pragmatic-server:dev', 'platform-signing'], ['reg.local:5000/pragmatic-ui-unpack:dev', 'platform-signing']])
+    assert.deepEqual(h.Orchestrator.Order.slice(0, 3), ['Sign', 'Sign', 'Apply'])
 })
 
 test('BringUp signs nothing for a hive with its own trust root or none, or with no signer composed', async () =>

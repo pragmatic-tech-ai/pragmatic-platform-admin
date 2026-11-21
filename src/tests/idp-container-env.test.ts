@@ -26,7 +26,7 @@ class FakeExec implements IDockerExec
 
 class Fixture
 {
-    public static readonly Spec: IdpContainerSpec = { tenantId: 't1', port: 9443, volumeName: 'idp-t1-data', adminTokenRef: 'admin.token', image: 'pragmatic-server:dev' }
+    public static readonly Spec: IdpContainerSpec = { tenantId: 't1', port: 9443, volumeName: 'idp-t1-data', adminTokenRef: 'admin.token', image: 'pragmatic-tenant-idp:dev' }
 }
 
 class TlsFixture
@@ -75,7 +75,7 @@ test('RunArgs builds the exact docker run argv', () =>
         '-e', 'PRAGMATIC_IDP_DATA=/idp-data',
         '-e', 'PRAGMATIC_IDP_ADMIN_TOKEN_REF=admin.token',
         '-e', 'PRAGMATIC_IDP_DATABASE_URL_FILE=/idp-data/secrets/database-url',
-        'pragmatic-server:dev', 'dist/bin/pragmatic-idpd.js'
+        'pragmatic-tenant-idp:dev', 'dist/bin/pragmatic-idpd.js'
     ])
 })
 

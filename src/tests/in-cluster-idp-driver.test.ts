@@ -76,7 +76,7 @@ class FakeSeeds implements IIdpSeedSource
 
 describe('InClusterIdpDriver', () =>
 {
-    const Make = (kubectl: FakeKubectl) => new InClusterIdpDriver(kubectl, new K8sManifestBuilder(), new FakeSeeds(), 'hive-a', 'pragmatic-server:dev')
+    const Make = (kubectl: FakeKubectl) => new InClusterIdpDriver(kubectl, new K8sManifestBuilder(), new FakeSeeds(), 'hive-a', 'pragmatic-tenant-idp:dev')
 
     it('browserBaseUrl is the idp-<tenant>.<baseDomain> origin when the seed source carries a baseDomain', async () =>
     {

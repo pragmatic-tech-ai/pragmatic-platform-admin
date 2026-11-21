@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { ConsoleFingerprintKeys, IdpDatabaseSecret, type IdpDatabaseSpec, type IdpWorkloadSpec, K8sManifestBuilder, type HiveRecord, type TenantRecord, TenantAdminDatabaseSecret, type TenantAdminWorkloadSpec, type TenantConsoleExposure, type TenantDirectorySeed } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
-import type { VerifiedImage } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { ReleaseApp, type VerifiedImage } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { DevPlatformImages } from './platform-images.js'
 
 /** The slice of the platform deployment registry bootstrap needs: mint a hive's one-time agent bearer. */
 export interface IHiveRegistrar
@@ -22,7 +23,7 @@ export interface TenantBootstrapInput
     /** The tenant's organisation name, seeded into the hive read-model when known. */
     organisation?: string
     tenantAdminImage: string
-    /** The hive agent's image when this bootstrap renders the agent (no reused token); the dev image when unset. */
+    /** The hive agent's image when this bootstrap renders the agent (no reused token); the hive agent's dev image when unset. */
     agentImage?: string
     tenantPlanePort: number
     baseDomain: string
@@ -399,7 +400,7 @@ export class TenantAdminBootstrap
             }
         }
         // A reused token means the hive agent already runs: re-applying it would revert its Deployment and RBAC.
-        const rendered = input.reuseAgentToken === true ? [] : [this.manifests.RenderHiveAgent(hive.id, input.channelUrl, agentTokenSecretName, input.agentImage ?? K8sManifestBuilder.AgentImage)]
+        const rendered = input.reuseAgentToken === true ? [] : [this.manifests.RenderHiveAgent(hive.id, input.channelUrl, agentTokenSecretName, input.agentImage ?? DevPlatformImages.Of(ReleaseApp.HiveAgent))]
         if (input.idp !== undefined && idpDatabase !== undefined)
         {
             const { image, port, tlsSecretName, adminTokenSecretName, adminTokenRef } = input.idp

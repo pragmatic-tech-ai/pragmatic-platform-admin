@@ -1,4 +1,4 @@
-import type { EnvironmentWorkload, IHiveOrchestrator, WorkloadHealth } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { EnvironmentWorkloadFactory, type EnvironmentWorkload, type IHiveOrchestrator, type WorkloadHealth } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import type { IKind } from './kind.js'
 import type { IKubectl } from '@pragmatic-tech-ai/pragmatic-kube'
 
@@ -30,10 +30,14 @@ export class KindHiveOrchestrator implements IHiveOrchestrator
     public async Apply(w: EnvironmentWorkload): Promise<void>
     {
         await this.EnsureCluster()
-        // Best-effort: load a locally built image into the node so kind can run it without a registry (repeatable,
-        // so re-Apply is safe). A registry-only image has no local copy to load; the node pulls it instead, so a
-        // load failure must not gate Apply - the workload's real reachability surfaces through Health.
-        await this.LoadImageBestEffort(w.image)
+        // Best-effort: load each locally built image the pod runs (the server and, with an app deployment, the UI unpack
+        // init container) into the node so kind can run it without a registry (repeatable, so re-Apply is safe). A
+        // registry-only image has no local copy to load; the node pulls it instead, so a load failure must not gate
+        // Apply - the workload's real reachability surfaces through Health.
+        for (const image of EnvironmentWorkloadFactory.ImagesOf(w))
+        {
+            await this.LoadImageBestEffort(image)
+        }
         await this.inner.Apply(w)
     }
 

@@ -1,6 +1,8 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { get } from 'node:http'
 import { EnvironmentPurposeName, type EnvDefinition, type EnvDatabase, EnvConventions, type ILogProcess } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { DevPlatformImages } from '../../platform-images.js'
 
 export { EnvKind, EnvironmentPurposeName } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 export type { EnvDefinition } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
@@ -76,7 +78,10 @@ export class ChildProcessSpawn implements IProcessSpawn
  */
 export class DockerEnv
 {
-    public static readonly ImageName = 'pragmatic-server:dev'
+    /** The env server's dev image (pragmatic-e2e's dev image builder bakes it from pragmatic-env-server). */
+    public static readonly ImageName = DevPlatformImages.EnvServerImage
+    /** The command that builds it, run from the pragmatic-e2e checkout. */
+    public static readonly BuildCommandText = 'npx tsx src/dev/dev-images.ts ' + ReleaseApp.EnvServer
 
     private static readonly Docker = 'docker'
     private static readonly InternalPort = '8080'
@@ -144,8 +149,8 @@ export class DockerEnv
     private static readonly HealthTimeoutMessage = 'Server did not become healthy in time on port '
     private static readonly ContainerExitedMessage = 'Container exited before becoming healthy: '
 
-    private static readonly BuildHintPrefix = 'Image not found. Build it once with BuildKit from the workspace root architecture-agent/, which holds all sibling packages:\n  DOCKER_BUILDKIT=1 docker build -f pragmatic-server/docker/Dockerfile --secret id=npmrc,src=<path-to>/.npmrc -t '
-    private static readonly BuildHintSuffix = ' .'
+    private static readonly ImageNotFoundPrefix = 'Image not found. '
+    private static readonly BuildHintPrefix = 'Build it once from the pragmatic-env-server bake with the dev image builder of pragmatic-e2e, run from the pragmatic-e2e checkout (the container repositories checked out beside it, or in PRAGMATIC_E2E_REPOS_DIR):\n  '
     private static readonly VolumeCmd = 'volume'
     private static readonly VersionCmd = 'version'
     private static readonly DaemonUnreachableMessage = 'Docker daemon is unreachable. Start Docker and try again.'
@@ -238,7 +243,7 @@ export class DockerEnv
     /** The full one-time build command (the same text EnsureImage prints). */
     public static BuildCommand(): string
     {
-        return `${DockerEnv.BuildHintPrefix}${DockerEnv.ImageName}${DockerEnv.BuildHintSuffix}`
+        return DockerEnv.BuildHintPrefix + DockerEnv.BuildCommandText
     }
 
     /** Throws when the docker CLI/daemon is unreachable (distinguishes daemon-down from image-missing). */
@@ -281,7 +286,7 @@ export class DockerEnv
         }
     }
 
-    /** Checks the image exists; if not, prints the one-time BuildKit command (never builds: the build needs a secret). */
+    /** Checks the image exists; if not, prints the one-time build command (never builds: the build needs a secret and the sibling checkouts). */
     public async EnsureImage(): Promise<boolean>
     {
         try
@@ -291,7 +296,7 @@ export class DockerEnv
         }
         catch
         {
-            console.error(DockerEnv.BuildCommand())
+            console.error(DockerEnv.ImageNotFoundPrefix + DockerEnv.BuildCommand())
             return false
         }
     }

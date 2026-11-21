@@ -44,7 +44,7 @@ import { HiveRegistry } from './hive-registry.js'
 import { PlatformDirectory } from './platform-directory.js'
 import { TenantRegistry } from './tenant-registry.js'
 import { UiDeployActuator } from './ui-deploy-actuator.js'
-import { OciRegistryClient, UiArtifactSigner, FileKeyStore, type IKeyStore, type IImageSigner, type IImageDigest, ImageSigner, type ISignatureStore } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { OciRegistryClient, ReleaseApp, UiArtifactSigner, FileKeyStore, type IKeyStore, type IImageSigner, type IImageDigest, ImageSigner, type ISignatureStore } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { KeyStores } from './key-stores.js'
 import { PinnedKeyStore } from './pinned-key-store.js'
 import { ManifestSigner, type IManifestSigner } from './manifest-signer.js'
@@ -275,7 +275,7 @@ export class ControlPlaneServer
         const proxy = new AdminProxy(new WsAdminConnector())
         const idpService = new IdpService(new IdpRegistry(await database.Map(PlatformAdminRegistry.Idps)), noDocker
             ? new NoTargetIdpDriver()
-            : new DockerIdpDriver(new PortAllocator(ControlPlaneServer.IdpPortFloor, new NetPortProbe()), new IdpContainerEnv(new ExecFileDockerExec()), dataRoot, DockerEnv.ImageName))
+            : new DockerIdpDriver(new PortAllocator(ControlPlaneServer.IdpPortFloor, new NetPortProbe()), new IdpContainerEnv(new ExecFileDockerExec()), dataRoot, DevPlatformImages.Of(ReleaseApp.TenantIdp)))
         const orchestrators = ControlPlaneServer.OrchestratorsOf(infra, dataRoot, digests, signatures)
         const placement = new EnvironmentPlacement(directory)
         // In-cluster environments are reached through pooled kubectl port-forwards; every tunnel dies with the process.

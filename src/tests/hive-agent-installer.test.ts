@@ -2,9 +2,9 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { type IInstallClock, KubectlError, type IKubectl } from '@pragmatic-tech-ai/pragmatic-kube'
 import { AgentInstallInProgressError, AgentInstallUnavailableError, HiveAgentInstaller, InstallState, InstallStep } from '../hive-agent-installer.js'
-import { type IHiveOrchestrator, type WorkloadHealth, type EnvironmentWorkload, K8sManifestBuilder, HiveBackend, InfraMode, type HiveRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { type IHiveOrchestrator, type WorkloadHealth, type EnvironmentWorkload, HiveBackend, InfraMode, type HiveRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
-import { type IPlatformImages, PlatformImages } from '../platform-images.js'
+import { DevPlatformImages, type IPlatformImages, PlatformImages } from '../platform-images.js'
 import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 
 class FixedImages implements IPlatformImages
@@ -282,7 +282,7 @@ describe('HiveAgentInstaller', () =>
         assert.equal(done?.step, InstallStep.WaitingForCheckIn)
         assert.ok(done?.finishedAt !== undefined)
         assert.equal(done?.error, undefined)
-        assert.deepEqual(fx.Orchestrators.Orchestrator.Prepared, [K8sManifestBuilder.AgentImage])
+        assert.deepEqual(fx.Orchestrators.Orchestrator.Prepared, [DevPlatformImages.Of(ReleaseApp.HiveAgent)])
         // The token Secret goes server-side; the restart covers every deployment reading it (agent and tenant-admin).
         assert.deepEqual(fx.Kubectl.Calls, [['Apply'], ['ApplyServerSide'], ['RolloutRestartSelector', 'pragmatic-system', 'pragmatic/hive=h1']])
         const agent = JSON.parse(fx.Kubectl.Applied[0]!) as { kind: string; items: { kind: string }[] }

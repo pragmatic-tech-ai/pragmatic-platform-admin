@@ -1,4 +1,4 @@
-import { K8sManifestBuilder, ReleaseState, type ManifestRecord, type ManifestRegistry } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { ReleaseState, type ManifestRecord, type ManifestRegistry } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { ReleaseRegistry, ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 
 /** Where the platform's own images (the hive agent, the console's tenant-admin and IdP) come from. */
@@ -18,15 +18,37 @@ export class PlatformImages
     }
 }
 
-/** A development box: every platform app runs the locally built server image, as before releases existed; the console's Postgres the locally built pragmatic-postgres. */
+/**
+ * A development box: each platform app runs its own locally built image, `<app>:dev`, built from that app's container
+ * repository by pragmatic-e2e's dev image builder (`src/dev/dev-images.ts`). Two keep the names the code already uses:
+ * the env server is `pragmatic-server:dev`, the name the tenant plane renders for every environment workload (so this
+ * map and what an environment runs cannot disagree), and Postgres is `pragmatic-postgres:local`.
+ */
 export class DevPlatformImages implements IPlatformImages
 {
-    /** The locally built pragmatic-postgres (docker/postgres: `docker build -t pragmatic-postgres:local`, then `kind load`). */
+    /** The env server's dev image: the tenant plane's EnvironmentWorkloadFactory names it for every environment. */
+    public static readonly EnvServerImage = 'pragmatic-server:dev'
+    /** The locally built pragmatic-postgres (its repository's bake, tagged by pragmatic-e2e's dev image builder). */
     public static readonly PostgresImage = 'pragmatic-postgres:local'
+    private static readonly DevTagSuffix = ':dev'
 
-    public ImageOf(app: ReleaseApp): string | undefined
+    public ImageOf(app: ReleaseApp): string
     {
-        return app === ReleaseApp.Postgres ? DevPlatformImages.PostgresImage : K8sManifestBuilder.AgentImage
+        return DevPlatformImages.Of(app)
+    }
+
+    /** The dev image of `app` (see the class comment). */
+    public static Of(app: ReleaseApp): string
+    {
+        switch (app)
+        {
+            case ReleaseApp.EnvServer:
+                return DevPlatformImages.EnvServerImage
+            case ReleaseApp.Postgres:
+                return DevPlatformImages.PostgresImage
+            default:
+                return app + DevPlatformImages.DevTagSuffix
+        }
     }
 }
 

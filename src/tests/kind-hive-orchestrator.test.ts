@@ -102,6 +102,14 @@ class Fixture
         env: {},
         secretRefs: [],
     }
+    public static readonly UnpackImage = 'pragmatic-ui-unpack:dev'
+    public static readonly AppWorkload: EnvironmentWorkload = {
+        ...Fixture.Workload,
+        appDeployment: {
+            appName: 'northwind', appVersion: '1.0.0', registryPullBase: 'http://registry.local:5000', repo: 'apps/northwind', artifactTag: '1.0.0',
+            manifestDigest: 'sha256:' + 'b'.repeat(64), trustSecretName: 'ui-trust', trustKeyRef: '', unpackImage: Fixture.UnpackImage,
+        },
+    }
 }
 
 test('Apply creates the cluster when absent then delegates Apply', async () =>
@@ -207,6 +215,38 @@ test('Apply loads the workload image into the cluster before delegating Apply', 
     }
     await f.sut.Apply(Fixture.Workload)
     assert.deepEqual(order, ['LoadImage:pragmatic-server:dev@' + Fixture.Cluster, 'Apply'])
+})
+
+test('Apply loads the UI unpack image beside the server image for a workload with an app deployment, before delegating', async () =>
+{
+    const f = new Fixture()
+    const order: string[] = []
+    f.kind.LoadImage = async (image: string, clusterName: string) =>
+    {
+        order.push('LoadImage:' + image + '@' + clusterName)
+    }
+    f.inner.Apply = async () =>
+    {
+        order.push('Apply')
+    }
+    await f.sut.Apply(Fixture.AppWorkload)
+    assert.deepEqual(order, ['LoadImage:pragmatic-server:dev@' + Fixture.Cluster, 'LoadImage:pragmatic-ui-unpack:dev@' + Fixture.Cluster, 'Apply'])
+})
+
+test('Apply still delegates when only the unpack image fails to load (each load is best-effort on its own)', async () =>
+{
+    const f = new Fixture()
+    f.kind.LoadImage = async (image: string, clusterName: string) =>
+    {
+        if (image === Fixture.UnpackImage)
+        {
+            throw new Error('load failed')
+        }
+        f.kind.loaded.push({ image, clusterName })
+    }
+    await f.sut.Apply(Fixture.AppWorkload)
+    assert.deepEqual(f.kind.loaded, [{ image: 'pragmatic-server:dev', clusterName: Fixture.Cluster }])
+    assert.ok(f.inner.calls.includes('Apply'))
 })
 
 test('Apply is repeatable: a second Apply loads the image again without failing', async () =>

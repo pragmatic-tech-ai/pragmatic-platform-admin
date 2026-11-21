@@ -33,9 +33,6 @@ export class SeedCli
     private static readonly LocalHost = '127.0.0.1'
     private static readonly PortSeparator = ':'
     private static readonly MissingSecretPrefix = 'missing secret in provisioned-secrets.json: '
-    private static readonly BuildCommandPrefix = 'DOCKER_BUILDKIT=1 docker build -f pragmatic-server/docker/Dockerfile --secret id=npmrc,src=<path-to>/.npmrc -t '
-    private static readonly BuildCommandSuffix = ' .'
-    private static readonly BuildNote = 'Run from the workspace root architecture-agent/, which holds all sibling packages:\n  '
     private static readonly SeedingUsersMessage = 'Seeding demo users...'
     private static readonly NoUserSeedingMessage = 'User seeding applies to the demo environment only; skipping for '
     private static readonly ImageMissingMessage = 'Server image not found: build the image first (see the hint above), then re-run.'
@@ -121,7 +118,7 @@ export class SeedCli
                 await SeedCli.SeedDemoUsers(def)
                 break
             case Command.Build:
-                console.log(SeedCli.BuildNote + SeedCli.BuildCommandPrefix + DockerEnv.ImageName + SeedCli.BuildCommandSuffix)
+                console.log(DockerEnv.BuildCommand())
                 break
         }
     }

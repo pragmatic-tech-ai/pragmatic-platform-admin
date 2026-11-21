@@ -4,7 +4,16 @@ Two Docker-backed environment server environments: a development environment (`d
 
 ## One-time image build
 
-The environments run the environment server image `pragmatic-server:dev`, built from the legacy `docker/Dockerfile` that now lives in the `pragmatic-env-server` repository (see its README). The `build` command and the missing-image hint still print the pre-split monorepo command (unchanged in the split).
+The environments run the environment server's dev image `pragmatic-server:dev` (the name the tenant plane gives every
+environment workload), baked from the `pragmatic-env-server` repository by the dev image builder of `pragmatic-e2e`.
+From the `pragmatic-e2e` checkout, with the container repositories checked out beside it (or in
+`PRAGMATIC_E2E_REPOS_DIR`):
+
+```
+npx tsx src/dev/dev-images.ts pragmatic-env-server
+```
+
+The `build` command and the missing-image hint print the same command.
 
 ## Bring-up
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ManifestRegistry, ReleaseState, type ManifestRecord, K8sManifestBuilder } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { EnvironmentWorkloadFactory, EnvStatus, EnvType, K8sManifestBuilder, ManifestRegistry, ReleaseState, Template, type EnvironmentRecord, type HiveRecord, type ManifestRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { DevPlatformImages, ReleasePlatformImages } from '../platform-images.js'
 import { ReleaseApp, ReleaseApps } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 
@@ -62,6 +62,11 @@ class Releases
     }
 }
 
+class DevImagesFx
+{
+    public static readonly AppDeployment = { appName: 'northwind', appVersion: '1.0.0', repo: 'apps/northwind', artifactTag: '1.0.0', manifestDigest: 'sha256:' + 'b'.repeat(64) } as unknown as NonNullable<EnvironmentRecord['appDeployment']>
+}
+
 describe('ReleasePlatformImages', () =>
 {
     it('returns the by-digest hive-agent reference of the newest verified release', async () =>
@@ -98,14 +103,43 @@ describe('ReleasePlatformImages', () =>
 
 describe('DevPlatformImages', () =>
 {
-    it('returns pragmatic-server:dev for every app but pragmatic-postgres, which is the locally built pragmatic-postgres:local', () =>
+    it('maps each release app to its own locally built dev image (the dev image builder of pragmatic-e2e tags them)', () =>
     {
         const images = new DevPlatformImages()
+        const expected = new Map<ReleaseApp, string>([
+            [ReleaseApp.PlatformAdmin, 'pragmatic-platform-admin:dev'],
+            [ReleaseApp.PlatformEdge, 'pragmatic-platform-edge:dev'],
+            [ReleaseApp.EnvServer, 'pragmatic-server:dev'],
+            [ReleaseApp.EnvGateway, 'pragmatic-env-gateway:dev'],
+            [ReleaseApp.HiveAgent, 'pragmatic-hive-agent:dev'],
+            [ReleaseApp.TenantAdmin, 'pragmatic-tenant-admin:dev'],
+            [ReleaseApp.TenantIdp, 'pragmatic-tenant-idp:dev'],
+            [ReleaseApp.UiUnpack, 'pragmatic-ui-unpack:dev'],
+            [ReleaseApp.Postgres, 'pragmatic-postgres:local'],
+        ])
+        assert.deepEqual([...expected.keys()].sort(), [...ReleaseApps.All].sort())
         for (const app of ReleaseApps.All)
         {
-            assert.equal(images.ImageOf(app), app === ReleaseApp.Postgres ? DevPlatformImages.PostgresImage : K8sManifestBuilder.AgentImage, app)
+            assert.equal(images.ImageOf(app), expected.get(app), app)
+            assert.equal(DevPlatformImages.Of(app), expected.get(app), app)
         }
-        assert.equal(DevPlatformImages.PostgresImage, 'pragmatic-postgres:local')
-        assert.equal(K8sManifestBuilder.AgentImage, 'pragmatic-server:dev')
+    })
+
+    it('names the env server and the UI unpacker as the tenant plane renders an environment workload, so both agree', () =>
+    {
+        const record: EnvironmentRecord = { name: 'e1', type: EnvType.Runtime, template: Template.DevBlank, environmentId: 'env-1', hiveId: 'h1', hostPort: 8080, createdAt: 'now', status: EnvStatus.Running, appDeployment: DevImagesFx.AppDeployment }
+        const workload = EnvironmentWorkloadFactory.From(record, { id: 'h1' } as unknown as HiveRecord)
+        assert.equal(workload.image, DevPlatformImages.Of(ReleaseApp.EnvServer))
+        assert.equal(workload.appDeployment?.unpackImage, DevPlatformImages.Of(ReleaseApp.UiUnpack))
+        assert.equal(EnvironmentWorkloadFactory.UiUnpackImage, DevPlatformImages.Of(ReleaseApp.UiUnpack))
+    })
+
+    it('never names the env server image for an app the env server image does not carry (the agent, the IdP, the tenant console)', () =>
+    {
+        for (const app of [ReleaseApp.HiveAgent, ReleaseApp.TenantIdp, ReleaseApp.TenantAdmin])
+        {
+            assert.notEqual(DevPlatformImages.Of(app), DevPlatformImages.Of(ReleaseApp.EnvServer), app)
+            assert.notEqual(DevPlatformImages.Of(app), K8sManifestBuilder.AgentImage, app)
+        }
     })
 })

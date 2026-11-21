@@ -80,7 +80,7 @@ export class IdpContainerEnv
     private static readonly EnvPostgresPasswordFile = 'POSTGRES_PASSWORD_FILE'
     /**
      * The seed's last step: the database password and URL files (DatabasePasswordFile, DatabaseUrlFile under the volume's
-     * secrets folder) become 0600 and owned by the server image's user (docker/Dockerfile `USER 10001`), the only one left to
+     * secrets folder) become 0600 and owned by the IdP image's user (pragmatic-tenant-idp's Dockerfile `USER 10001`), the only one left to
      * read them; the companion's entrypoint reads the password as root before it drops privileges.
      */
     private static readonly DatabaseFilesScript = ' && for f in database-password database-url; do p=/idp-data/secrets/$f; if [ -e "$p" ]; then chown 10001 "$p" && chmod 0600 "$p"; fi; done'
@@ -114,7 +114,6 @@ export class IdpContainerEnv
     private static readonly ShCommandFlag = '-c'
     private static readonly SeedMount = '/seed'
     private static readonly ReadOnly = ':ro'
-    private static readonly DefaultSeedImage = 'pragmatic-server:dev'
     private static readonly InspectCmd = 'inspect'
     private static readonly ImageCmd = 'image'
     private static readonly FormatFlag = '--format'
@@ -238,7 +237,7 @@ export class IdpContainerEnv
     }
 
     /** Seeds the named data volume from a host dir via a throwaway root container, leaving it writable by the IdP's uid. */
-    public async SeedVolume(volumeName: string, hostDir: string, image: string = IdpContainerEnv.DefaultSeedImage): Promise<void>
+    public async SeedVolume(volumeName: string, hostDir: string, image: string): Promise<void>
     {
         await this.exec.Run(IdpContainerEnv.SeedArgs(volumeName, hostDir, image))
     }
