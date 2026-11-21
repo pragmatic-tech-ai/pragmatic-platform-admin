@@ -206,7 +206,7 @@ export class TenantConsoleInstaller
     public static readonly IdpPort = 9443
 
     private static readonly NotLocalMessage = 'The console cannot be installed in this hive from here: the control plane does not manage its cluster.'
-    private static readonly ChannelOffMessage = 'The console cannot be installed: the agent channel is not configured (start the control plane with PRAGMATIC_AGENT_CHANNEL_PORT).'
+    private static readonly ChannelOffMessage = 'The console cannot be installed: the agent channel is not configured (set PRAGMATIC_AGENT_CHANNEL_PORT or PRAGMATIC_AGENT_CHANNEL_URL to the channel of the platform edge).'
     private static readonly UnsafeIdMessage = "The console cannot be installed in this hive: its id is not a valid Kubernetes label value. Recreate the hive with a lowercase id (a-z, 0-9, '-')."
     private static readonly AgentMissingMessage = 'Install the agent first: the console uses the hive agent token.'
     private static readonly AdmissionUnservedMessage = "This cluster does not serve ValidatingAdmissionPolicy (admissionregistration.k8s.io/v1), so the console's admission fence cannot be applied. The console needs Kubernetes 1.30 or newer."

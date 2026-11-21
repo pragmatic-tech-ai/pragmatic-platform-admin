@@ -6,7 +6,7 @@ imports signed platform releases into, and the co-hosted tenant plane (`pragmati
 C5.3). Its operator UI is `portal/`.
 
 Split out of pragmatic-server (seed commit `chore: seed from pragmatic-server@2a2e8138`); image name, ports
-(7000, 7001), environment variables, wire paths and the component descriptor are unchanged
+(7000; 7001 is exposed by the image but served by the platform edge, never the console), environment variables, wire paths and the component descriptor are unchanged
 (`tests/descriptor-golden.test.ts` pins the pragmatic-server digest).
 
 ## Roles

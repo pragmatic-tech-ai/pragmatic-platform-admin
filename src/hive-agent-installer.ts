@@ -140,7 +140,7 @@ export class HiveAgentInstaller
     public static readonly DefaultTiming: InstallTiming = { pollIntervalMs: 2000, timeoutMs: 15 * 60 * 1000 }
 
     private static readonly NotLocalMessage = 'Automatic install is not available for this hive: the control plane does not manage its cluster. Install the agent manually.'
-    private static readonly ChannelOffMessage = 'Automatic install is not available: the agent channel is not configured (start the control plane with PRAGMATIC_AGENT_CHANNEL_PORT).'
+    private static readonly ChannelOffMessage = 'Automatic install is not available: the agent channel is not configured (set PRAGMATIC_AGENT_CHANNEL_PORT or PRAGMATIC_AGENT_CHANNEL_URL to the channel of the platform edge).'
     private static readonly TimeoutMessage = 'The agent did not check in in time. On a fresh cluster its image may still be loading: check its pod with `kubectl -n pragmatic-system get pods`, then retry.'
     private static readonly HiveGoneMessage = 'The install stopped: the hive was deleted while it ran.'
     private static readonly UnsafeIdMessage = "Automatic install is not available for this hive: its id is not a valid Kubernetes label value, so its workloads cannot be selected safely. Recreate the hive with a lowercase id (a-z, 0-9, '-')."

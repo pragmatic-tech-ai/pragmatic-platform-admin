@@ -286,7 +286,7 @@ export class ControlPlaneHost
     private static readonly RoleFullWire = 'full'
     private static readonly RoleReadOnlyWire = 'readonly'
     private static readonly OperatorRoles: ReadonlyMap<string, OperatorRole> = new Map([[ControlPlaneHost.RoleFullWire, OperatorRole.Full], [ControlPlaneHost.RoleReadOnlyWire, OperatorRole.ReadOnly]])
-    private static readonly AgentChannelOffMessage = 'The agent channel is not configured: start the control plane with PRAGMATIC_AGENT_CHANNEL_PORT so hives can dial home.'
+    private static readonly AgentChannelOffMessage = 'The agent channel is not configured: set PRAGMATIC_AGENT_CHANNEL_PORT or PRAGMATIC_AGENT_CHANNEL_URL to the channel of the platform edge so hives can dial home.'
     /** `DELETE /api/hives/ID?force=true`: delete anyway, skipping the agent's removal from an unreachable cluster. */
     private static readonly ForceParam = 'force'
     private static readonly ForceValue = 'true'
