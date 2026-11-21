@@ -14,8 +14,8 @@ export class AdminImportArguments
 
 /**
  * The one-time import of the platform admin console's JSON data root into its Postgres database, run by the deploy step
- * inside the platform-admin image: `node dist-tenant-admin/admin/control-plane/bin/pragmatic-admin-import.js --data-root
- * /data [--force]`. The database is the console's own (PRAGMATIC_ADMIN_DATABASE_URL_FILE), the master key the console's
+ * inside the platform-admin image: `node dist/bin/pragmatic-admin-import.js --data-root /data
+ * [--force]`. The database is the console's own (PRAGMATIC_ADMIN_DATABASE_URL_FILE), the master key the console's
  * (PRAGMATIC_ADMIN_MASTER_KEY_FILE, default `<data root>/master.key`). The data root is only read. Prints what it wrote as
  * JSON; exits 2 on a usage error, 3 when the database already holds records (pass --force to import over it), 1 on any
  * other failure (its message never carries a secret).

@@ -16,6 +16,11 @@ process, also serving the agent channel and desktop discovery) start the console
 platform edge has its own entry and repository (`pragmatic-platform-edge`). Retiring `all` waits for the live loop's
 move to `pragmatic-e2e`.
 
+The co-hosted tenant plane serves its SPA from `<repository root>/tenant-portal/dist` (`server.ts`), a folder this
+repository does not hold (the tenant portal lives in `pragmatic-tenant-admin`). The image never shipped it either, so
+nothing changes there; in a local `all` process with the tenant listener on, the tenant plane's API works but no tenant
+SPA is served unless that folder is provided.
+
 ## Development
 
 Packages come from GitHub Packages (`@pragmatic-tech-ai` scope; `.npmrc` reads the token from `NODE_AUTH_TOKEN`).

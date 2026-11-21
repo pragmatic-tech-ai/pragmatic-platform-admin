@@ -1,8 +1,8 @@
 /**
  * Gated end-to-end integration smoke for the demo environment (operator-run, NOT part of `npx tsx --test`).
  *
- * Requires Docker and the built `pragmatic-server:dev` image. Run from the pragmatic-server dir:
- *   npx tsx environments/seed/smoke.ts
+ * Requires Docker and the built `pragmatic-server:dev` image. Run from this repository's root:
+ *   npx tsx src/environments/seed/smoke.ts
  *
  * Brings up the demo env (SeedCli.Run Up), logs in as rep-boston / rep-atlanta / manager-north / finance using the
  * generated provisioned-secrets.json, opens the northwind application on each connection, and asserts the four

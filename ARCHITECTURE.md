@@ -27,7 +27,8 @@ packages. The console implements the plane's contracts (`IEnvironmentService`, `
 | Local environments | `environments/seed/` (`SeedCli`, `DockerEnv`, smoke), `environments/dev`, `environments/demo` |
 
 `portal/`: the operator SPA (Mural, pragmatic-app-shell; `.mu` compiled by `scripts/compile-mu.mjs`), served from
-`portal/dist` (or `PRAGMATIC_ADMIN_PORTAL_DIR`). `closure.json`, `Dockerfile` and `docker-bake.hcl` are rendered by
+`portal/dist` (or `PRAGMATIC_ADMIN_PORTAL_DIR`). The co-hosted tenant plane's static root is `tenant-portal/dist`,
+which this repository does not hold (README, Roles). `closure.json`, `Dockerfile` and `docker-bake.hcl` are rendered by
 `pragmatic-container-template`; `pragmatic-closure-check` keeps them and the code in step.
 
 Tests: `src/**/tests/` (the console, its release catalogue, the seed; Postgres cases on `PRAGMATIC_TEST_PG_URL`, else

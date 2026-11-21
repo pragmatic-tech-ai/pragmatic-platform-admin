@@ -1,22 +1,18 @@
 # Local dev and demo environments
 
-Two Docker-backed environments for `pragmatic-server`: a development environment (`dev`, port 8080) and a runtime demo environment (`demo`, environment `contoso`, port 8081) running the Northwind sample application with a Power-Platform-style security model.
+Two Docker-backed environment server environments: a development environment (`dev`, port 8080) and a runtime demo environment (`demo`, environment `contoso`, port 8081) running the Northwind sample application with a Power-Platform-style security model.
 
 ## One-time image build
 
-Run from the workspace root `architecture-agent/`, which holds all sibling packages:
-
-```
-DOCKER_BUILDKIT=1 docker build -f pragmatic-server/docker/Dockerfile --secret id=npmrc,src=<path-to>/.npmrc -t pragmatic-server:dev .
-```
+The environments run the environment server image `pragmatic-server:dev`, built from the legacy `docker/Dockerfile` that now lives in the `pragmatic-env-server` repository (see its README). The `build` command and the missing-image hint still print the pre-split monorepo command (unchanged in the split).
 
 ## Bring-up
 
-Run from the `pragmatic-server` dir:
+Run from this repository's root:
 
 ```
-npx tsx environments/seed/seed.ts up dev
-npx tsx environments/seed/seed.ts up demo
+npx tsx src/environments/seed/seed.ts up dev
+npx tsx src/environments/seed/seed.ts up demo
 ```
 
 `up` builds the config bundle, seeds the data volume, starts the container, waits for health, and (demo only) creates the demo users. Other commands: `status`, `logs`, `seed-users` (demo only), `build` (prints the image build command).
@@ -35,14 +31,14 @@ Demo users (password under `<principalId>-pw`): `rep-boston`, `rep-atlanta`, `ma
 ## Teardown
 
 ```
-npx tsx environments/seed/seed.ts down dev
-npx tsx environments/seed/seed.ts down demo
+npx tsx src/environments/seed/seed.ts down dev
+npx tsx src/environments/seed/seed.ts down demo
 ```
 
 ## Generated files
 
-`master.key`, `provisioned-secrets.json`, `environments.json`, `realm-config.json`, and `data/` under each environment dir are generated and gitignored. See `environments/demo/seed/provisioned-secrets.example.json` in pragmatic-tenant-plane (`node_modules/@pragmatic-tech-ai/pragmatic-tenant-plane`, which ships the demo seed) for the required secret refs; real secrets are generated fresh on first `up`.
+`master.key`, `provisioned-secrets.json`, `environments.json`, `realm-config.json`, and `data/` under each environment dir (`src/environments/<env>/`) are generated and gitignored. See `environments/demo/seed/provisioned-secrets.example.json` in pragmatic-tenant-plane (`node_modules/@pragmatic-tech-ai/pragmatic-tenant-plane`, which ships the demo seed) for the required secret refs; real secrets are generated fresh on first `up`.
 
 ## Integration smoke
 
-`npx tsx environments/seed/smoke.ts` (needs Docker and the built image; operator-run, not part of `npx tsx --test`) brings up the demo and checks BU depth, field security, sharing, and assign, printing PASS or FAIL per axis.
+`npx tsx src/environments/seed/smoke.ts` (needs Docker and the built image; operator-run, not part of `npx tsx --test`) brings up the demo and checks BU depth, field security, sharing, and assign, printing PASS or FAIL per axis.

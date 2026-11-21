@@ -19,7 +19,7 @@ class InstalledCopies
     {
     }
 
-    /** The package roots (relative to the tree's parent) whose package.json is named `name`. */
+    /** The absolute package roots under the tree whose package.json is named `name`. */
     public Of(name: string): string[]
     {
         const found: string[] = []
@@ -63,12 +63,44 @@ class InstalledCopies
     }
 }
 
+/**
+ * Reads the installed copies of a package from a package-lock.json (lockfile v2/v3 `packages` keys), so a UI folder is
+ * checked without installing it: every key ending in `node_modules/<name>` is one copy npm ci would place.
+ */
+class LockedCopies
+{
+    private static readonly PackageLock = 'package-lock.json'
+    private static readonly ModulesSegment = 'node_modules/'
+    private static readonly Utf8 = 'utf8'
+
+    private readonly keys: readonly string[]
+
+    public constructor(root: string)
+    {
+        const lock = JSON.parse(readFileSync(join(root, LockedCopies.PackageLock), LockedCopies.Utf8)) as { packages?: Record<string, unknown> }
+        this.keys = Object.keys(lock.packages ?? {})
+    }
+
+    /** The lock keys that install a copy of `name`. */
+    public Of(name: string): string[]
+    {
+        const suffix = LockedCopies.ModulesSegment + name
+        return this.keys.filter(key => key === suffix || key.endsWith('/' + suffix))
+    }
+}
+
 class SingletonsFixture
 {
     public static readonly RepoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
     public static readonly PortalRoot = join(SingletonsFixture.RepoRoot, 'portal')
     public static readonly ServerSingletons: readonly string[] = ['@pragmatic-tech-ai/todl-runtime', '@pragmatic-tech-ai/todl', '@pragmatic-tech-ai/mural']
     public static readonly PortalSingletons: readonly string[] = ['@pragmatic-tech-ai/todl-runtime', '@pragmatic-tech-ai/mural']
+    public static readonly DetailSeparator = ': '
+
+    public static Detail(name: string, copies: readonly string[]): string
+    {
+        return name + SingletonsFixture.DetailSeparator + JSON.stringify(copies)
+    }
 }
 
 describe('singletons', () =>
@@ -78,21 +110,18 @@ describe('singletons', () =>
         const copies = new InstalledCopies(SingletonsFixture.RepoRoot)
         for (const name of SingletonsFixture.ServerSingletons)
         {
-            assert.equal(copies.Of(name).length, 1, name + ': ' + JSON.stringify(copies.Of(name)))
+            const found = copies.Of(name)
+            assert.equal(found.length, 1, SingletonsFixture.Detail(name, found))
         }
     })
 
-    it('the portal, when installed, holds exactly one copy of todl-runtime and mural', (t) =>
+    it('the portal lock installs exactly one copy of todl-runtime and mural', () =>
     {
-        if (!existsSync(join(SingletonsFixture.PortalRoot, 'node_modules')))
-        {
-            t.skip('portal not installed')
-            return
-        }
-        const copies = new InstalledCopies(SingletonsFixture.PortalRoot)
+        const copies = new LockedCopies(SingletonsFixture.PortalRoot)
         for (const name of SingletonsFixture.PortalSingletons)
         {
-            assert.equal(copies.Of(name).length, 1, name + ': ' + JSON.stringify(copies.Of(name)))
+            const found = copies.Of(name)
+            assert.equal(found.length, 1, SingletonsFixture.Detail(name, found))
         }
     })
 })

@@ -7,3 +7,14 @@
 **/dist
 **/*.tsbuildinfo
 test-results
+# Local dev data and generated seed secrets never enter the build context.
+src/data
+src/environments/*/data
+src/environments/*/master.key
+src/environments/*/provisioned-secrets.json
+src/environments/*/tenants.json
+src/environments/*/environments.json
+src/environments/*/realm-config.json
+**/*.log
+**/.superpowers
+**/playwright-report
