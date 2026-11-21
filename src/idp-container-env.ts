@@ -53,7 +53,7 @@ export class ExecFileDockerExec implements IDockerExec
 }
 
 /**
- * Docker lifecycle for one per-tenant pragmatic-idp container, run from the server image with the IdP entrypoint, and its
+ * Docker lifecycle for one per-tenant pragmatic-idp container, run from the pragmatic-tenant-idp image (its own entrypoint), and its
  * companion Postgres: a stock postgres container sharing the IdP container's network namespace (the IdP reaches it at
  * 127.0.0.1:5432, as a pod sidecar), on its own named volume, its one database and role created at first start from the
  * password file the driver keeps in the IdP's data volume. No secret ever travels in a docker argument.
@@ -87,8 +87,6 @@ export class IdpContainerEnv
     public static readonly ContainerHost = 'host.docker.internal'
     private static readonly HostGateway = 'host-gateway'
     private static readonly BindAll = '0.0.0.0'
-    private static readonly Script = 'dist/bin/pragmatic-idpd.js'
-    private static readonly NodeBinary = 'node'
     private static readonly HealthPath = '/healthz'
     private static readonly LocalHost = '127.0.0.1'
     private static readonly DefaultAttempts = 60
@@ -170,7 +168,6 @@ export class IdpContainerEnv
         return [
             IdpContainerEnv.Run, IdpContainerEnv.Detach,
             IdpContainerEnv.NameFlag, IdpContainerEnv.ContainerName(spec.tenantId),
-            IdpContainerEnv.EntrypointFlag, IdpContainerEnv.NodeBinary,
             IdpContainerEnv.PortFlag, `${spec.port}:${spec.port}`,
             IdpContainerEnv.NoHealthcheck,
             IdpContainerEnv.AddHostFlag, `${IdpContainerEnv.ContainerHost}:${IdpContainerEnv.HostGateway}`,
@@ -181,7 +178,7 @@ export class IdpContainerEnv
             IdpContainerEnv.EnvFlag, `${IdpContainerEnv.EnvData}=${IdpContainerEnv.DataMount}`,
             IdpContainerEnv.EnvFlag, `${IdpContainerEnv.EnvAdminTokenRef}=${spec.adminTokenRef}`,
             IdpContainerEnv.EnvFlag, `${IdpContainerEnv.EnvDatabaseUrlFile}=${IdpContainerEnv.SecretPath(IdpContainerEnv.DatabaseUrlFile)}`,
-            spec.image, IdpContainerEnv.Script
+            spec.image
         ]
     }
 

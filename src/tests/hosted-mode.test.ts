@@ -163,3 +163,19 @@ describe('ControlPlaneServer.PlatformImagesOf', () =>
         }
     })
 })
+
+describe('ControlPlaneServer.DockerIdpImageOf', () =>
+{
+    it('runs the local Docker IdP from the tenant IdP image of the platform images: in local mode its dev image, never the env server image', () =>
+    {
+        assert.equal(ControlPlaneServer.DockerIdpImageOf(new DevPlatformImages()), 'pragmatic-tenant-idp:dev')
+        assert.notEqual(ControlPlaneServer.DockerIdpImageOf(new DevPlatformImages()), DevPlatformImages.EnvServerImage)
+        const pinned = 'ghcr.io/pragmatic-tech-ai/pragmatic-tenant-idp@sha256:' + 'c'.repeat(64)
+        assert.equal(ControlPlaneServer.DockerIdpImageOf({ ImageOf: app => app === ReleaseApp.TenantIdp ? pinned : undefined }), pinned)
+    })
+
+    it('refuses platform images that offer no tenant IdP', () =>
+    {
+        assert.throws(() => ControlPlaneServer.DockerIdpImageOf({ ImageOf: () => undefined }), /no verified platform release yet/)
+    })
+})

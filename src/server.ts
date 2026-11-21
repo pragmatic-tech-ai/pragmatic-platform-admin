@@ -11,7 +11,7 @@ import { InfraTargetMode, InfraTargetModes } from './infra-target-mode.js'
 import { NoTargetEnvironmentRuntime, NoTargetHiveOrchestratorFactory, NoTargetIdpDriver } from './no-infra-target.js'
 import { HostedHiveOrchestratorFactory } from './hosted-hive-orchestrator-factory.js'
 import { HostedKubeconfig } from './hosted-kubeconfig.js'
-import { DevPlatformImages, ReleasePlatformImages, type IPlatformImages } from './platform-images.js'
+import { DevPlatformImages, PlatformImages, ReleasePlatformImages, type IPlatformImages } from './platform-images.js'
 import { fileURLToPath } from 'node:url'
 import { DockerEnv } from './environments/seed/docker.js'
 import { ControlPlaneHost } from './control-plane-host.js'
@@ -273,9 +273,11 @@ export class ControlPlaneServer
         const bundle = new BundleBuilderAdapter()
         const seeder = new UserSeederAdapter(new UserSeeder())
         const proxy = new AdminProxy(new WsAdminConnector())
+        const manifests = new ManifestRegistry(await database.Map(PlatformAdminRegistry.Manifests))
+        const platformImages = ControlPlaneServer.PlatformImagesOf(infra, manifests, process.env)
         const idpService = new IdpService(new IdpRegistry(await database.Map(PlatformAdminRegistry.Idps)), noDocker
             ? new NoTargetIdpDriver()
-            : new DockerIdpDriver(new PortAllocator(ControlPlaneServer.IdpPortFloor, new NetPortProbe()), new IdpContainerEnv(new ExecFileDockerExec()), dataRoot, DevPlatformImages.Of(ReleaseApp.TenantIdp)))
+            : new DockerIdpDriver(new PortAllocator(ControlPlaneServer.IdpPortFloor, new NetPortProbe()), new IdpContainerEnv(new ExecFileDockerExec()), dataRoot, ControlPlaneServer.DockerIdpImageOf(platformImages)))
         const orchestrators = ControlPlaneServer.OrchestratorsOf(infra, dataRoot, digests, signatures)
         const placement = new EnvironmentPlacement(directory)
         // In-cluster environments are reached through pooled kubectl port-forwards; every tunnel dies with the process.
@@ -285,8 +287,6 @@ export class ControlPlaneServer
         const service = new EnvironmentService(registry, allocator, new EnvironmentRuntimeResolver(hostRuntime ?? new DockerEnvironmentRuntime(docker, bundle), new InClusterEnvironmentRuntime(orchestrators, placement, directory, bundle, signing.PlatformSigner), directory, orchestrators), seeder, dataRoot, proxy, directory, idpService, conn => new IdpAdminClient(conn), ControlPlaneServer.UiDeployerOf(orchestrators, registry, keys), endpoints, tenantIdpMode)
         const graphService = new GraphService(registry, proxy, service)
         const portalRoot = ControlPlaneServer.PortalRootOf(process.env, here)
-        const manifests = new ManifestRegistry(await database.Map(PlatformAdminRegistry.Manifests))
-        const platformImages = ControlPlaneServer.PlatformImagesOf(infra, manifests, process.env)
         const audit = await database.Audit()
         const desktopAudit = new AuditRegistry(await database.Map(PlatformAdminRegistry.DesktopAudit))
         const graphAudit = new AuditRegistry(await database.Map(PlatformAdminRegistry.GraphAudit))
@@ -439,8 +439,19 @@ export class ControlPlaneServer
         return new PlatformHiveOrchestratorFactory(undefined, dataRoot, digests, signatures)
     }
 
+    /** The image the local Docker IdP runs: the platform images' tenant IdP (local mode only, so the dev image); refuses when there is none. */
+    public static DockerIdpImageOf(images: IPlatformImages): string
+    {
+        const image = images.ImageOf(ReleaseApp.TenantIdp)
+        if (image === undefined)
+        {
+            throw new Error(PlatformImages.NoReleaseMessage)
+        }
+        return image
+    }
+
     /**
-     * Where the platform's own images come from. Only `local` runs the locally built server image; `none` and `hosted` offer
+     * Where the platform's own images come from. Only `local` runs the locally built dev images; `none` and `hosted` offer
      * the newest verified release by digest (so a bundle or install before any release refuses instead of naming an image
      * no other cluster can pull), under the registry host the catalogue reads.
      */

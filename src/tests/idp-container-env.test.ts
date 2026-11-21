@@ -65,7 +65,7 @@ class TlsFixture
 test('RunArgs builds the exact docker run argv', () =>
 {
     assert.deepEqual(IdpContainerEnv.RunArgs(Fixture.Spec), [
-        'run', '-d', '--name', 'pragmatic-idp-t1', '--entrypoint', 'node',
+        'run', '-d', '--name', 'pragmatic-idp-t1',
         '-p', '9443:9443', '--no-healthcheck',
         '--add-host', 'host.docker.internal:host-gateway',
         '-v', 'idp-t1-data:/idp-data',
@@ -75,7 +75,7 @@ test('RunArgs builds the exact docker run argv', () =>
         '-e', 'PRAGMATIC_IDP_DATA=/idp-data',
         '-e', 'PRAGMATIC_IDP_ADMIN_TOKEN_REF=admin.token',
         '-e', 'PRAGMATIC_IDP_DATABASE_URL_FILE=/idp-data/secrets/database-url',
-        'pragmatic-tenant-idp:dev', 'dist/bin/pragmatic-idpd.js'
+        'pragmatic-tenant-idp:dev'
     ])
 })
 
