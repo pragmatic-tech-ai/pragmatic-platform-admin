@@ -13,13 +13,13 @@
   },
   "dependencies": {
     "@pragmatic-tech-ai/mural": "^0.67.2",
-    "@pragmatic-tech-ai/pragmatic-app-shell": "^0.17.6",
-    "@pragmatic-tech-ai/todl-runtime": "^0.7.0"
+    "@pragmatic-tech-ai/pragmatic-app-shell": "^0.17.7",
+    "@pragmatic-tech-ai/todl-runtime": "^0.7.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0",
     "@types/node": "^22.10.0",
-    "tsx": "^4.0.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.0",
     "vite": "^8.0.0"
   }

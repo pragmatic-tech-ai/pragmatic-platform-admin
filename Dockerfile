@@ -91,7 +91,8 @@ RUN set -eu; \
 
 FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS runtime
 ENV NODE_ENV=production
-# uid and gid are both 10001, so the --chown=10001:10001 copies below never leave files under an orphan group.
+# The service runs as 10001 (uid and gid); the app tree is root's and read-only to it, but for the directories the render
+# option WritableDirs names.
 RUN groupadd --system --gid 10001 pragmatic && useradd --system --create-home --uid 10001 --gid 10001 pragmatic
 WORKDIR /workspace/pragmatic-platform-admin
 
@@ -100,11 +101,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -
 COPY --from=platform-admin-tools /tools/kubectl /usr/local/bin/kubectl
 COPY --from=platform-admin-tools /tools/kind /usr/local/bin/kind
 COPY --from=platform-admin-tools /tools/docker-cli /usr/local/bin/docker
-COPY --from=build --chown=10001:10001 /workspace/pragmatic-platform-admin/package.json /workspace/pragmatic-platform-admin/package.json
-COPY --from=build --chown=10001:10001 /workspace/pragmatic-platform-admin/node_modules /workspace/pragmatic-platform-admin/node_modules
-COPY --from=build --chown=10001:10001 /workspace/pragmatic-platform-admin/dist /workspace/pragmatic-platform-admin/dist
-COPY --from=build --chown=10001:10001 /workspace/pragmatic-platform-admin/portal/dist /workspace/pragmatic-platform-admin/portal/dist
-COPY --from=build --chown=10001:10001 /workspace/pragmatic-platform-admin/release-keys /workspace/pragmatic-platform-admin/release-keys
+COPY --from=build /workspace/pragmatic-platform-admin/package.json /workspace/pragmatic-platform-admin/package.json
+COPY --from=build /workspace/pragmatic-platform-admin/node_modules /workspace/pragmatic-platform-admin/node_modules
+COPY --from=build /workspace/pragmatic-platform-admin/dist /workspace/pragmatic-platform-admin/dist
+COPY --from=build /workspace/pragmatic-platform-admin/portal/dist /workspace/pragmatic-platform-admin/portal/dist
+COPY --from=build /workspace/pragmatic-platform-admin/release-keys /workspace/pragmatic-platform-admin/release-keys
+# The directories the service writes inside its tree (render option WritableDirs): created when missing, owned by the
+# service user; what was copied into them, and everything else, stays root's.
+RUN mkdir -p /workspace/pragmatic-platform-admin/dist/data && chown 10001:10001 /workspace/pragmatic-platform-admin/dist/data
 ENV PRAGMATIC_CONTROL_PLANE_ROLE=admin
 ARG COMPONENT_DIGEST
 COPY --from=component /component/component.json /pragmatic/component.json
