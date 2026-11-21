@@ -4,7 +4,7 @@ Two Docker-backed environment server environments: a development environment (`d
 
 ## One-time image build
 
-The environments run the environment server's dev image `pragmatic-server:dev` (the name the tenant plane gives every
+The environments run the environment server's dev image `pragmatic-env-server:dev` (the name the tenant plane gives every
 environment workload), baked from the `pragmatic-env-server` repository by the dev image builder of `pragmatic-e2e`.
 From the `pragmatic-e2e` checkout, with the container repositories checked out beside it (or in
 `PRAGMATIC_E2E_REPOS_DIR`):
