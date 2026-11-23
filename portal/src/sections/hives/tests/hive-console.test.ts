@@ -201,13 +201,13 @@ describe('Hive tenant console (panel)', () =>
         assert.equal(panel.SaveCommand.CanExecute(), false)
         assert.equal(panel.SetOwnerPasswordCommand.CanExecute(), false)
         assert.deepEqual(panel.Steps.ToArray().map(s => s.Label), [
-            'Check the hive agent', 'Prepare certificates', 'Apply the console', 'Store its secrets', 'Wait for it to start', 'Create the Owner account',
+            'Check the hive agent', 'Prepare certificates', 'Read the release descriptors', 'Apply the console', 'Store its secrets', 'Wait for it to start', 'Create the Owner account',
         ])
         assert.deepEqual(fx.Polls.Delays, [2000])
         fx.Api.ConsoleInstallReplies = [FakeControlPlane.ConsoleStatus(ConsoleInstallState.Installing, ConsoleInstallStep.ApplyingConsole)]
         await fx.Poll()
         assert.deepEqual(panel.Steps.ToArray().map(s => s.State), [
-            AgentInstallStepState.Done, AgentInstallStepState.Done, AgentInstallStepState.Running,
+            AgentInstallStepState.Done, AgentInstallStepState.Done, AgentInstallStepState.Done, AgentInstallStepState.Running,
             AgentInstallStepState.Pending, AgentInstallStepState.Pending, AgentInstallStepState.Pending,
         ])
         assert.equal(fx.Polls.Pending, 1)

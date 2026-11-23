@@ -12,7 +12,7 @@ import { ComponentAssetUnavailableError, ImageVerificationError, type IImageVeri
 import type { ConsoleReleaseDescriptors } from './console-release-descriptors.js'
 import { ReleaseManifestUnavailableError } from './release/github-release-manifest-source.js'
 import { ReleaseDescriptorsUnavailableError } from './release/release-descriptor-source.js'
-import { ReleaseDescriptorsConfigMap } from './release-descriptors-config-map.js'
+import { ReleaseDescriptorsConfigMap, ReleaseDescriptorsTooLargeError } from './release-descriptors-config-map.js'
 import { IdpSecretSet, InClusterIdpSeedSource } from './in-cluster-idp-seed.js'
 import { InHiveIdpUnavailableError, type IInHiveIdpAdmin, type InHiveOwnerPassword } from './in-hive-idp-admin.js'
 import type { PlatformImageSigner } from './platform-signing-key.js'
@@ -37,6 +37,7 @@ export enum ConsoleInstallStep
 {
     CheckingAgent = 'checking-agent',
     PreparingCertificates = 'preparing-certificates',
+    ReadingReleaseDescriptors = 'reading-release-descriptors',
     ApplyingConsole = 'applying-console',
     StoringSecrets = 'storing-secrets',
     WaitingForRollout = 'waiting-for-rollout',
@@ -154,6 +155,18 @@ type IdpMaterial = { ca: Buffer; adminToken: string; secretsManifest: string | u
 /** The IdP database Secret to apply (undefined when the IdP namespace already holds one) and its values' printable forms, for scrubbing. */
 type IdpDatabaseMaterial = { secretsManifest: string | undefined; scrub: string[] }
 
+/** Who holds the release descriptors ConfigMap when an install starts. */
+enum DescriptorHolding
+{
+    None = 'none',
+    ThisHive = 'this-hive',
+    /** It exists without a hive label: no console install wrote it. */
+    Unowned = 'unowned',
+}
+
+/** The release descriptors an install delivers (undefined: none) and who held the object when it started. */
+type DescriptorDelivery = { manifest: string | undefined; existing: DescriptorHolding }
+
 /** One install's mutable state; the installer hands out copies only. */
 class ConsoleInstallRun
 {
@@ -220,9 +233,13 @@ export class TenantConsoleInstaller
     private static readonly KeptUnlistedPrefix = 'The console was removed, but the objects it kept could not be listed: '
     private static readonly TrailingStop = /\.+$/
     private static readonly HiveGoneMessage = 'The install stopped: the hive was deleted while it ran.'
+    private static readonly MixedReleaseMessage = "The console cannot be installed: its tenant-admin, IdP and pragmatic-postgres images come from different platform releases, so no one release's descriptors describe them. Withdraw the newer partial release or publish a full one."
+    private static readonly DescriptorsHeldPrefix = 'The release descriptors ConfigMap in pragmatic-system belongs to hive '
+    private static readonly DescriptorsHeldSuffix = ': one cluster holds the console of one hive only. Remove that console first.'
     private static readonly StepFailureMessages: Readonly<Record<ConsoleInstallStep, string>> = {
         [ConsoleInstallStep.CheckingAgent]: 'Could not check the hive agent.',
         [ConsoleInstallStep.PreparingCertificates]: "Could not prepare the console's certificates and settings.",
+        [ConsoleInstallStep.ReadingReleaseDescriptors]: "Could not read the release's component descriptors.",
         [ConsoleInstallStep.ApplyingConsole]: 'Could not apply the console to the cluster.',
         [ConsoleInstallStep.StoringSecrets]: "Could not store the console's Secrets in the cluster.",
         [ConsoleInstallStep.WaitingForRollout]: 'The identity provider or the console did not roll out.',
@@ -233,7 +250,7 @@ export class TenantConsoleInstaller
         KubectlError, PortForwardError, IdpAdminError, IdpAdminTransportError, InHiveIdpUnavailableError, OwnerNotRecordedError,
         OwnerAccountMissingError, OwnerIdpRefusedError, IdpUnreachableError, ImageVerificationError, DevCaKeyMissingError,
         DevCaHostOutsideDomainError, InvalidHiveConsoleError, DevCaError, ReleaseDescriptorsUnavailableError, ReleaseDescriptorMismatchError,
-        ReleaseDescriptorUnverifiedError, ReleaseManifestUnavailableError, ComponentAssetUnavailableError,
+        ReleaseDescriptorUnverifiedError, ReleaseManifestUnavailableError, ComponentAssetUnavailableError, ReleaseDescriptorsTooLargeError,
     ]
     private static readonly HttpsScheme = 'https'
     private static readonly HttpsPrefix = 'https://'
@@ -359,7 +376,11 @@ export class TenantConsoleInstaller
         {
             throw new UnknownTenantError(hive.tenantId)
         }
-        // Read beside the images, so the descriptors delivered are those of the release the console's image comes from.
+        // Read beside the images, so the descriptors delivered are those of the one release all console images come from.
+        if (this.releaseDescriptors?.IsMixed() === true)
+        {
+            throw new ConsoleInstallUnavailableError(TenantConsoleInstaller.MixedReleaseMessage)
+        }
         const release = this.releaseDescriptors?.ReleaseOfConsole()
         const run = new ConsoleInstallRun(hiveId, new Date(this.clock.Now()).toISOString())
         this.runs.set(hiveId, run)
@@ -582,11 +603,6 @@ export class TenantConsoleInstaller
             {
                 approved.push(await this.images.Approve(hive, images.idp))
             }
-            // The release's component descriptors, each checked against the digest its signature binds (fail closed: the console
-            // validates every component's configuration against them).
-            const descriptors = images.release === undefined || this.releaseDescriptors === undefined
-                ? undefined
-                : await this.releaseDescriptors.ManifestFor(images.release, hive.id)
             const fingerprintKey = await this.fingerprints.Ensure(hive.id)
             C.Remember(run, fingerprintKey)
             // Minted here on a first install (not inside the bootstrap), so it is in the scrub list either way.
@@ -626,14 +642,16 @@ export class TenantConsoleInstaller
                 },
                 trustRootPublicKey: await this.trustRoots.PublicKey(trustRootRef),
             })
+            this.Enter(run, ConsoleInstallStep.ReadingReleaseDescriptors)
+            // The release's component descriptors, each checked against the digest its signature binds (fail closed: the console
+            // validates every component's configuration against them); written only once everything else is applied.
+            const descriptors = await this.DescriptorsOf(kubectl, hive.id, images.release)
             this.Enter(run, ConsoleInstallStep.ApplyingConsole)
             const stale = this.StaleTlsObjects(spec, t, hive.id)
             if (stale !== undefined)
             {
                 await kubectl.DeleteManifest(stale)
             }
-            // Before the console's Deployment, so its (re)started pod mounts this release's descriptors.
-            await C.DeliverDescriptors(kubectl, hive.id, descriptors)
             await kubectl.Apply(bootstrap.manifest)
             this.Enter(run, ConsoleInstallStep.StoringSecrets)
             await kubectl.ApplyServerSide(bootstrap.secrets.RenderManifest())
@@ -665,6 +683,9 @@ export class TenantConsoleInstaller
             }
             await this.idpAdmin.Remember(t, idp.ca, idp.adminToken)
             await this.idpAdmin.RememberOwner(t, hive.id)
+            // Last before the restarts: a step that failed earlier leaves the running console the descriptors of the release it runs
+            // (a mounted ConfigMap updates in place), and the restarted console reads this release's.
+            await C.DeliverDescriptors(kubectl, hive.id, descriptors)
             // A reinstall must pick up the new Secrets: both Deployments restart.
             await kubectl.RolloutRestart(idpName, idpName)
             await kubectl.RolloutRestart(system, K8sManifestBuilder.TenantAdminNameOf(t))
@@ -692,18 +713,42 @@ export class TenantConsoleInstaller
     }
 
     /**
-     * Writes the release descriptors ConfigMap on every install (a server-side apply of the whole object, so a key an earlier
-     * release carried is dropped); with nothing to deliver, removes one this hive's earlier install wrote, so the console never
-     * validates against the descriptors of a release it does not run.
+     * What to deliver: the ConfigMap manifest of `release`'s descriptors (undefined: nothing, no release or none signed), and
+     * who holds the object now. Refuses (before anything is applied) when it belongs to another hive: the name is one per
+     * cluster (pragmatic-shared's builder mounts it by that name), so two hives' consoles cannot share a cluster.
      */
-    private static async DeliverDescriptors(kubectl: IKubectl, hiveId: string, manifest: string | undefined): Promise<void>
+    private async DescriptorsOf(kubectl: IKubectl, hiveId: string, release: string | undefined): Promise<DescriptorDelivery>
     {
-        if (manifest !== undefined)
+        const C = TenantConsoleInstaller
+        const existing = await kubectl.Find(ReleaseDescriptorsConfigMap.Namespace, ReleaseDescriptorsConfigMap.Resource())
+        const holder = ReleaseDescriptorsConfigMap.HiveOf(existing)
+        if (holder !== undefined && holder !== hiveId)
         {
-            await kubectl.ApplyServerSide(manifest)
+            throw new ConsoleInstallStepError(C.DescriptorsHeldPrefix + holder + C.DescriptorsHeldSuffix)
+        }
+        const manifest = release === undefined || this.releaseDescriptors === undefined ? undefined : await this.releaseDescriptors.ManifestFor(release, hiveId)
+        const holding = existing === undefined ? DescriptorHolding.None : holder === undefined ? DescriptorHolding.Unowned : DescriptorHolding.ThisHive
+        return { manifest, existing: holding }
+    }
+
+    /**
+     * Writes the release descriptors ConfigMap on every install: a server-side apply of the whole object, which drops a key an
+     * earlier release carried when this field manager wrote it; an object no hive's install wrote is deleted first, so none of
+     * its keys survive. With nothing to deliver, removes the object this hive's earlier install wrote, so the console never
+     * validates against the descriptors of a release it does not run (an unowned object is left alone).
+     */
+    private static async DeliverDescriptors(kubectl: IKubectl, hiveId: string, delivery: DescriptorDelivery): Promise<void>
+    {
+        if (delivery.manifest === undefined)
+        {
+            await TenantConsoleInstaller.RemoveDescriptors(kubectl, hiveId)
             return
         }
-        await TenantConsoleInstaller.RemoveDescriptors(kubectl, hiveId)
+        if (delivery.existing === DescriptorHolding.Unowned)
+        {
+            await kubectl.DeleteManifest(ReleaseDescriptorsConfigMap.IdentityManifest())
+        }
+        await kubectl.ApplyServerSide(delivery.manifest)
     }
 
     /** Deletes the release descriptors ConfigMap when this hive's install wrote it (never another hive's). */

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ComponentDescriptorSet, ReleaseApps } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ComponentConfigurationMounts, K8sManifestBuilder } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
-import { ReleaseDescriptorsConfigMap } from '../release-descriptors-config-map.js'
+import { ReleaseDescriptorsConfigMap, ReleaseDescriptorsTooLargeError } from '../release-descriptors-config-map.js'
 import { ReleaseDescriptorFixtures as F } from './release-descriptor-fixtures.js'
 
 type ConfigMapDoc = { apiVersion: string; kind: string; metadata: { name: string; namespace: string; labels: Record<string, string>; annotations: Record<string, string> }; data: Record<string, string> }
@@ -23,6 +23,8 @@ describe('ReleaseDescriptorsConfigMap', () =>
         assert.ok(ReleaseDescriptorsConfigMap.BelongsTo(JSON.stringify(doc), 'h1'))
         assert.ok(!ReleaseDescriptorsConfigMap.BelongsTo(JSON.stringify(doc), 'h2'))
         assert.ok(!ReleaseDescriptorsConfigMap.BelongsTo(undefined, 'h1'))
+        assert.equal(ReleaseDescriptorsConfigMap.HiveOf(JSON.stringify(doc)), 'h1')
+        assert.equal(ReleaseDescriptorsConfigMap.HiveOf(JSON.stringify({ metadata: { name: doc.metadata.name } })), undefined)
     })
 
     it('carries digests.json and one <app>.json per descriptor, canonical, which the console reads back as a pinned set', () =>
@@ -50,6 +52,21 @@ describe('ReleaseDescriptorsConfigMap', () =>
         {
             rmSync(dir, { recursive: true, force: true })
         }
+    })
+
+    it('lists the descriptors in ordinal name order, whatever the locale, so every control plane writes the same bytes', () =>
+    {
+        const names = ['pragmatic-b', 'pragmatic-ab', 'pragmatic-a1', 'pragmatic-a-b', 'pragmatic-a']
+        const set = ComponentDescriptorSet.FromDescriptors(names.map(n => F.Descriptor(n)))
+        // By code unit: '-' (45) before '1' (49) before 'b' (98).
+        assert.deepEqual(Object.keys(JSON.parse(ReleaseDescriptorsConfigMap.DataOf(set)['digests.json'] as string)),
+            ['pragmatic-a', 'pragmatic-a-b', 'pragmatic-a1', 'pragmatic-ab', 'pragmatic-b'])
+    })
+
+    it('refuses descriptors past what one ConfigMap holds, naming the release', () =>
+    {
+        const big = ComponentDescriptorSet.FromDescriptors([F.Descriptor(ReleaseApps.All[0] as string, F.ComponentVersion, 'x'.repeat(ReleaseDescriptorsConfigMap.MaxDataBytes))])
+        assert.throws(() => ReleaseDescriptorsConfigMap.ManifestOf(big, 'h1', F.Version), (err: unknown) => err instanceof ReleaseDescriptorsTooLargeError && err.message.includes(F.Version))
     })
 
     it('its identity names the object only, to delete it', () =>

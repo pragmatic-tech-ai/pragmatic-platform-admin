@@ -365,7 +365,7 @@
           "required": false,
           "secret": false,
           "default": "off",
-          "description": "PRAGMATIC_TENANT_ADMIN_DESKTOP_REALM_SIGN_IN: Whether Plexus signs in at the tenant realm itself (on: /desktop/console names it and realm access tokens are desktop bearers) or through the console (off)."
+          "description": "PRAGMATIC_TENANT_ADMIN_DESKTOP_REALM_SIGN_IN: Whether Plexus signs in at the tenant realm itself (on, true or 1: /desktop/console names it and realm access tokens are desktop bearers) or through the console (off, false or 0; the co-hosted plane defaults off)."
         },
         {
           "name": "secretTtlHours",

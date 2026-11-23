@@ -168,7 +168,7 @@ describe('InClusterIdpSeedSource', () =>
         // The workload manifest carries only the component's EMPTY configuration Secret, never a Secret with data.
         const objects = (JSON.parse(kubectl.Applied[0]!).items as any[])
         assert.deepEqual(objects.filter(o => o.kind === 'Secret').map(o => o.metadata.name), ['pragmatic-secrets-pragmatic-tenant-idp'])
-        assert.ok(objects.filter(o => o.kind === 'Secret').every(o => o.data === undefined))
+        assert.ok(objects.filter(o => o.kind === 'Secret').every(o => o.data === undefined && (o as { stringData?: unknown }).stringData === undefined))
         assert.equal(source.SeedFor(Tenant), source.SeedFor(Tenant))
     })
 

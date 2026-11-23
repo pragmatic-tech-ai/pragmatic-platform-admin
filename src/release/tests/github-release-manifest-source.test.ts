@@ -7,21 +7,42 @@ import { ReleaseDescriptorFixtures as F } from '../../tests/release-descriptor-f
 /** A GitHub that answers one fixed response per call and records what it was asked. */
 class FakeGitHub
 {
-    public readonly Calls: Array<{ url: string; init: GitHubRequestInit }> = []
+    public static readonly Leak = 'body-text-that-must-not-leak'
+    public static readonly ExpectedUrl = 'https://api.github.com/repos/pragmatic-tech-ai/pragmatic-platform-release/contents/release.json?ref=release%2F0.1.0-early.7'
+    public static readonly RawType = 'application/vnd.github.raw+json'
+    public static readonly RateLimited = 'GitHub refused the request (rate limited); try again later'
 
-    public constructor(private readonly answer: () => Response)
+    public readonly Calls: Array<{ url: string; init: GitHubRequestInit }> = []
+    public BodyRead = false
+
+    public constructor(private readonly answer: (github: FakeGitHub) => Response)
     {
     }
 
     public readonly Fetch = async (url: string, init: GitHubRequestInit): Promise<Response> =>
     {
         this.Calls.push({ url, init })
-        return this.answer()
+        return this.answer(this)
     }
 
     public static Json(value: unknown, status: number = 200): FakeGitHub
     {
         return new FakeGitHub(() => new Response(JSON.stringify(value), { status }))
+    }
+}
+
+/** A small 200 response declaring `length`, which records whether its body was read. */
+class TrackedResponse extends Response
+{
+    public constructor(private readonly github: FakeGitHub, length: string)
+    {
+        super('{}', { status: 200, headers: { 'content-length': length } })
+    }
+
+    public override async arrayBuffer(): Promise<ArrayBuffer>
+    {
+        this.github.BodyRead = true
+        return await super.arrayBuffer()
     }
 }
 
@@ -32,9 +53,9 @@ describe('GitHubReleaseManifestSource', () =>
         const github = FakeGitHub.Json(F.Manifest(F.OlderVersion))
         const manifest = await new GitHubReleaseManifestSource(github.Fetch).ManifestOf(F.OlderVersion)
         assert.equal(manifest?.version, F.OlderVersion)
-        assert.equal(manifest?.components['pragmatic-tenant-idp'].repository, 'pragmatic-tech-ai/pragmatic-tenant-idp')
-        assert.equal(github.Calls[0]?.url, 'https://api.github.com/repos/pragmatic-tech-ai/pragmatic-platform-release/contents/release.json?ref=release%2F0.1.0-early.7')
-        assert.equal(github.Calls[0]?.init.headers['Accept'], 'application/vnd.github.raw+json')
+        assert.equal(manifest?.components['pragmatic-tenant-idp'].repository, F.Owner + 'pragmatic-tenant-idp')
+        assert.equal(github.Calls[0]?.url, FakeGitHub.ExpectedUrl)
+        assert.equal(github.Calls[0]?.init.headers['Accept'], FakeGitHub.RawType)
         assert.equal(github.Calls[0]?.init.headers['Authorization'], undefined)
     })
 
@@ -43,16 +64,31 @@ describe('GitHubReleaseManifestSource', () =>
         assert.equal(await new GitHubReleaseManifestSource(FakeGitHub.Json({ message: 'Not Found' }, 404).Fetch).ManifestOf(F.OlderVersion), undefined)
     })
 
+    it('the anonymous rate limit (403 or 429) is named as such', async () =>
+    {
+        for (const status of [403, 429])
+        {
+            await assert.rejects(new GitHubReleaseManifestSource(FakeGitHub.Json({ message: FakeGitHub.Leak }, status).Fetch).ManifestOf(F.OlderVersion),
+                (err: unknown) => err instanceof ReleaseManifestUnavailableError && err.message === FakeGitHub.RateLimited)
+        }
+    })
+
+    it('a declared length past the bound is refused before the body is read', async () =>
+    {
+        const github = new FakeGitHub(gh => new TrackedResponse(gh, String(GitHubReleaseManifestSource.MaxBytes + 1)))
+        await assert.rejects(new GitHubReleaseManifestSource(github.Fetch).ManifestOf(F.OlderVersion), /larger than a release manifest/)
+        assert.equal(github.BodyRead, false)
+    })
+
     it('another status, an unreachable GitHub, an oversized or a non-manifest body throw one fixed sentence, never the body', async () =>
     {
-        const secretish = 'body-text-that-must-not-leak'
-        await assert.rejects(new GitHubReleaseManifestSource(FakeGitHub.Json({ message: secretish }, 500).Fetch).ManifestOf(F.OlderVersion),
+        await assert.rejects(new GitHubReleaseManifestSource(FakeGitHub.Json({ message: FakeGitHub.Leak }, 500).Fetch).ManifestOf(F.OlderVersion),
             (err: unknown) => err instanceof ReleaseManifestUnavailableError && err.message === 'GitHub answered HTTP 500')
-        const down = new GitHubReleaseManifestSource(async () => { throw new Error(secretish) })
-        await assert.rejects(down.ManifestOf(F.OlderVersion), (err: unknown) => err instanceof ReleaseManifestUnavailableError && !err.message.includes(secretish))
+        const down = new GitHubReleaseManifestSource(async () => { throw new Error(FakeGitHub.Leak) })
+        await assert.rejects(down.ManifestOf(F.OlderVersion), (err: unknown) => err instanceof ReleaseManifestUnavailableError && !err.message.includes(FakeGitHub.Leak))
         const huge = new FakeGitHub(() => new Response('x'.repeat(GitHubReleaseManifestSource.MaxBytes + 1), { status: 200 }))
         await assert.rejects(new GitHubReleaseManifestSource(huge.Fetch).ManifestOf(F.OlderVersion), /larger than a release manifest/)
-        await assert.rejects(new GitHubReleaseManifestSource(FakeGitHub.Json({ schema: 1, note: secretish }).Fetch).ManifestOf(F.OlderVersion),
-            (err: unknown) => err instanceof ReleaseManifestUnavailableError && !err.message.includes(secretish))
+        await assert.rejects(new GitHubReleaseManifestSource(FakeGitHub.Json({ schema: 1, note: FakeGitHub.Leak }).Fetch).ManifestOf(F.OlderVersion),
+            (err: unknown) => err instanceof ReleaseManifestUnavailableError && !err.message.includes(FakeGitHub.Leak))
     })
 })

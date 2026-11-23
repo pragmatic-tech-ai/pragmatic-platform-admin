@@ -99,6 +99,18 @@ describe('ReleasePlatformImages', () =>
     {
         await Releases.With([], images => assert.equal(images.ImageOf(ReleaseApp.HiveAgent), undefined))
     })
+
+    it('names the release each offered image comes from, per app (a newer release lacking an app leaves that app on the older one)', async () =>
+    {
+        const partial = Releases.Record(Releases.V3, Releases.Day3, Releases.FillC)
+        delete (partial.release?.images as Partial<Record<ReleaseApp, unknown>>)[ReleaseApp.TenantIdp]
+        await Releases.With([Releases.Record(Releases.V1, Releases.Day1, Releases.FillA), partial], images =>
+        {
+            assert.equal(images.ReleaseOf(ReleaseApp.TenantAdmin), Releases.V3)
+            assert.equal(images.ReleaseOf(ReleaseApp.TenantIdp), Releases.V1)
+        })
+        await Releases.With([], images => assert.equal(images.ReleaseOf(ReleaseApp.TenantAdmin), undefined))
+    })
 })
 
 describe('DevPlatformImages', () =>

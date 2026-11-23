@@ -384,7 +384,10 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
     {
         const items = TenantAdminFixture.Items()
         assert.ok(!items.some(i => i.kind === 'Ingress'))
-        assert.ok(!items.some(i => (i.kind === 'Role' || i.kind === 'RoleBinding') && i.metadata.name === 'pragmatic-tenant-admin-acme-tls'))
+        // The only namespaced grants are the configuration ones (no TLS-read Role without a copied Secret).
+        assert.deepEqual(items.filter(i => i.kind === 'Role' || i.kind === 'RoleBinding').map(i => i.kind + '/' + i.metadata.name), [
+            'Role/pragmatic-tenant-admin-acme-configuration', 'RoleBinding/pragmatic-tenant-admin-acme-configuration',
+        ])
         const spec = TenantAdminFixture.Spec()
         assert.equal(ConsoleFixture.Env(spec, 'PRAGMATIC_TENANT_ADMIN_CONSOLE_HOST'), undefined)
         assert.equal(ConsoleFixture.Env(spec, 'PRAGMATIC_TENANT_ADMIN_TRUSTED_PROXY'), undefined)
@@ -416,7 +419,9 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
         const ingress = items.find(i => i.kind === 'Ingress')
         assert.deepEqual(ingress.metadata.annotations, { 'cert-manager.io/cluster-issuer': 'letsencrypt', 'nginx.ingress.kubernetes.io/proxy-read-timeout': '180' })
         assert.equal(ingress.spec.tls[0].secretName, 'pragmatic-tenant-admin-acme-ingress-tls')
-        assert.ok(!items.some(i => (i.kind === 'Role' || i.kind === 'RoleBinding') && i.metadata.name === 'pragmatic-tenant-admin-acme-tls'))
+        assert.deepEqual(items.filter(i => i.kind === 'Role' || i.kind === 'RoleBinding').map(i => i.kind + '/' + i.metadata.name), [
+            'Role/pragmatic-tenant-admin-acme-configuration', 'RoleBinding/pragmatic-tenant-admin-acme-configuration',
+        ])
     })
 
     it('existing-secret renders a get-only Role on that one Secret', () =>
@@ -565,7 +570,11 @@ class AdmissionFixture
     public static readonly BindingRole = "request.resource.resource != 'rolebindings' || (object.roleRef.apiGroup == 'rbac.authorization.k8s.io' && object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'pragmatic-tenant-admin-acme-env')"
     public static readonly BindingSubjects = "request.resource.resource != 'rolebindings' || (has(object.subjects) && size(object.subjects) == 1 && object.subjects[0].kind == 'ServiceAccount' && object.subjects[0].namespace == 'pragmatic-system' && object.subjects[0].name == 'pragmatic-tenant-admin-acme')"
 
-    public static readonly DeploymentsPrefix = "request.resource.resource != 'deployments' || request.namespace.startsWith('pragmatic-env-') || ("
+    /**
+     * Outside the environment namespaces the console may change a Deployment (the configuration targets its Role names) only by
+     * its configuration-hash / secrets-revision pod-template annotations: everything else of metadata and spec stays as it was.
+     */
+    public static readonly DeploymentsUpdate = "request.resource.resource != 'deployments' || request.namespace.startsWith('pragmatic-env-') || ((has(object.metadata.labels) == has(oldObject.metadata.labels) && (!has(object.metadata.labels) || object.metadata.labels == oldObject.metadata.labels)) && (has(object.metadata.annotations) == has(oldObject.metadata.annotations) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations)) && (has(object.metadata.ownerReferences) == has(oldObject.metadata.ownerReferences) && (!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences)) && (has(object.metadata.finalizers) == has(oldObject.metadata.finalizers) && (!has(object.metadata.finalizers) || object.metadata.finalizers == oldObject.metadata.finalizers)) && (has(object.spec.template.metadata.labels) == has(oldObject.spec.template.metadata.labels) && (!has(object.spec.template.metadata.labels) || object.spec.template.metadata.labels == oldObject.spec.template.metadata.labels)) && (has(object.spec.template.metadata.name) == has(oldObject.spec.template.metadata.name) && (!has(object.spec.template.metadata.name) || object.spec.template.metadata.name == oldObject.spec.template.metadata.name)) && (has(object.spec.template.metadata.namespace) == has(oldObject.spec.template.metadata.namespace) && (!has(object.spec.template.metadata.namespace) || object.spec.template.metadata.namespace == oldObject.spec.template.metadata.namespace)) && (has(object.spec.template.metadata.generateName) == has(oldObject.spec.template.metadata.generateName) && (!has(object.spec.template.metadata.generateName) || object.spec.template.metadata.generateName == oldObject.spec.template.metadata.generateName)) && (has(object.spec.template.metadata.ownerReferences) == has(oldObject.spec.template.metadata.ownerReferences) && (!has(object.spec.template.metadata.ownerReferences) || object.spec.template.metadata.ownerReferences == oldObject.spec.template.metadata.ownerReferences)) && (has(object.spec.template.metadata.finalizers) == has(oldObject.spec.template.metadata.finalizers) && (!has(object.spec.template.metadata.finalizers) || object.spec.template.metadata.finalizers == oldObject.spec.template.metadata.finalizers)) && (has(object.spec.template.spec) == has(oldObject.spec.template.spec) && (!has(object.spec.template.spec) || object.spec.template.spec == oldObject.spec.template.spec)) && (has(object.spec.replicas) == has(oldObject.spec.replicas) && (!has(object.spec.replicas) || object.spec.replicas == oldObject.spec.replicas)) && (has(object.spec.selector) == has(oldObject.spec.selector) && (!has(object.spec.selector) || object.spec.selector == oldObject.spec.selector)) && (has(object.spec.strategy) == has(oldObject.spec.strategy) && (!has(object.spec.strategy) || object.spec.strategy == oldObject.spec.strategy)) && (has(object.spec.minReadySeconds) == has(oldObject.spec.minReadySeconds) && (!has(object.spec.minReadySeconds) || object.spec.minReadySeconds == oldObject.spec.minReadySeconds)) && (has(object.spec.revisionHistoryLimit) == has(oldObject.spec.revisionHistoryLimit) && (!has(object.spec.revisionHistoryLimit) || object.spec.revisionHistoryLimit == oldObject.spec.revisionHistoryLimit)) && (has(object.spec.progressDeadlineSeconds) == has(oldObject.spec.progressDeadlineSeconds) && (!has(object.spec.progressDeadlineSeconds) || object.spec.progressDeadlineSeconds == oldObject.spec.progressDeadlineSeconds)) && (has(object.spec.paused) == has(oldObject.spec.paused) && (!has(object.spec.paused) || object.spec.paused == oldObject.spec.paused)) && (!has(object.spec.template.metadata.annotations) || object.spec.template.metadata.annotations.all(k, k == 'pragmatic-tech.ai/configuration-hash' || k == 'pragmatic-tech.ai/secrets-revision' || (has(oldObject.spec.template.metadata.annotations) && k in oldObject.spec.template.metadata.annotations && oldObject.spec.template.metadata.annotations[k] == object.spec.template.metadata.annotations[k]))) && (!has(oldObject.spec.template.metadata.annotations) || oldObject.spec.template.metadata.annotations.all(k, k == 'pragmatic-tech.ai/configuration-hash' || k == 'pragmatic-tech.ai/secrets-revision' || (has(object.spec.template.metadata.annotations) && k in object.spec.template.metadata.annotations && object.spec.template.metadata.annotations[k] == oldObject.spec.template.metadata.annotations[k]))))"
 
     public static Of(kind: string): any
     {
@@ -596,20 +605,15 @@ describe('K8sManifestBuilder.RenderTenantAdmin admission fence', () =>
     it('validates namespaces by prefix and hive label, and role bindings by namespace, name, role and exact subject', () =>
     {
         const expressions = AdmissionFixture.Of('ValidatingAdmissionPolicy').spec.validations.map((v: any) => v.expression)
-        assert.equal(expressions.length, 7)
-        assert.deepEqual(expressions.slice(0, 6), [
+        assert.deepEqual(expressions, [
             AdmissionFixture.NamespaceCreate,
             AdmissionFixture.NamespaceChange,
             AdmissionFixture.BindingNamespace,
             AdmissionFixture.BindingName,
             AdmissionFixture.BindingRole,
             AdmissionFixture.BindingSubjects,
+            AdmissionFixture.DeploymentsUpdate,
         ])
-        // Outside the environment namespaces the console may change a Deployment only by its configuration-hash / secrets-revision annotations.
-        const deployments: string = expressions[6]
-        assert.ok(deployments.startsWith(AdmissionFixture.DeploymentsPrefix))
-        assert.ok(deployments.includes("k == 'pragmatic-tech.ai/configuration-hash'"))
-        assert.ok(deployments.includes("k == 'pragmatic-tech.ai/secrets-revision'"))
         for (const v of AdmissionFixture.Of('ValidatingAdmissionPolicy').spec.validations)
         {
             assert.equal(typeof v.message, 'string')

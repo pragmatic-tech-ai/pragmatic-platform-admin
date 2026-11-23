@@ -11,6 +11,9 @@ import { ReleaseDescriptorsConfigMap } from './release-descriptors-config-map.js
  */
 export class ConsoleReleaseDescriptors
 {
+    /** The apps one console install runs (TenantConsoleInstaller). */
+    public static readonly ConsoleApps: readonly ReleaseApp[] = [ReleaseApp.TenantAdmin, ReleaseApp.TenantIdp, ReleaseApp.Postgres]
+
     public constructor(private readonly releases: IPlatformRelease, private readonly source: IReleaseDescriptorSource)
     {
     }
@@ -19,6 +22,15 @@ export class ConsoleReleaseDescriptors
     public ReleaseOfConsole(): string | undefined
     {
         return this.releases.ReleaseOf(ReleaseApp.TenantAdmin)
+    }
+
+    /**
+     * Whether the console's images (tenant-admin, the IdP, pragmatic-postgres) come from different releases (the newest
+     * release per app differs when the newest one lacks an app): then no one release's descriptors describe what runs.
+     */
+    public IsMixed(): boolean
+    {
+        return new Set(ConsoleReleaseDescriptors.ConsoleApps.map(app => this.releases.ReleaseOf(app))).size > 1
     }
 
     /** The ConfigMap manifest of `version`'s descriptors for `hiveId`; undefined when the release carries none it vouches for. */

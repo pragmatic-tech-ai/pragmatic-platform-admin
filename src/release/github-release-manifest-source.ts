@@ -41,6 +41,11 @@ export class GitHubReleaseManifestSource implements IReleaseManifestSource
     private static readonly RedirectFollow = 'follow'
     private static readonly StatusOk = 200
     private static readonly StatusNotFound = 404
+    /** GitHub's anonymous rate limit answers 403 (primary) or 429 (secondary). */
+    private static readonly RateLimitStatuses: ReadonlySet<number> = new Set([403, 429])
+    private static readonly ContentLengthHeader = 'content-length'
+    private static readonly NoLength = '0'
+    private static readonly RateLimitedMessage = 'GitHub refused the request (rate limited); try again later'
     private static readonly TrailingSlashes = /\/+$/
     private static readonly UnreachableMessage = 'GitHub is unreachable'
     private static readonly StatusMessagePrefix = 'GitHub answered HTTP '
@@ -87,9 +92,19 @@ export class GitHubReleaseManifestSource implements IReleaseManifestSource
         {
             return undefined
         }
+        if (S.RateLimitStatuses.has(response.status))
+        {
+            throw new ReleaseManifestUnavailableError(S.RateLimitedMessage)
+        }
         if (response.status !== S.StatusOk)
         {
             throw new ReleaseManifestUnavailableError(S.StatusMessagePrefix + String(response.status))
+        }
+        // A declared length past the bound is refused before the body is read.
+        const declared = Number(response.headers.get(S.ContentLengthHeader) ?? S.NoLength)
+        if (declared > S.MaxBytes)
+        {
+            throw new ReleaseManifestUnavailableError(S.TooLargeMessage)
         }
         const bytes = new Uint8Array(await response.arrayBuffer())
         if (bytes.length > S.MaxBytes)

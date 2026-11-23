@@ -12,6 +12,8 @@ import { ControlPlaneServer } from '../server.js'
 import { InfraTargetMode } from '../infra-target-mode.js'
 import { DevPlatformImages, ReleasePlatformImages } from '../platform-images.js'
 import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { ConsoleReleaseDescriptors } from '../console-release-descriptors.js'
+import type { IReleaseServices } from '../release/release-catalog-config.js'
 
 class HostedFixture
 {
@@ -177,5 +179,37 @@ describe('ControlPlaneServer.DockerIdpImageOf', () =>
     it('refuses platform images that offer no tenant IdP', () =>
     {
         assert.throws(() => ControlPlaneServer.DockerIdpImageOf({ ImageOf: () => undefined }), /no verified platform release yet/)
+    })
+})
+
+/** Release services whose descriptor source is never asked (ConsoleDescriptorsOf only composes). */
+class DescriptorServices
+{
+    public static readonly ImageHost = 'ghcr.io'
+
+    public static Of(): IReleaseServices
+    {
+        return { Refresher: undefined as unknown as IReleaseServices['Refresher'], Poll: undefined, Descriptors: { DescriptorsOf: async () => undefined } }
+    }
+}
+
+describe('ControlPlaneServer.ConsoleDescriptorsOf', () =>
+{
+    it('delivers descriptors only for release images with a release catalogue: none on a development box or without a registry credential', async () =>
+    {
+        const dir = mkdtempSync(join(tmpdir(), 'console-descriptors-'))
+        try
+        {
+            const manifests = new ManifestRegistry(join(dir, 'manifests.json'))
+            await manifests.Load()
+            const released = new ReleasePlatformImages(manifests, DescriptorServices.ImageHost)
+            assert.ok(ControlPlaneServer.ConsoleDescriptorsOf(released, DescriptorServices.Of()) instanceof ConsoleReleaseDescriptors)
+            assert.equal(ControlPlaneServer.ConsoleDescriptorsOf(released, undefined), undefined)
+            assert.equal(ControlPlaneServer.ConsoleDescriptorsOf(new DevPlatformImages(), DescriptorServices.Of()), undefined)
+        }
+        finally
+        {
+            rmSync(dir, { recursive: true, force: true })
+        }
     })
 })

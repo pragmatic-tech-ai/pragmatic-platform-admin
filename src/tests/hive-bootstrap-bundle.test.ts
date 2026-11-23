@@ -21,7 +21,7 @@ describe('HiveBootstrapBundle', () =>
         assert.deepEqual(list.items.map(i => i.kind), ['Namespace', 'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Deployment', 'ConfigMap', 'Secret'])
         // Only the agent's empty configuration ConfigMap/Secret are rendered; the token Secret is named, never filled.
         assert.deepEqual(list.items.filter(i => i.kind === 'ConfigMap' || i.kind === 'Secret').map(i => i.metadata.name), ['pragmatic-config-pragmatic-hive-agent', 'pragmatic-secrets-pragmatic-hive-agent'])
-        assert.ok(list.items.every(i => i.data === undefined))
+        assert.ok(list.items.every(i => i.data === undefined && (i as { stringData?: unknown }).stringData === undefined))
         assert.ok(bundle.manifest.includes('http://host.docker.internal:7001'))
         assert.ok(bundle.manifest.includes(bundle.tokenSecretName))
         assert.ok(!list.items.some(i => i.metadata.name === bundle.tokenSecretName))

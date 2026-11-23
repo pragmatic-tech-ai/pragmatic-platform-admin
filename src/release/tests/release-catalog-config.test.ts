@@ -8,6 +8,7 @@ import { OciRegistryClient, ReleasePublisher, ReleaseRegistry, ReleaseApps, Rele
 import { FakeOciRegistry } from '../../tests/fake-oci-registry.js'
 import { FakeImageLayout, FakeReleaseImage } from '../../tests/fake-release-image.js'
 import { ReleaseCatalogConfig, ReleaseConfigError } from '../release-catalog-config.js'
+import { ReleaseDescriptorSource } from '../release-descriptor-source.js'
 import { ClientRegistry } from '../../client-registry.js'
 import { TenantRegistry } from '../../tenant-registry.js'
 import { HiveRegistry } from '../../hive-registry.js'
@@ -169,6 +170,8 @@ describe('ReleaseCatalogConfig', () =>
         const polled = ReleaseCatalogConfig.Compose({ [F.CredentialVar]: file }, F.RepoRoot, fx.Deployments)
         assert.ok(polled?.Refresher !== undefined)
         assert.ok(polled.Poll !== undefined)
+        // The release descriptors a console install delivers are read over the same registry and trust keys.
+        assert.ok(polled.Descriptors instanceof ReleaseDescriptorSource)
         const unpolled = ReleaseCatalogConfig.Compose({ [F.CredentialVar]: file, [F.PollVar]: '0' }, F.RepoRoot, fx.Deployments)
         assert.ok(unpolled?.Refresher !== undefined)
         assert.equal(unpolled.Poll, undefined)

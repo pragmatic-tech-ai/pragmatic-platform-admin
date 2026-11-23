@@ -260,6 +260,7 @@ export enum ConsoleInstallStep
 {
     CheckingAgent = 'checking-agent',
     PreparingCertificates = 'preparing-certificates',
+    ReadingReleaseDescriptors = 'reading-release-descriptors',
     ApplyingConsole = 'applying-console',
     StoringSecrets = 'storing-secrets',
     WaitingForRollout = 'waiting-for-rollout',

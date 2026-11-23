@@ -9,17 +9,38 @@ export class ReleaseDescriptorFixtures
     public static readonly Version = '0.1.0-early.9'
     public static readonly OlderVersion = '0.1.0-early.7'
     public static readonly Owner = 'pragmatic-tech-ai/'
+    /** The component version every fake app's repository release carries. */
+    public static readonly ComponentVersion = '0.1.0'
+    public static readonly ImageDigest = 'sha256:' + '1'.repeat(64)
+    public static readonly ServerImage = 'ghcr.io/pragmatic-tech-ai/pragmatic-env-server@' + ReleaseDescriptorFixtures.ImageDigest
+    public static readonly PublishedAt = '2026-11-20T00:00:00.000Z'
+    /** Content markers: each yields descriptors with their own digests. */
+    public static readonly Marker = 'a'
+    public static readonly PreArtifactMarker = 'pre'
+    public static readonly OlderMarker = 'older'
+    public static readonly NewerMarker = 'newer'
+    public static readonly ForgedMarker = 'forged'
+    public static readonly TamperedMarker = 'tampered'
+    /** A component no release carries. */
+    public static readonly Stranger = 'pragmatic-stranger'
+    private static readonly OptionName = 'core'
+    private static readonly OptionDescriptionPrefix = 'The core settings of '
+    private static readonly Dot = '.'
+    private static readonly SettingName = 'mode'
+    private static readonly SettingSource = 'PRAGMATIC_TEST_MODE'
+    private static readonly SettingDescription = 'A test setting.'
 
     /** A real descriptor of `app` at component version `version`; `marker` varies its content (so its digest). */
-    public static Descriptor(app: string, version: string = '0.1.0', marker: string = 'a'): ComponentDescriptor
+    public static Descriptor(app: string, version: string = ReleaseDescriptorFixtures.ComponentVersion, marker: string = ReleaseDescriptorFixtures.Marker): ComponentDescriptor
     {
+        const F = ReleaseDescriptorFixtures
         return ComponentDeclarations.Build({
             name: app,
             version,
             options: [{
-                name: 'core',
-                description: 'The core settings of ' + app + '.',
-                settings: [{ name: 'mode', type: SettingType.String, source: 'PRAGMATIC_TEST_MODE', default: marker, description: 'A test setting.' }],
+                name: F.OptionName,
+                description: F.OptionDescriptionPrefix + app + F.Dot,
+                settings: [{ name: F.SettingName, type: SettingType.String, source: F.SettingSource, default: marker, description: F.SettingDescription }],
             }],
             roles: [],
             postgres: false,
@@ -28,9 +49,9 @@ export class ReleaseDescriptorFixtures
     }
 
     /** One descriptor per app of a release. */
-    public static Set(marker: string = 'a'): ComponentDescriptorSet
+    public static Set(marker: string = ReleaseDescriptorFixtures.Marker): ComponentDescriptorSet
     {
-        return ComponentDescriptorSet.FromDescriptors(ReleaseApps.All.map(app => ReleaseDescriptorFixtures.Descriptor(app, '0.1.0', marker)))
+        return ComponentDescriptorSet.FromDescriptors(ReleaseApps.All.map(app => ReleaseDescriptorFixtures.Descriptor(app, ReleaseDescriptorFixtures.ComponentVersion, marker)))
     }
 
     /** The bytes a repository release's component.json asset carries: the descriptor's canonical JSON. */
@@ -39,30 +60,34 @@ export class ReleaseDescriptorFixtures
         return new TextEncoder().encode(descriptor.ToCanonicalJson())
     }
 
-    /** A verified catalogue record of `version` whose images sign the given descriptors' digests (none: schema 1). */
-    public static Record(version: string, set: ComponentDescriptorSet | undefined, state: ReleaseState = ReleaseState.Verified): ManifestRecord
+    /** A catalogue record of `version` whose images sign the given descriptors' digests (none: schema 1). */
+    public static Record(version: string, set: ComponentDescriptorSet | undefined, state: ReleaseState = ReleaseState.Verified, withdrawn: boolean = false): ManifestRecord
     {
+        const F = ReleaseDescriptorFixtures
         const images: NonNullable<NonNullable<ManifestRecord['release']>['images']> = {}
         for (const app of ReleaseApps.All)
         {
             const digest = set?.Get(app)?.ContentDigest()
             images[app] = digest === undefined
-                ? { repository: ReleaseDescriptorFixtures.Owner + app, digest: 'sha256:' + '1'.repeat(64) }
-                : { repository: ReleaseDescriptorFixtures.Owner + app, digest: 'sha256:' + '1'.repeat(64), componentDigest: digest }
+                ? { repository: F.Owner + app, digest: F.ImageDigest }
+                : { repository: F.Owner + app, digest: F.ImageDigest, componentDigest: digest }
         }
-        return {
-            id: version, image: 'ghcr.io/pragmatic-tech-ai/pragmatic-env-server@sha256:' + '1'.repeat(64), signed: true, publishedAt: '2026-11-20T00:00:00.000Z',
-            release: { state, images },
+        const record: ManifestRecord = { id: version, image: F.ServerImage, signed: true, publishedAt: F.PublishedAt, release: { state, images } }
+        if (withdrawn)
+        {
+            record.withdrawn = true
         }
+        return record
     }
 
-    /** The release manifest of `version`: every app from its own repository at component version 0.1.0. */
+    /** The release manifest of `version`: every app from its own repository at the fixtures' component version. */
     public static Manifest(version: string): ReleaseManifestDocument
     {
+        const F = ReleaseDescriptorFixtures
         const components: Record<string, { repository: string; version: string; digest: string }> = {}
         for (const app of ReleaseApps.All)
         {
-            components[app] = { repository: ReleaseDescriptorFixtures.Owner + app, version: '0.1.0', digest: 'sha256:' + '1'.repeat(64) }
+            components[app] = { repository: F.Owner + app, version: F.ComponentVersion, digest: F.ImageDigest }
         }
         return { schema: 1, version, components: components as ReleaseManifestDocument['components'] }
     }
@@ -122,28 +147,35 @@ export class FakeManifestSource implements IReleaseManifestSource
     }
 }
 
-/** IComponentAssetSource over a map keyed `<repository>@<version>`. */
+/** IComponentAssetSource over a map keyed `<repository>@<version>`; `Error` makes every read throw it. */
 export class FakeAssets implements IComponentAssetSource
 {
     private static readonly KeySeparator = '@'
     public readonly Assets = new Map<string, Uint8Array>()
+    public readonly Asked: string[] = []
+    public Error: Error | undefined
 
-    public static Key(repository: string, version: string): string
+    public static Key(repository: string, version: string = ReleaseDescriptorFixtures.ComponentVersion): string
     {
         return repository + FakeAssets.KeySeparator + version
     }
 
-    /** Every app's asset at 0.1.0, from the set's descriptors. */
+    /** Every app's asset at the fixtures' component version, from the set's descriptors. */
     public PutAll(set: ComponentDescriptorSet): void
     {
         for (const descriptor of set.All())
         {
-            this.Assets.set(FakeAssets.Key(ReleaseDescriptorFixtures.Owner + descriptor.Name, '0.1.0'), ReleaseDescriptorFixtures.Bytes(descriptor))
+            this.Assets.set(FakeAssets.Key(ReleaseDescriptorFixtures.Owner + descriptor.Name), ReleaseDescriptorFixtures.Bytes(descriptor))
         }
     }
 
     public async ComponentAsset(repository: string, version: string): Promise<Uint8Array | undefined>
     {
+        this.Asked.push(FakeAssets.Key(repository, version))
+        if (this.Error !== undefined)
+        {
+            throw this.Error
+        }
         return this.Assets.get(FakeAssets.Key(repository, version))
     }
 
