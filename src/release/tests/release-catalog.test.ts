@@ -4,7 +4,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { OciRegistryClient, type OciFetch, Channel, ReleaseDescriptorCodec, type ReleaseDescriptor, ReleasePublisher, ReleaseSignature, ReleaseApp, ReleaseApps, ReleaseTag, ReleaseTrustKeys, ImageSigner, type IImageSigner, FileKeyStore } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { OciRegistryClient, type OciFetch, Channel, ReleaseDescriptorCodec, type ReleaseDescriptor, ReleasePublisher, ReleaseSignature, ReleaseApp, ReleaseApps, ReleaseTag, ReleaseTrustKeys, ImageSigner, type IImageSigner, FileKeyStore, ReleaseManifest, type ReleaseManifestDocument, type IComponentAssetSource } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { FakeOciRegistry } from '../../tests/fake-oci-registry.js'
 import { FakeImageLayout, FakeReleaseImage } from '../../tests/fake-release-image.js'
 import { RolloutFixture } from '../../tests/rollout-fixture.js'
@@ -31,6 +31,36 @@ class SigningKey
     }
 }
 
+/** IComponentAssetSource over two maps keyed `<repository>@<version>`: the release's component.json bytes and its tag's commit. */
+class FakeComponentAssets implements IComponentAssetSource
+{
+    private static readonly KeySeparator = '@'
+    private readonly assets = new Map<string, Uint8Array>()
+    private readonly commits = new Map<string, string>()
+
+    public Add(repository: string, version: string, asset: Uint8Array, commit: string): void
+    {
+        const key = FakeComponentAssets.KeyOf(repository, version)
+        this.assets.set(key, asset)
+        this.commits.set(key, commit)
+    }
+
+    public async ComponentAsset(repository: string, version: string): Promise<Uint8Array | undefined>
+    {
+        return this.assets.get(FakeComponentAssets.KeyOf(repository, version))
+    }
+
+    public async ReleaseCommit(repository: string, version: string): Promise<string | undefined>
+    {
+        return this.commits.get(FakeComponentAssets.KeyOf(repository, version))
+    }
+
+    private static KeyOf(repository: string, version: string): string
+    {
+        return repository + FakeComponentAssets.KeySeparator + version
+    }
+}
+
 class CatalogFixture
 {
     public static readonly Namespace = 'pragmatic-tech-ai'
@@ -38,6 +68,8 @@ class CatalogFixture
     public static readonly V2 = '1.5.0'
     public static readonly Unseeded = '9.9.9'
     public static readonly Early = '1.6.0-early.2'
+    /** The version each container repository released its image at, as the platform release manifest names it. */
+    public static readonly ComponentVersion = '0.3.1'
     public static readonly TrustedId = 'release-2026'
     public static readonly RogueId = 'rogue-key'
     public static readonly ServerCommit = 'a'.repeat(40)
@@ -169,6 +201,40 @@ class CatalogFixture
             signingKeyId: key.Id,
             privateKeyPem: key.Private,
             trustedPublicKeyPem: key.Public,
+        })
+    }
+
+    /**
+     * Publishes the way pragmatic-platform-release does, through the real ReleasePublisher.PublishManifest: each image is
+     * the one its container repository released at ComponentVersion (tagged `<ComponentVersion>` and `git-<commit>`,
+     * labelled with its component.json digest), and the publisher adds the toolkit's own release tag to it. No image is
+     * ever tagged with the bare release version.
+     */
+    public async PublishManifest(version: string): Promise<{ descriptor: ReleaseDescriptor; descriptorDigest: string }>
+    {
+        const S = CatalogFixture
+        const assets = new FakeComponentAssets()
+        const components = {} as ReleaseManifestDocument['components']
+        for (const app of ReleaseApps.All)
+        {
+            const repository = S.Repo(app)
+            const asset = new TextEncoder().encode(JSON.stringify({ component: app, version: S.ComponentVersion }))
+            const label = OciRegistryClient.DigestOf(asset)
+            const layout = this.IndexApps.has(app) ? FakeImageLayout.Index : FakeImageLayout.Single
+            const content = S.ImageContentPrefix + app + S.ContentSeparator + S.ComponentVersion
+            const digest = this.Images.Put(repository, S.ComponentVersion, content, layout, label)
+            this.Images.Put(repository, ReleaseManifest.CommitTagOf(S.SiblingCommit), content, layout, label)
+            assets.Add(repository, S.ComponentVersion, asset, S.SiblingCommit)
+            components[app] = { repository, version: S.ComponentVersion, digest }
+        }
+        const publisher = new ReleasePublisher(this.Client(), S.Namespace, () => new Date(S.BuiltAt))
+        return publisher.PublishManifest({
+            Manifest: { schema: ReleaseManifest.Schema, version, components },
+            Assets: assets,
+            ReleaseCommit: S.ServerCommit,
+            SigningKeyId: this.Trusted.Id,
+            PrivateKeyPem: this.Trusted.Private,
+            TrustedPublicKeyPem: this.Trusted.Public,
         })
     }
 
@@ -309,7 +375,7 @@ describe('ReleaseCatalog.Refresh', () =>
         })
     })
 
-    it('rejects a release whose image is absent from the registry under the version tag, naming the app', async () =>
+    it('rejects a release whose image is absent from the registry under both the release tag and the version tag, naming the app', async () =>
     {
         await CatalogFixture.Run(async fx =>
         {
@@ -623,6 +689,75 @@ describe('ReleaseCatalog.Refresh', () =>
             assert.deepEqual(fx.Deployments.AllManifests(), [])
             const result = await fx.Catalog({ username: CatalogFixture.User, token: CatalogFixture.Token }).Refresh()
             assert.deepEqual(result.imported, [CatalogFixture.V1])
+        })
+    })
+})
+
+describe('ReleaseCatalog and the toolkit release image tag', () =>
+{
+    it('verifies a release as the platform release publishes it: images under the toolkit release tag, never the bare version', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            fx.IndexApps.add(ReleaseApp.PlatformAdmin)
+            const { descriptor } = await fx.PublishManifest(CatalogFixture.Early)
+            const client = fx.Client()
+            for (const [app, image] of ReleaseDescriptorCodec.ImagesOf(descriptor))
+            {
+                assert.equal(await client.HeadManifest(CatalogFixture.Repo(app), ReleaseManifest.ImageTagOf(CatalogFixture.Early)), image.digest, app)
+                assert.equal(await client.HeadManifest(CatalogFixture.Repo(app), CatalogFixture.Early), undefined, app)
+            }
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [CatalogFixture.Early], rejected: [], unchanged: 0, shadowed: [] })
+            assert.equal(fx.Release(CatalogFixture.Early)?.release?.state, ReleaseState.Verified)
+        })
+    })
+
+    it('falls back to the bare version tag for a release published before the release tag (up to 0.1.0-early.5)', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.Early)
+            assert.equal(await fx.Client().HeadManifest(CatalogFixture.Repo(ReleaseApp.PlatformAdmin), ReleaseManifest.ImageTagOf(CatalogFixture.Early)), undefined)
+            assert.deepEqual((await fx.Catalog().Refresh()).imported, [CatalogFixture.Early])
+            assert.equal(fx.Release(CatalogFixture.Early)?.release?.state, ReleaseState.Verified)
+        })
+    })
+
+    it('reads the release tag first: another image under the bare version (a container tag of that name) does not shadow it', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.PublishManifest(CatalogFixture.V2)
+            fx.Registry.PutManifest(CatalogFixture.Repo(ReleaseApp.EnvGateway), CatalogFixture.V2, new TextEncoder().encode(CatalogFixture.Rebuilt), CatalogFixture.ManifestType)
+            assert.deepEqual((await fx.Catalog().Refresh()).imported, [CatalogFixture.V2])
+        })
+    })
+
+    it('a release tag naming another image is a digest mismatch, even while the bare version still names the signed one', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.Publish(CatalogFixture.V1)
+            const gateway = CatalogFixture.Repo(ReleaseApp.EnvGateway)
+            fx.Registry.PutManifest(gateway, ReleaseManifest.ImageTagOf(CatalogFixture.V1), new TextEncoder().encode(CatalogFixture.Rebuilt), CatalogFixture.ManifestType)
+            assert.deepEqual((await fx.Catalog().Refresh()).rejected, [CatalogFixture.V1])
+            assert.equal(fx.Reason(CatalogFixture.V1), 'image digest mismatch: pragmatic-env-gateway')
+        })
+    })
+
+    it('a release rejected while a release tag was missing verifies on the next refresh once the tag is back', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const { descriptor } = await fx.PublishManifest(CatalogFixture.Early)
+            const admin = descriptor.images[ReleaseApp.PlatformAdmin]
+            const releaseTag = ReleaseManifest.ImageTagOf(CatalogFixture.Early)
+            fx.Registry.RemoveTag(admin.repository, releaseTag)
+            assert.deepEqual((await fx.Catalog().Refresh()).rejected, [CatalogFixture.Early])
+            assert.equal(fx.Reason(CatalogFixture.Early), 'image missing: pragmatic-platform-admin')
+            await fx.Client().TagManifest(admin.repository, admin.digest, releaseTag)
+            assert.deepEqual((await fx.Catalog().Refresh()).imported, [CatalogFixture.Early])
+            assert.equal(fx.Release(CatalogFixture.Early)?.release?.state, ReleaseState.Verified)
         })
     })
 })

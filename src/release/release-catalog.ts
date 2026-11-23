@@ -1,4 +1,4 @@
-import { OciProtocolError, OciProtocolFault, OciResponseError, OciUnavailableError, type OciRegistryClient, ComponentImageLabel, ComponentLabelError, ReleaseDescriptorCodec, ReleaseDescriptorInvalidError, type ReleaseDescriptor, type ReleaseImage, ReleasePublisher, ReleaseRegistry, ReleaseSignature, ReleaseApp, ReleaseApps, ReleaseTag, ReleaseTagInvalidError, type ReleaseTrustKeys } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { OciProtocolError, OciProtocolFault, OciResponseError, OciUnavailableError, type OciRegistryClient, ComponentImageLabel, ComponentLabelError, ReleaseDescriptorCodec, ReleaseDescriptorInvalidError, type ReleaseDescriptor, type ReleaseImage, ReleaseManifest, ReleasePublisher, ReleaseRegistry, ReleaseSignature, ReleaseApp, ReleaseApps, ReleaseTag, ReleaseTagInvalidError, type ReleaseTrustKeys } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ReleaseState, type ManifestRecord, type ManifestRelease } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import type { PlatformDeploymentRegistry } from '../platform-deployment-registry.js'
 import { ManifestExistsError, ReleaseNotRejectedError, ReleaseRegistryUnavailableError, UnknownManifestError } from '@pragmatic-tech-ai/pragmatic-platform-link'
@@ -284,7 +284,7 @@ export class ReleaseCatalog
         {
             return S.RepositoryMismatch + app
         }
-        const current = await this.registry.HeadManifest(repository, version)
+        const current = await this.ImageDigestOf(repository, version)
         if (current === undefined)
         {
             return S.ImageMissing + app
@@ -298,6 +298,18 @@ export class ReleaseCatalog
             return S.ImageSignatureInvalid + app
         }
         return image.componentDigest === undefined ? undefined : await this.VerifyComponent(app, image.repository, image.digest, image.componentDigest)
+    }
+
+    /**
+     * The digest the image repository tags for the release: its release tag `release-<version>` (ReleaseManifest.ImageTagOf,
+     * what the platform release tags from 0.1.0-early.6 on), else the bare `<version>` the releases up to 0.1.0-early.5
+     * tagged. A present release tag is final: an image under the bare version (a container release's own semver tag of the
+     * same name) never stands in for it.
+     */
+    private async ImageDigestOf(repository: string, version: string): Promise<string | undefined>
+    {
+        return await this.registry.HeadManifest(repository, ReleaseManifest.ImageTagOf(version))
+            ?? await this.registry.HeadManifest(repository, version)
     }
 
     /**
