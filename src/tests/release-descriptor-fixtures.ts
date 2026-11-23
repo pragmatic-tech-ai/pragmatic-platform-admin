@@ -1,5 +1,5 @@
 import { ComponentDeclarations, SettingType, type ComponentDescriptor } from '@pragmatic-tech-ai/pragmatic-component'
-import { ComponentDescriptorSet, OciRegistryClient, ReleaseApps, ReleaseDescriptorsAbsentError, type IComponentAssetSource, type ReleaseManifestDocument } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { ComponentDescriptorSet, OciRegistryClient, ReleaseApp, ReleaseApps, ReleaseDescriptorsAbsentError, type IComponentAssetSource, type ReleaseManifestComponent, type ReleaseManifestDocument } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ReleaseState, type ManifestRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import type { IReleaseComponentsArtifact, IReleaseManifestSource, IReleaseRecords } from '../release/release-descriptor-source.js'
 
@@ -84,12 +84,19 @@ export class ReleaseDescriptorFixtures
     public static Manifest(version: string): ReleaseManifestDocument
     {
         const F = ReleaseDescriptorFixtures
-        const components: Record<string, { repository: string; version: string; digest: string }> = {}
-        for (const app of ReleaseApps.All)
-        {
-            components[app] = { repository: F.Owner + app, version: F.ComponentVersion, digest: F.ImageDigest }
+        const of = (app: ReleaseApp): ReleaseManifestComponent => ({ repository: F.Owner + app, version: F.ComponentVersion, digest: F.ImageDigest })
+        const components: Record<ReleaseApp, ReleaseManifestComponent> = {
+            [ReleaseApp.PlatformAdmin]: of(ReleaseApp.PlatformAdmin),
+            [ReleaseApp.PlatformEdge]: of(ReleaseApp.PlatformEdge),
+            [ReleaseApp.EnvServer]: of(ReleaseApp.EnvServer),
+            [ReleaseApp.EnvGateway]: of(ReleaseApp.EnvGateway),
+            [ReleaseApp.HiveAgent]: of(ReleaseApp.HiveAgent),
+            [ReleaseApp.TenantAdmin]: of(ReleaseApp.TenantAdmin),
+            [ReleaseApp.TenantIdp]: of(ReleaseApp.TenantIdp),
+            [ReleaseApp.UiUnpack]: of(ReleaseApp.UiUnpack),
+            [ReleaseApp.Postgres]: of(ReleaseApp.Postgres),
         }
-        return { schema: 1, version, components: components as ReleaseManifestDocument['components'] }
+        return { schema: 1, version, components }
     }
 
     public static Digest(bytes: Uint8Array): string

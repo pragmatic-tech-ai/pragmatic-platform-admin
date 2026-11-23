@@ -6,7 +6,7 @@ export class ReleaseDescriptorsTooLargeError extends Error
 {
     private static readonly ErrorName = 'ReleaseDescriptorsTooLargeError'
     private static readonly Prefix = 'The component descriptors of release '
-    private static readonly Suffix = ' exceed what one ConfigMap holds (1 MiB).'
+    private static readonly Suffix = ' exceed what one ConfigMap holds (1 MiB, less 16 KiB kept for its metadata).'
 
     public constructor(version: string)
     {
@@ -41,6 +41,7 @@ export class ReleaseDescriptorsConfigMap
     private static readonly LabelsKey = 'labels'
     private static readonly AnnotationsKey = 'annotations'
     private static readonly DataKey = 'data'
+    private static readonly ResourceVersionKey = 'resourceVersion'
     private static readonly ApiVersionCore = 'v1'
     private static readonly ConfigMapKind = 'ConfigMap'
     private static readonly ConfigMapResource = 'configmap/'
@@ -111,6 +112,22 @@ export class ReleaseDescriptorsConfigMap
     public static BelongsTo(json: string | undefined, hiveId: string): boolean
     {
         return ReleaseDescriptorsConfigMap.HiveOf(json) === hiveId
+    }
+
+    /** The object's resourceVersion as kubectl returned it; undefined when it is absent or has none. */
+    public static ResourceVersionOf(json: string | undefined): string | undefined
+    {
+        const version = json === undefined ? undefined : (JSON.parse(json) as { metadata?: { resourceVersion?: unknown } }).metadata?.resourceVersion
+        return typeof version === 'string' && version.length > 0 ? version : undefined
+    }
+
+    /** `manifest` with `resourceVersion` set: the API server applies it only while the object is still at that version. */
+    public static WithResourceVersion(manifest: string, resourceVersion: string): string
+    {
+        const C = ReleaseDescriptorsConfigMap
+        const doc = JSON.parse(manifest) as Record<string, Record<string, unknown>>
+        doc[C.MetadataKey] = { ...doc[C.MetadataKey], [C.ResourceVersionKey]: resourceVersion }
+        return JSON.stringify(doc)
     }
 
     /** The hive whose label the object carries; undefined when it is absent or carries none. */

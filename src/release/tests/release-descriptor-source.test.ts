@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { ComponentAssetUnavailableError, ComponentDescriptorSet, OciResponseError, OciUnavailableError, ReleaseApp, ReleaseApps, ReleaseDescriptorMismatchError } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ReleaseState } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { ReleaseDescriptorSource, ReleaseDescriptorsUnavailableError } from '../release-descriptor-source.js'
+import { GitHubRateLimit } from '../github-rate-limit.js'
 import { FakeAssets, FakeComponentsArtifact, FakeManifestSource, FakeReleaseRecords, ReleaseDescriptorFixtures as F } from '../../tests/release-descriptor-fixtures.js'
 
 class SourceFixture
@@ -11,6 +12,17 @@ class SourceFixture
     public static readonly GitHubDown = 'GitHub is unreachable'
     public static readonly StatusForbidden = 403
     public static readonly StatusForbiddenText = 'denied'
+    public static readonly StatusTooMany = 429
+    public static readonly WithdrawnPattern = /withdrawn/
+    public static readonly NoManifestPattern = /manifest was not found/
+    public static readonly OtherVersionPattern = /another version/
+    public static readonly UnreachablePattern = /the release registry is unreachable$/
+    public static readonly ForbiddenPattern = /the release registry answered HTTP 403$/
+    public static readonly NotVerifiedPattern = /not a verified release/
+    public static readonly TooManyText = 'GitHub answered HTTP 429'
+    public static readonly AnyUrl = 'https://api.github.com/'
+    public static readonly Get = 'GET'
+    public static readonly Manual = 'manual'
 
     public readonly Records = new FakeReleaseRecords()
     public readonly Artifact = new FakeComponentsArtifact()
@@ -82,7 +94,7 @@ describe('ReleaseDescriptorSource', () =>
         const { fx, set } = SourceFixture.WithArtifact()
         await fx.Source.DescriptorsOf(F.Version)
         fx.Records.Records.splice(0, 1, F.Record(F.Version, set, ReleaseState.Verified, true))
-        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(/withdrawn/))
+        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(SourceFixture.WithdrawnPattern))
     })
 
     it('refuses an artifact descriptor whose digest is not the one the catalogue verified, naming the app', async () =>
@@ -140,10 +152,10 @@ describe('ReleaseDescriptorSource', () =>
     {
         const none = SourceFixture.PreArtifact()
         none.fx.Manifests.Manifests.clear()
-        await assert.rejects(none.fx.Source.DescriptorsOf(F.OlderVersion), SourceFixture.Unavailable(/manifest was not found/))
+        await assert.rejects(none.fx.Source.DescriptorsOf(F.OlderVersion), SourceFixture.Unavailable(SourceFixture.NoManifestPattern))
         const other = SourceFixture.PreArtifact()
         other.fx.Manifests.Manifests.set(F.OlderVersion, F.Manifest(F.Version))
-        await assert.rejects(other.fx.Source.DescriptorsOf(F.OlderVersion), SourceFixture.Unavailable(/another version/))
+        await assert.rejects(other.fx.Source.DescriptorsOf(F.OlderVersion), SourceFixture.Unavailable(SourceFixture.OtherVersionPattern))
         const missing = SourceFixture.PreArtifact()
         missing.fx.Assets.Assets.delete(FakeAssets.Key(F.Owner + ReleaseApp.HiveAgent))
         await assert.rejects(missing.fx.Source.DescriptorsOf(F.OlderVersion), SourceFixture.Unavailable(new RegExp(ReleaseApp.HiveAgent)))
@@ -154,6 +166,16 @@ describe('ReleaseDescriptorSource', () =>
         const { fx } = SourceFixture.PreArtifact()
         fx.Assets.Error = new ComponentAssetUnavailableError(SourceFixture.GitHubDown)
         await assert.rejects(fx.Source.DescriptorsOf(F.OlderVersion), SourceFixture.Unavailable(new RegExp('component.json of ' + ReleaseApps.All[0] + ': ' + SourceFixture.GitHubDown)))
+    })
+
+    it('an asset read that met the rate limit of GitHub is named as such', async () =>
+    {
+        const { fx } = SourceFixture.PreArtifact()
+        const limit = new GitHubRateLimit()
+        await limit.Watch(async () => new Response('{}', { status: SourceFixture.StatusTooMany }))(SourceFixture.AnyUrl, { method: SourceFixture.Get, headers: {}, redirect: SourceFixture.Manual })
+        const source = new ReleaseDescriptorSource(fx.Records, fx.Artifact, fx.Manifests, fx.Assets, limit)
+        fx.Assets.Error = new ComponentAssetUnavailableError(SourceFixture.TooManyText)
+        await assert.rejects(source.DescriptorsOf(F.OlderVersion), (err: unknown) => err instanceof ReleaseDescriptorsUnavailableError && err.message.endsWith(': ' + GitHubRateLimit.Message))
     })
 
     it('a schema-1 release (no signed component digests) has nothing to deliver', async () =>
@@ -168,11 +190,11 @@ describe('ReleaseDescriptorSource', () =>
     {
         const fx = new SourceFixture()
         fx.Artifact.Sets.set(F.Version, F.Set())
-        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(/not a verified release/))
+        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(SourceFixture.NotVerifiedPattern))
         fx.Records.Records.push(F.Record(F.Version, F.Set(), ReleaseState.Rejected))
-        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(/not a verified release/))
+        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(SourceFixture.NotVerifiedPattern))
         fx.Records.Records.splice(0, 1, F.Record(F.Version, F.Set(), ReleaseState.Verified, true))
-        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(/withdrawn/))
+        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(SourceFixture.WithdrawnPattern))
         assert.deepEqual(fx.Artifact.Asked, [])
     })
 
@@ -180,9 +202,9 @@ describe('ReleaseDescriptorSource', () =>
     {
         const { fx } = SourceFixture.WithArtifact()
         fx.Artifact.Error = new OciUnavailableError(SourceFixture.RegistryDown)
-        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(/the release registry is unreachable$/))
+        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(SourceFixture.UnreachablePattern))
         fx.Artifact.Error = new OciResponseError(SourceFixture.StatusForbidden, SourceFixture.StatusForbiddenText)
-        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(/the release registry answered HTTP 403$/))
+        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(SourceFixture.ForbiddenPattern))
         assert.deepEqual(fx.Manifests.Asked, [])
     })
 })

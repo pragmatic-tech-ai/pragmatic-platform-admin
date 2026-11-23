@@ -66,7 +66,17 @@ describe('ReleaseDescriptorsConfigMap', () =>
     it('refuses descriptors past what one ConfigMap holds, naming the release', () =>
     {
         const big = ComponentDescriptorSet.FromDescriptors([F.Descriptor(ReleaseApps.All[0] as string, F.ComponentVersion, 'x'.repeat(ReleaseDescriptorsConfigMap.MaxDataBytes))])
-        assert.throws(() => ReleaseDescriptorsConfigMap.ManifestOf(big, 'h1', F.Version), (err: unknown) => err instanceof ReleaseDescriptorsTooLargeError && err.message.includes(F.Version))
+        assert.throws(() => ReleaseDescriptorsConfigMap.ManifestOf(big, 'h1', F.Version), (err: unknown) => err instanceof ReleaseDescriptorsTooLargeError && err.message.includes(F.Version) && err.message.includes('1 MiB, less 16 KiB'))
+        assert.equal(ReleaseDescriptorsConfigMap.MaxDataBytes, 1024 * 1024 - 16 * 1024)
+    })
+
+    it('a resourceVersion precondition is set on the manifest and read back from the object', () =>
+    {
+        const manifest = ReleaseDescriptorsConfigMap.WithResourceVersion(ReleaseDescriptorsConfigMap.ManifestOf(F.Set(), 'h1', F.Version), '42')
+        assert.equal(ReleaseDescriptorsConfigMap.ResourceVersionOf(manifest), '42')
+        assert.equal((JSON.parse(manifest) as ConfigMapDoc).metadata.name, ComponentConfigurationMounts.ReleaseDescriptorsConfigMap)
+        assert.equal(ReleaseDescriptorsConfigMap.ResourceVersionOf(ReleaseDescriptorsConfigMap.IdentityManifest()), undefined)
+        assert.equal(ReleaseDescriptorsConfigMap.ResourceVersionOf(undefined), undefined)
     })
 
     it('its identity names the object only, to delete it', () =>

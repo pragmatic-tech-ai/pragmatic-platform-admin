@@ -155,18 +155,6 @@ type IdpMaterial = { ca: Buffer; adminToken: string; secretsManifest: string | u
 /** The IdP database Secret to apply (undefined when the IdP namespace already holds one) and its values' printable forms, for scrubbing. */
 type IdpDatabaseMaterial = { secretsManifest: string | undefined; scrub: string[] }
 
-/** Who holds the release descriptors ConfigMap when an install starts. */
-enum DescriptorHolding
-{
-    None = 'none',
-    ThisHive = 'this-hive',
-    /** It exists without a hive label: no console install wrote it. */
-    Unowned = 'unowned',
-}
-
-/** The release descriptors an install delivers (undefined: none) and who held the object when it started. */
-type DescriptorDelivery = { manifest: string | undefined; existing: DescriptorHolding }
-
 /** One install's mutable state; the installer hands out copies only. */
 class ConsoleInstallRun
 {
@@ -713,51 +701,66 @@ export class TenantConsoleInstaller
     }
 
     /**
-     * What to deliver: the ConfigMap manifest of `release`'s descriptors (undefined: nothing, no release or none signed), and
-     * who holds the object now. Refuses (before anything is applied) when it belongs to another hive: the name is one per
-     * cluster (pragmatic-shared's builder mounts it by that name), so two hives' consoles cannot share a cluster.
+     * The ConfigMap manifest of `release`'s descriptors to deliver (undefined: nothing, no release or none signed). Refuses
+     * early (before anything is applied) when the object belongs to another hive: the name is one per cluster (pragmatic-shared's
+     * builder mounts it by that name), so two hives' consoles cannot share a cluster. Delivery checks again.
      */
-    private async DescriptorsOf(kubectl: IKubectl, hiveId: string, release: string | undefined): Promise<DescriptorDelivery>
+    private async DescriptorsOf(kubectl: IKubectl, hiveId: string, release: string | undefined): Promise<string | undefined>
+    {
+        TenantConsoleInstaller.RefuseHeld(await TenantConsoleInstaller.FindDescriptors(kubectl), hiveId)
+        return release === undefined || this.releaseDescriptors === undefined ? undefined : await this.releaseDescriptors.ManifestFor(release, hiveId)
+    }
+
+    /**
+     * Writes the release descriptors ConfigMap on every install, from what the cluster holds at that moment: another hive's
+     * object refuses the install; this hive's is replaced by a server-side apply preconditioned on the resourceVersion just
+     * read (a write in between fails the apply instead of being overwritten), which drops a key an earlier release carried;
+     * an object no install wrote (no hive label) is deleted first, so none of its keys survive. With nothing to deliver,
+     * removes the object this hive's earlier install wrote (an unowned one is left alone).
+     */
+    private static async DeliverDescriptors(kubectl: IKubectl, hiveId: string, manifest: string | undefined): Promise<void>
     {
         const C = TenantConsoleInstaller
-        const existing = await kubectl.Find(ReleaseDescriptorsConfigMap.Namespace, ReleaseDescriptorsConfigMap.Resource())
+        if (manifest === undefined)
+        {
+            await C.RemoveDescriptors(kubectl, hiveId)
+            return
+        }
+        const existing = await C.FindDescriptors(kubectl)
+        C.RefuseHeld(existing, hiveId)
+        if (existing !== undefined && ReleaseDescriptorsConfigMap.HiveOf(existing) === undefined)
+        {
+            await kubectl.DeleteManifest(ReleaseDescriptorsConfigMap.IdentityManifest())
+            await kubectl.ApplyServerSide(manifest)
+            return
+        }
+        const version = ReleaseDescriptorsConfigMap.ResourceVersionOf(existing)
+        await kubectl.ApplyServerSide(version === undefined ? manifest : ReleaseDescriptorsConfigMap.WithResourceVersion(manifest, version))
+    }
+
+    /** Deletes the release descriptors ConfigMap when this hive's install wrote it (never another hive's), read just before. */
+    private static async RemoveDescriptors(kubectl: IKubectl, hiveId: string): Promise<void>
+    {
+        const existing = await TenantConsoleInstaller.FindDescriptors(kubectl)
+        if (ReleaseDescriptorsConfigMap.BelongsTo(existing, hiveId))
+        {
+            await kubectl.DeleteManifest(ReleaseDescriptorsConfigMap.IdentityManifest())
+        }
+    }
+
+    private static async FindDescriptors(kubectl: IKubectl): Promise<string | undefined>
+    {
+        return await kubectl.Find(ReleaseDescriptorsConfigMap.Namespace, ReleaseDescriptorsConfigMap.Resource())
+    }
+
+    /** Throws the step's sentence when the object belongs to a hive other than `hiveId`. */
+    private static RefuseHeld(existing: string | undefined, hiveId: string): void
+    {
+        const C = TenantConsoleInstaller
         const holder = ReleaseDescriptorsConfigMap.HiveOf(existing)
         if (holder !== undefined && holder !== hiveId)
         {
             throw new ConsoleInstallStepError(C.DescriptorsHeldPrefix + holder + C.DescriptorsHeldSuffix)
-        }
-        const manifest = release === undefined || this.releaseDescriptors === undefined ? undefined : await this.releaseDescriptors.ManifestFor(release, hiveId)
-        const holding = existing === undefined ? DescriptorHolding.None : holder === undefined ? DescriptorHolding.Unowned : DescriptorHolding.ThisHive
-        return { manifest, existing: holding }
-    }
-
-    /**
-     * Writes the release descriptors ConfigMap on every install: a server-side apply of the whole object, which drops a key an
-     * earlier release carried when this field manager wrote it; an object no hive's install wrote is deleted first, so none of
-     * its keys survive. With nothing to deliver, removes the object this hive's earlier install wrote, so the console never
-     * validates against the descriptors of a release it does not run (an unowned object is left alone).
-     */
-    private static async DeliverDescriptors(kubectl: IKubectl, hiveId: string, delivery: DescriptorDelivery): Promise<void>
-    {
-        if (delivery.manifest === undefined)
-        {
-            await TenantConsoleInstaller.RemoveDescriptors(kubectl, hiveId)
-            return
-        }
-        if (delivery.existing === DescriptorHolding.Unowned)
-        {
-            await kubectl.DeleteManifest(ReleaseDescriptorsConfigMap.IdentityManifest())
-        }
-        await kubectl.ApplyServerSide(delivery.manifest)
-    }
-
-    /** Deletes the release descriptors ConfigMap when this hive's install wrote it (never another hive's). */
-    private static async RemoveDescriptors(kubectl: IKubectl, hiveId: string): Promise<void>
-    {
-        const existing = await kubectl.Find(ReleaseDescriptorsConfigMap.Namespace, ReleaseDescriptorsConfigMap.Resource())
-        if (ReleaseDescriptorsConfigMap.BelongsTo(existing, hiveId))
-        {
-            await kubectl.DeleteManifest(ReleaseDescriptorsConfigMap.IdentityManifest())
         }
     }
 

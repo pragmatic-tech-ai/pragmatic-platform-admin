@@ -7,6 +7,7 @@ import { ReleasePoll } from './release-poll.js'
 import { ReleaseRefresher } from './release-refresher.js'
 import type { IReleaseCountersigner } from './release-countersigner.js'
 import { GitHubReleaseManifestSource } from './github-release-manifest-source.js'
+import { GitHubRateLimit } from './github-rate-limit.js'
 import { type IReleaseDescriptorSource, ReleaseDescriptorSource } from './release-descriptor-source.js'
 
 /** A release setting is unusable. The sentence names only the variable: never its value or a file's contents. */
@@ -47,6 +48,7 @@ export class ReleaseCatalogConfig
     /** setInterval holds at most 2^31-1 ms; anything longer would fire at once. */
     private static readonly MaxPollSeconds = 2147483
     private static readonly MsPerSecond = 1000
+    private static readonly GlobalGitHubFetch: GitHubFetch = (url, init) => fetch(url, init as RequestInit)
     private static readonly WholeNumber = /^[0-9]+$/
     private static readonly HttpsProtocol = 'https:'
     private static readonly HttpProtocol = 'http:'
@@ -79,8 +81,10 @@ export class ReleaseCatalogConfig
         const catalog = new ReleaseCatalog(registry, namespace, trust, deployments, ReleaseRegistry.HostOf(registryUrl), countersigner)
         const refresher = new ReleaseRefresher(catalog)
         const poll = pollSeconds === 0 ? undefined : new ReleasePoll(refresher, pollSeconds * C.MsPerSecond)
+        const limit = new GitHubRateLimit()
+        const watched = limit.Watch(gitHubFetch ?? C.GlobalGitHubFetch)
         const descriptors = new ReleaseDescriptorSource(deployments, new ReleaseComponentDescriptors(registry, trust, namespace),
-            new GitHubReleaseManifestSource(gitHubFetch, GitHubReleaseManifestSource.DefaultRepository, namespace), new GitHubComponentAssetSource(gitHubFetch))
+            new GitHubReleaseManifestSource(watched, GitHubReleaseManifestSource.DefaultRepository, namespace), new GitHubComponentAssetSource(watched), limit)
         return { Refresher: refresher, Poll: poll, Descriptors: descriptors }
     }
 

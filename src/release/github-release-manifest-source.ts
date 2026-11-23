@@ -1,5 +1,6 @@
 import { type GitHubFetch, ReleaseManifest, type ReleaseManifestDocument, ReleaseRegistry } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import type { IReleaseManifestSource } from './release-descriptor-source.js'
+import { GitHubRateLimit } from './github-rate-limit.js'
 
 /** GitHub could not be asked for a release manifest, or answered something that is not one. One fixed sentence; never the body. */
 export class ReleaseManifestUnavailableError extends Error
@@ -41,11 +42,8 @@ export class GitHubReleaseManifestSource implements IReleaseManifestSource
     private static readonly RedirectFollow = 'follow'
     private static readonly StatusOk = 200
     private static readonly StatusNotFound = 404
-    /** GitHub's anonymous rate limit answers 403 (primary) or 429 (secondary). */
-    private static readonly RateLimitStatuses: ReadonlySet<number> = new Set([403, 429])
     private static readonly ContentLengthHeader = 'content-length'
     private static readonly NoLength = '0'
-    private static readonly RateLimitedMessage = 'GitHub refused the request (rate limited); try again later'
     private static readonly TrailingSlashes = /\/+$/
     private static readonly UnreachableMessage = 'GitHub is unreachable'
     private static readonly StatusMessagePrefix = 'GitHub answered HTTP '
@@ -92,9 +90,9 @@ export class GitHubReleaseManifestSource implements IReleaseManifestSource
         {
             return undefined
         }
-        if (S.RateLimitStatuses.has(response.status))
+        if (GitHubRateLimit.IsLimited(response))
         {
-            throw new ReleaseManifestUnavailableError(S.RateLimitedMessage)
+            throw new ReleaseManifestUnavailableError(GitHubRateLimit.Message)
         }
         if (response.status !== S.StatusOk)
         {
@@ -106,11 +104,7 @@ export class GitHubReleaseManifestSource implements IReleaseManifestSource
         {
             throw new ReleaseManifestUnavailableError(S.TooLargeMessage)
         }
-        const bytes = new Uint8Array(await response.arrayBuffer())
-        if (bytes.length > S.MaxBytes)
-        {
-            throw new ReleaseManifestUnavailableError(S.TooLargeMessage)
-        }
+        const bytes = await S.BoundedBody(response)
         try
         {
             return ReleaseManifest.Parse(new TextDecoder().decode(bytes), this.namespace)
@@ -119,5 +113,48 @@ export class GitHubReleaseManifestSource implements IReleaseManifestSource
         {
             throw new ReleaseManifestUnavailableError(S.InvalidMessage)
         }
+    }
+
+    /** The body, read chunk by chunk and abandoned (the stream cancelled) as soon as it passes MaxBytes. */
+    private static async BoundedBody(response: Response): Promise<Uint8Array>
+    {
+        const S = GitHubReleaseManifestSource
+        const reader = response.body?.getReader()
+        if (reader === undefined)
+        {
+            return new Uint8Array()
+        }
+        const chunks: Uint8Array[] = []
+        let total = 0
+        try
+        {
+            for (;;)
+            {
+                const { done, value } = await reader.read()
+                if (done)
+                {
+                    break
+                }
+                total += value.length
+                if (total > S.MaxBytes)
+                {
+                    await reader.cancel()
+                    throw new ReleaseManifestUnavailableError(S.TooLargeMessage)
+                }
+                chunks.push(value)
+            }
+        }
+        catch (error)
+        {
+            throw error instanceof ReleaseManifestUnavailableError ? error : new ReleaseManifestUnavailableError(S.UnreachableMessage)
+        }
+        const bytes = new Uint8Array(total)
+        let offset = 0
+        for (const chunk of chunks)
+        {
+            bytes.set(chunk, offset)
+            offset += chunk.length
+        }
+        return bytes
     }
 }

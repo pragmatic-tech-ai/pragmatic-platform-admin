@@ -7,7 +7,7 @@ import type { IPlatformRelease } from '../platform-images.js'
 import { ReleaseDescriptorSource } from '../release/release-descriptor-source.js'
 import { ReleaseDescriptorsConfigMap } from '../release-descriptors-config-map.js'
 import { ConsoleInstallState, ConsoleInstallStep, ConsoleInstallUnavailableError } from '../tenant-console-installer.js'
-import { ConsoleInstallFixture } from './console-install-fakes.js'
+import { ConsoleFakeKubectl, ConsoleInstallFixture } from './console-install-fakes.js'
 import { FakeAssets, FakeComponentsArtifact, FakeManifestSource, FakeReleaseRecords, ReleaseDescriptorFixtures as F } from './release-descriptor-fixtures.js'
 
 type K8sItem = {
@@ -51,6 +51,19 @@ class DescriptorInstall
     public static readonly HeldText = 'belongs to hive ' + DescriptorInstall.OtherHive
     public static readonly RbacGroup = 'rbac.authorization.k8s.io'
     public static readonly ByName = ['get', 'patch']
+    public static readonly ApplyCall = 'Apply'
+    public static readonly ApplyServerSideCall = 'ApplyServerSide'
+    public static readonly RolloutRestartCall = 'RolloutRestart'
+    public static readonly DeleteManifestCall = 'DeleteManifest'
+    public static readonly ConfigMapKind = 'ConfigMap'
+    public static readonly DeploymentKind = 'Deployment'
+    public static readonly SecretKind = 'Secret'
+    public static readonly RoleKind = 'Role'
+    public static readonly RoleBindingKind = 'RoleBinding'
+    public static readonly ServiceAccountKind = 'ServiceAccount'
+    public static readonly ReadingFailedText = "Could not read the release's component descriptors."
+    public static readonly MixedPattern = /different platform releases/
+    public static readonly ResourceVersion = '42'
 
     public readonly Release = new FakePlatformRelease()
     public readonly Records = new FakeReleaseRecords()
@@ -83,7 +96,7 @@ class DescriptorInstall
 
     public static IsDescriptors(manifestJson: string): boolean
     {
-        return DescriptorInstall.Items(manifestJson).some(i => i.kind === 'ConfigMap' && i.metadata.name === ReleaseDescriptorsConfigMap.Name)
+        return DescriptorInstall.Items(manifestJson).some(i => i.kind === DescriptorInstall.ConfigMapKind && i.metadata.name === ReleaseDescriptorsConfigMap.Name)
     }
 
     /** The descriptors ConfigMaps the installer applied server-side, in order. */
@@ -108,8 +121,23 @@ class DescriptorInstall
     /** An existing descriptors ConfigMap labelled for `hiveId` (undefined: no hive label). */
     public static PutDescriptors(fx: ConsoleInstallFixture, hiveId: string | undefined): void
     {
-        const metadata = hiveId === undefined ? { name: ReleaseDescriptorsConfigMap.Name } : { name: ReleaseDescriptorsConfigMap.Name, labels: K8sManifestBuilder.HiveLabelsOf(hiveId) }
-        fx.Kubectl.Put(ReleaseDescriptorsConfigMap.Namespace, ReleaseDescriptorsConfigMap.Resource(), { kind: 'ConfigMap', metadata })
+        fx.Kubectl.Put(ReleaseDescriptorsConfigMap.Namespace, ReleaseDescriptorsConfigMap.Resource(), DescriptorInstall.DescriptorsObject(hiveId))
+    }
+
+    /** A descriptors ConfigMap as kubectl returns it, labelled for `hiveId` (undefined: no hive label). */
+    public static DescriptorsObject(hiveId: string | undefined, resourceVersion: string = DescriptorInstall.ResourceVersion): unknown
+    {
+        const D = DescriptorInstall
+        const metadata = hiveId === undefined
+            ? { name: ReleaseDescriptorsConfigMap.Name, resourceVersion }
+            : { name: ReleaseDescriptorsConfigMap.Name, resourceVersion, labels: K8sManifestBuilder.HiveLabelsOf(hiveId) }
+        return { kind: D.ConfigMapKind, metadata }
+    }
+
+    /** Queues what the descriptors ConfigMap Finds answer, in turn (a cluster changing while the install runs). */
+    public static QueueDescriptors(fx: ConsoleInstallFixture, answers: Array<string | undefined>): void
+    {
+        fx.Kubectl.FindAnswers.set(ConsoleFakeKubectl.Key(ReleaseDescriptorsConfigMap.Namespace, ReleaseDescriptorsConfigMap.Resource()), answers)
     }
 
     /** The position of the first call of `verb` (with an argument matching `arg`, when given). */
@@ -148,9 +176,9 @@ describe('TenantConsoleInstaller: the release descriptors ConfigMap', () =>
         // Last of the writes: a failed earlier step leaves the running console the descriptors of the release it runs.
         const serverApplies = fx.Kubectl.ServerApplied
         assert.equal(serverApplies.findIndex(m => D.IsDescriptors(m)), serverApplies.length - 1)
-        const at = fx.Kubectl.Calls.map(c => c[0]).lastIndexOf('ApplyServerSide')
-        assert.ok(D.IndexOf(fx, 'Apply') < at)
-        assert.ok(at < D.IndexOf(fx, 'RolloutRestart'))
+        const at = fx.Kubectl.Calls.map(c => c[0]).lastIndexOf(D.ApplyServerSideCall)
+        assert.ok(D.IndexOf(fx, D.ApplyCall) < at)
+        assert.ok(at < D.IndexOf(fx, D.RolloutRestartCall))
     })
 
     it('a release cut before the artifact delivers the component.json assets its manifest names', async () =>
@@ -189,7 +217,7 @@ describe('TenantConsoleInstaller: the release descriptors ConfigMap', () =>
         const d = D.WithRelease()
         d.Release.Versions.set(ReleaseApp.TenantIdp, F.OlderVersion)
         fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
-        assert.throws(() => fx.Installer.Start(D.Hive), (err: unknown) => err instanceof ConsoleInstallUnavailableError && /different platform releases/.test(err.message))
+        assert.throws(() => fx.Installer.Start(D.Hive), (err: unknown) => err instanceof ConsoleInstallUnavailableError && D.MixedPattern.test(err.message))
         assert.equal(fx.Installer.StatusFor(D.Hive), undefined)
     })
 
@@ -215,7 +243,7 @@ describe('TenantConsoleInstaller: the release descriptors ConfigMap', () =>
         fx.Installer.Start(D.Hive)
         const status = await fx.Installer.WhenSettled(D.Hive)
         assert.equal(status?.step, ConsoleInstallStep.ReadingReleaseDescriptors)
-        assert.ok(status?.error?.startsWith("Could not read the release's component descriptors."), status?.error)
+        assert.ok(status?.error?.startsWith(D.ReadingFailedText), status?.error)
         assert.ok(status?.error?.includes(D.RegistryDownText), status?.error)
         assert.deepEqual(fx.Kubectl.Applied, [])
     })
@@ -239,10 +267,43 @@ describe('TenantConsoleInstaller: the release descriptors ConfigMap', () =>
         fx = await ConsoleInstallFixture.Create({ descriptors: D.WithRelease().Delivery })
         D.PutDescriptors(fx, undefined)
         await D.Installed(fx)
-        const deleteAt = D.IndexOf(fx, 'DeleteManifest', c => c[1] === ReleaseDescriptorsConfigMap.IdentityManifest())
+        const deleteAt = D.IndexOf(fx, D.DeleteManifestCall, c => c[1] === ReleaseDescriptorsConfigMap.IdentityManifest())
         assert.ok(deleteAt >= 0)
-        assert.ok(deleteAt < D.IndexOf(fx, 'RolloutRestart'))
-        assert.equal(D.DescriptorApplies(fx).length, 1)
+        assert.ok(deleteAt < D.IndexOf(fx, D.RolloutRestartCall))
+        const applied = D.DescriptorApplies(fx)
+        assert.equal(applied.length, 1)
+        assert.equal((applied[0]?.metadata as { resourceVersion?: string }).resourceVersion, undefined)
+    })
+
+    it('replaces this hive\'s object only at the resourceVersion read just before the apply (a write in between fails the apply)', async () =>
+    {
+        fx = await ConsoleInstallFixture.Create({ descriptors: D.WithRelease().Delivery })
+        D.PutDescriptors(fx, D.Hive)
+        await D.Installed(fx)
+        const [applied] = D.DescriptorApplies(fx)
+        assert.equal((applied?.metadata as { resourceVersion?: string }).resourceVersion, D.ResourceVersion)
+    })
+
+    it('an object another hive took over while the install ran is not overwritten: the install fails before the restarts', async () =>
+    {
+        fx = await ConsoleInstallFixture.Create({ descriptors: D.WithRelease().Delivery })
+        // Free when the descriptors are read; another hive's when they are delivered.
+        D.QueueDescriptors(fx, [undefined, JSON.stringify(D.DescriptorsObject(D.OtherHive))])
+        fx.Installer.Start(D.Hive)
+        const status = await fx.Installer.WhenSettled(D.Hive)
+        assert.equal(status?.state, ConsoleInstallState.Failed)
+        assert.ok(status?.error?.includes(D.HeldText), status?.error)
+        assert.deepEqual(D.DescriptorApplies(fx), [])
+        assert.equal(D.IndexOf(fx, D.RolloutRestartCall), -1)
+    })
+
+    it('a removal does not delete an object another hive took over after the install read it', async () =>
+    {
+        fx = await ConsoleInstallFixture.Create()
+        // This hive's when the install starts; another hive's when the nothing-to-deliver removal reads it again.
+        D.QueueDescriptors(fx, [JSON.stringify(D.DescriptorsObject(D.Hive)), JSON.stringify(D.DescriptorsObject(D.OtherHive))])
+        await D.Installed(fx)
+        assert.ok(!D.DeletedDescriptors(fx))
     })
 
     it('with nothing to deliver (no release, or one that signs no digests) it removes this hive\'s earlier ConfigMap', async () =>
@@ -294,7 +355,7 @@ describe('TenantConsoleInstaller: the release descriptors ConfigMap', () =>
 
         // The console Deployment: component labels (on it and its pod template), Recreate (its data volume has one writer), its
         // configuration volumes and mounts, and the release descriptors ConfigMap mounted read-only at /etc/pragmatic/descriptors.
-        const deployment = D.Find(items, 'Deployment', system, admin)
+        const deployment = D.Find(items, D.DeploymentKind, system, admin)
         const container = M.ContainerOf(deployment.metadata.labels, ReleaseApp.TenantAdmin) as string
         const labels = M.Labels([{ Container: container, Component: ReleaseApp.TenantAdmin }])
         const spec = deployment.spec as unknown as DeploymentSpec
@@ -312,14 +373,14 @@ describe('TenantConsoleInstaller: the release descriptors ConfigMap', () =>
         }
 
         // The IdP Deployment is a configuration target too.
-        const idpDeployment = D.Find(items, 'Deployment', idp, idp)
+        const idpDeployment = D.Find(items, D.DeploymentKind, idp, idp)
         assert.ok(M.ContainerOf(idpDeployment.metadata.labels, ReleaseApp.TenantIdp) !== undefined)
 
         // The empty configuration objects the console writes by name (it never creates beside them).
         for (const [namespace, component] of [[system, ReleaseApp.TenantAdmin], [idp, ReleaseApp.TenantIdp]] as const)
         {
-            D.Find(items, 'ConfigMap', namespace, M.ConfigMapNameOf(component))
-            const secret = D.Find(items, 'Secret', namespace, M.SecretNameOf(component))
+            D.Find(items, D.ConfigMapKind, namespace, M.ConfigMapNameOf(component))
+            const secret = D.Find(items, D.SecretKind, namespace, M.SecretNameOf(component))
             assert.equal(secret.data, undefined)
             assert.equal(secret.stringData, undefined)
         }
@@ -331,14 +392,14 @@ describe('TenantConsoleInstaller: the release descriptors ConfigMap', () =>
             { apiGroups: [''], resources: ['secrets'], verbs: D.ByName, resourceNames: components.map(c => M.SecretNameOf(c)) },
             { apiGroups: ['apps'], resources: ['deployments'], verbs: D.ByName, resourceNames: deployments },
         ]
-        assert.deepEqual(D.Find(items, 'Role', system, role).rules,
+        assert.deepEqual(D.Find(items, D.RoleKind, system, role).rules,
             rules([ReleaseApp.HiveAgent, ReleaseApp.TenantAdmin], [K8sManifestBuilder.HiveAgentNameOf(D.Hive), admin]))
-        assert.deepEqual(D.Find(items, 'Role', idp, role).rules, rules([ReleaseApp.TenantIdp], [idp]))
+        assert.deepEqual(D.Find(items, D.RoleKind, idp, role).rules, rules([ReleaseApp.TenantIdp], [idp]))
         for (const namespace of [system, idp])
         {
-            const binding = D.Find(items, 'RoleBinding', namespace, role)
-            assert.deepEqual(binding.subjects, [{ kind: 'ServiceAccount', name: admin, namespace: system }])
-            assert.deepEqual(binding.roleRef, { apiGroup: D.RbacGroup, kind: 'Role', name: role })
+            const binding = D.Find(items, D.RoleBindingKind, namespace, role)
+            assert.deepEqual(binding.subjects, [{ kind: D.ServiceAccountKind, name: admin, namespace: system }])
+            assert.deepEqual(binding.roleRef, { apiGroup: D.RbacGroup, kind: D.RoleKind, name: role })
         }
     })
 })

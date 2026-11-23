@@ -49,6 +49,9 @@ export class ConsoleFakeKubectl implements IKubectl
         this.Objects.set(ConsoleFakeKubectl.Key(namespace, resource), JSON.stringify(doc))
     }
 
+    /** Answers a Find of a key gives, in turn, before the stored object (undefined: absent): a cluster changing during a run. */
+    public readonly FindAnswers = new Map<string, Array<string | undefined>>()
+
     public async Find(namespace: string, resource: string): Promise<string | undefined>
     {
         this.Calls.push(['Find', namespace, resource])
@@ -56,7 +59,13 @@ export class ConsoleFakeKubectl implements IKubectl
         {
             await this.Hold
         }
-        return this.Objects.get(ConsoleFakeKubectl.Key(namespace, resource))
+        const key = ConsoleFakeKubectl.Key(namespace, resource)
+        const queued = this.FindAnswers.get(key)
+        if (queued !== undefined && queued.length > 0)
+        {
+            return queued.shift()
+        }
+        return this.Objects.get(key)
     }
 
     public async Apply(manifestJson: string): Promise<void>

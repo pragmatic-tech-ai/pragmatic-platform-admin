@@ -1,6 +1,7 @@
 import { ComponentDescriptorCodec, type ComponentDescriptor } from '@pragmatic-tech-ai/pragmatic-component'
 import { ComponentAssetUnavailableError, ComponentDescriptorSet, type IComponentAssetSource, OciProtocolError, OciRegistryClient, OciResponseError, OciUnavailableError, ReleaseApp, ReleaseApps, ReleaseDescriptorMismatchError, ReleaseDescriptorsAbsentError, type ReleaseManifestComponent, type ReleaseManifestDocument } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ReleaseState, type ManifestRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { GitHubRateLimit } from './github-rate-limit.js'
 
 /** The component descriptors of one platform release, each bound by the digest the release's signature covers. */
 export interface IReleaseDescriptorSource
@@ -51,6 +52,8 @@ export class ReleaseDescriptorsUnavailableError extends Error
  * them. Either way every descriptor must hash to the component digest the catalogue verified for that app at import (the
  * signed descriptor binds it), so neither the artifact nor GitHub is trusted for content. A release's set never changes,
  * so a set read once is kept per version (a reinstall reads neither the registry nor GitHub again); failures are not kept.
+ * The fallback reads every app the release signs (the console configures them all): release.json plus, per app, the
+ * repository release and its asset, 19 GitHub requests for a nine-app release, once per version and process.
  * Registry and GitHub failures are reported as ReleaseDescriptorsUnavailableError with a fixed sentence.
  */
 export class ReleaseDescriptorSource implements IReleaseDescriptorSource
@@ -77,6 +80,7 @@ export class ReleaseDescriptorSource implements IReleaseDescriptorSource
         private readonly artifact: IReleaseComponentsArtifact,
         private readonly manifests: IReleaseManifestSource,
         private readonly assets: IComponentAssetSource,
+        private readonly gitHubLimit?: GitHubRateLimit,
     )
     {
     }
@@ -201,8 +205,9 @@ export class ReleaseDescriptorSource implements IReleaseDescriptorSource
         {
             if (error instanceof ComponentAssetUnavailableError)
             {
-                // Its message is the asset source's own fixed sentence (never a body or a token).
-                throw new ReleaseDescriptorsUnavailableError(version, S.GitHubPrefix + app + S.ReasonSeparator + error.message)
+                // Its message is the asset source's own fixed sentence (never a body or a token); the rate limit is named as such.
+                const reason = this.gitHubLimit?.Limited === true ? GitHubRateLimit.Message : error.message
+                throw new ReleaseDescriptorsUnavailableError(version, S.GitHubPrefix + app + S.ReasonSeparator + reason)
             }
             throw error
         }
@@ -251,7 +256,8 @@ export class ReleaseDescriptorSource implements IReleaseDescriptorSource
         }
         for (const name of byName.keys())
         {
-            if (!(signed as ReadonlyMap<string, string>).has(name))
+            const app = ReleaseApps.All.find(candidate => candidate === name)
+            if (app === undefined || !signed.has(app))
             {
                 throw new ReleaseDescriptorsUnavailableError(version, S.UnsignedPrefix + name)
             }

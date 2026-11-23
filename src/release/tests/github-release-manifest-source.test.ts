@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import type { GitHubRequestInit } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { GitHubReleaseManifestSource, ReleaseManifestUnavailableError } from '../github-release-manifest-source.js'
+import { GitHubRateLimit } from '../github-rate-limit.js'
 import { ReleaseDescriptorFixtures as F } from '../../tests/release-descriptor-fixtures.js'
 
 /** A GitHub that answers one fixed response per call and records what it was asked. */
@@ -10,10 +11,17 @@ class FakeGitHub
     public static readonly Leak = 'body-text-that-must-not-leak'
     public static readonly ExpectedUrl = 'https://api.github.com/repos/pragmatic-tech-ai/pragmatic-platform-release/contents/release.json?ref=release%2F0.1.0-early.7'
     public static readonly RawType = 'application/vnd.github.raw+json'
-    public static readonly RateLimited = 'GitHub refused the request (rate limited); try again later'
+    public static readonly RateLimited = GitHubRateLimit.Message
+    public static readonly Forbidden = 'GitHub answered HTTP 403'
+    public static readonly RemainingHeader = 'x-ratelimit-remaining'
+    public static readonly ChunkBytes = 64 * 1024
+    public static readonly Get = 'GET'
+    public static readonly Manual = 'manual'
 
     public readonly Calls: Array<{ url: string; init: GitHubRequestInit }> = []
     public BodyRead = false
+    public Pulls = 0
+    public Cancelled = false
 
     public constructor(private readonly answer: (github: FakeGitHub) => Response)
     {
@@ -64,13 +72,38 @@ describe('GitHubReleaseManifestSource', () =>
         assert.equal(await new GitHubReleaseManifestSource(FakeGitHub.Json({ message: 'Not Found' }, 404).Fetch).ManifestOf(F.OlderVersion), undefined)
     })
 
-    it('the anonymous rate limit (403 or 429) is named as such', async () =>
+    it('the rate limit (429, or 403 with none remaining) is named as such; another 403 is a plain refusal', async () =>
     {
-        for (const status of [403, 429])
+        const limited = [
+            new FakeGitHub(() => new Response('{}', { status: 429 })),
+            new FakeGitHub(() => new Response('{}', { status: 403, headers: { [FakeGitHub.RemainingHeader]: '0' } })),
+        ]
+        for (const github of limited)
         {
-            await assert.rejects(new GitHubReleaseManifestSource(FakeGitHub.Json({ message: FakeGitHub.Leak }, status).Fetch).ManifestOf(F.OlderVersion),
+            await assert.rejects(new GitHubReleaseManifestSource(github.Fetch).ManifestOf(F.OlderVersion),
                 (err: unknown) => err instanceof ReleaseManifestUnavailableError && err.message === FakeGitHub.RateLimited)
         }
+        const refused = new FakeGitHub(() => new Response('{}', { status: 403, headers: { [FakeGitHub.RemainingHeader]: '12' } }))
+        await assert.rejects(new GitHubReleaseManifestSource(refused.Fetch).ManifestOf(F.OlderVersion),
+            (err: unknown) => err instanceof ReleaseManifestUnavailableError && err.message === FakeGitHub.Forbidden)
+    })
+
+    it('a body without a declared length is read only up to the bound, then the stream is cancelled', async () =>
+    {
+        const github = new FakeGitHub(gh => new Response(new ReadableStream<Uint8Array>({
+            pull: controller =>
+            {
+                gh.Pulls++
+                controller.enqueue(new Uint8Array(FakeGitHub.ChunkBytes))
+            },
+            cancel: () =>
+            {
+                gh.Cancelled = true
+            },
+        }), { status: 200 }))
+        await assert.rejects(new GitHubReleaseManifestSource(github.Fetch).ManifestOf(F.OlderVersion), /larger than a release manifest/)
+        assert.equal(github.Cancelled, true)
+        assert.ok(github.Pulls <= GitHubReleaseManifestSource.MaxBytes / FakeGitHub.ChunkBytes + 2, String(github.Pulls))
     })
 
     it('a declared length past the bound is refused before the body is read', async () =>
@@ -90,5 +123,27 @@ describe('GitHubReleaseManifestSource', () =>
         await assert.rejects(new GitHubReleaseManifestSource(huge.Fetch).ManifestOf(F.OlderVersion), /larger than a release manifest/)
         await assert.rejects(new GitHubReleaseManifestSource(FakeGitHub.Json({ schema: 1, note: FakeGitHub.Leak }).Fetch).ManifestOf(F.OlderVersion),
             (err: unknown) => err instanceof ReleaseManifestUnavailableError && !err.message.includes(FakeGitHub.Leak))
+    })
+})
+
+describe('GitHubRateLimit', () =>
+{
+    it('records after each answer of the watched fetch whether it was the rate limit', async () =>
+    {
+        const answers = [
+            new Response('{}', { status: 429 }),
+            new Response('{}', { status: 200 }),
+            new Response('{}', { status: 403, headers: { [FakeGitHub.RemainingHeader]: '0' } }),
+            new Response('{}', { status: 403 }),
+        ]
+        const limit = new GitHubRateLimit()
+        const fetchFn = limit.Watch(async () => answers.shift() as Response)
+        const seen: boolean[] = []
+        for (let i = 0; i < 4; i++)
+        {
+            await fetchFn(FakeGitHub.ExpectedUrl, { method: FakeGitHub.Get, headers: {}, redirect: FakeGitHub.Manual })
+            seen.push(limit.Limited)
+        }
+        assert.deepEqual(seen, [true, false, true, false])
     })
 })
