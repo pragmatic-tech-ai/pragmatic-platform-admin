@@ -13,7 +13,8 @@ import { Border } from '@pragmatic-tech-ai/mural/basic'
 import { ChangePasswordDialogViewModel, SignInPageViewModel } from '@pragmatic-tech-ai/pragmatic-app-shell'
 import { app } from '../app.mu.js'
 import { app as signIn } from '../sign-in.mu.js'
-import { PlatformSignInHost } from '../shell/platform-sign-in-host.js'
+import { OperatorSignInHost } from '../sign-in/operator-sign-in-host.js'
+import { OperatorSignInViewModel } from '../sign-in/operator-sign-in-view-model.js'
 import { PortalNavigationService } from '../shell/portal-navigation-service.js'
 import { PortalSessionService } from '../shell/portal-session-service.js'
 import { FleetSectionService } from '../sections/fleet/fleet-section-service.js'
@@ -84,15 +85,17 @@ describe('app.mu composition', () =>
     })
 })
 
-// The compiled sign-in.mu: the shell's sign-in page over the console's host, password only.
+// The compiled sign-in.mu: the operator sign-in page (staff first, break-glass behind it) over the console's host.
 describe('sign-in.mu composition', () =>
 {
-    it('registers the sign-in host and presents its page through the shell view', () =>
+    it('registers the sign-in host and presents its page and the break-glass form through their views', () =>
     {
-        const host = signIn.Services.getRequired(PlatformSignInHost.Key)
-        assert.ok(host.Page instanceof SignInPageViewModel)
-        assert.equal(host.Page.OffersPassword, true)
-        assert.equal(host.Page.OffersOidc, false)
+        const host = signIn.Services.getRequired(OperatorSignInHost.Key)
+        assert.ok(host.Page instanceof OperatorSignInViewModel)
+        assert.ok(host.Page.BreakGlass instanceof SignInPageViewModel)
+        assert.equal(host.Page.BreakGlass.OffersPassword, true)
+        assert.equal(host.Page.BreakGlass.OffersOidc, false)
+        assert.ok(signIn.Resources.Get(OperatorSignInViewModel) !== undefined)
         assert.ok(signIn.Resources.Get(SignInPageViewModel) !== undefined)
         assert.ok(signIn.Resources.Root instanceof Border)
         assert.ok((signIn.Resources.Root as Border).ContentChild instanceof ContentControl, 'a root ContentControl would render empty')

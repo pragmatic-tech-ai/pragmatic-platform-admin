@@ -30,6 +30,8 @@ export enum PlatformAdminRegistry
     ConsoleOwnerResets = 'console_owner_resets',
     SealedSecrets = 'sealed_secrets',
     Signatures = 'signatures',
+    /** The operators who signed in through the realm (OperatorDirectory): never imported, the JSON data root had none. */
+    OperatorDirectory = 'operator_directory',
 }
 
 /** The database URL setting is missing or blank (the console stores everything in its own Postgres). */

@@ -97,6 +97,8 @@ class FakeControlPlane
     private static readonly WaitingStep = 'waiting-for-check-in'
     private static readonly LocalBackend = 'local'
     private static readonly SessionPath = '/api/session'
+    private static readonly SessionMethodsPath = '/api/session/methods'
+    public static readonly StaffBeginPath = '/auth/oidc/begin'
     private static readonly ClientsPath = '/api/clients'
     private static readonly TenantsPath = '/api/tenants'
     private static readonly FleetPath = '/api/fleet'
@@ -158,6 +160,10 @@ class FakeControlPlane
     // Every theme font served.
     public readonly FontsServed: string[] = []
     public Authenticated = true
+    // Whether the console offers staff sign-in (GET /api/session/methods).
+    public StaffSignIn = false
+    // How often the browser left for the staff sign-in's begin route.
+    public StaffBegins = 0
     // Reads of the new hive's install status so far (the first reports a running step, later ones Connected).
     public InstallReads = 0
     // Whether the hive was deleted with force (delete anyway).
@@ -436,6 +442,18 @@ class FakeControlPlane
     {
         const method = req.method ?? FakeControlPlane.MethodGet
         const path = (req.url ?? FakeControlPlane.RootPath).split(FakeControlPlane.QuerySeparator)[0]!
+        if (path === FakeControlPlane.SessionMethodsPath)
+        {
+            FakeControlPlane.Json(res, 200, { staff: this.StaffSignIn })
+            return
+        }
+        if (path === FakeControlPlane.StaffBeginPath)
+        {
+            this.StaffBegins++
+            res.writeHead(302, { Location: '/?sign_in=forbidden' })
+            res.end()
+            return
+        }
         if (path === FakeControlPlane.SessionPath)
         {
             if (this.Authenticated)
@@ -607,6 +625,9 @@ class PortalText
 {
     public static readonly SignInText = 'Sign in to continue.'
     public static readonly LoginLabel = 'Sign in with password'
+    public static readonly StaffSignInLabel = 'Sign in with Pragmatic staff'
+    public static readonly BreakGlassLabel = 'Use the break-glass password'
+    public static readonly ForbiddenNotice = 'Signed in, but your account has no operator role for this console.'
     public static readonly EmailPlaceholder = 'Email'
     public static readonly PasswordPlaceholder = 'Password'
     public static readonly LogoutLabel = 'Log out'
@@ -803,6 +824,8 @@ test.describe('admin portal', () =>
     test.beforeEach(() =>
     {
         fake.Authenticated = true
+        fake.StaffSignIn = false
+        fake.StaffBegins = 0
         fake.Calls.length = 0
         fake.NotFound.length = 0
         fake.FontsServed.length = 0
@@ -936,6 +959,32 @@ test.describe('admin portal', () =>
         })
         await expect(PortalSteps.Text(page, PortalText.FleetSubtitle)).toBeVisible()
         await expect(PortalSteps.Text(page, FakeControlPlane.HiveName).first()).toBeVisible()
+    })
+
+    test('staff sign-in is the primary action when offered; break-glass sits behind its disclosure', async ({ page }) =>
+    {
+        fake.Authenticated = false
+        fake.StaffSignIn = true
+        await page.goto(base)
+        await expect(PortalSteps.Text(page, PortalText.StaffSignInLabel)).toBeVisible()
+        await expect(page.getByPlaceholder(PortalText.PasswordPlaceholder)).toHaveCount(0)
+        await PortalSteps.Click(page, PortalText.BreakGlassLabel)
+        await PortalSteps.TypeInto(page, PortalText.EmailPlaceholder, FakeControlPlane.OperatorEmail)
+        await PortalSteps.TypeInto(page, PortalText.PasswordPlaceholder, FakeControlPlane.OperatorPassword)
+        await PortalSteps.Click(page, PortalText.LoginLabel)
+        await expect.poll(() => fake.Find(FakeControlPlane.MethodPost, FakeControlPlane.LoginPath)).toBeDefined()
+        await expect(PortalSteps.Text(page, PortalText.FleetSubtitle)).toBeVisible()
+    })
+
+    test('staff sign-in leaves for the begin route; a refusal comes back as the no-operator-role page', async ({ page }) =>
+    {
+        fake.Authenticated = false
+        fake.StaffSignIn = true
+        await page.goto(base)
+        await PortalSteps.Click(page, PortalText.StaffSignInLabel)
+        await expect.poll(() => fake.StaffBegins).toBe(1)
+        await expect(PortalSteps.Text(page, PortalText.ForbiddenNotice)).toBeVisible()
+        await expect(PortalSteps.Text(page, PortalText.StaffSignInLabel)).toBeVisible()
     })
 
     test('Tenants: a tenant row opens its detail and Back returns to the list', async ({ page }) =>

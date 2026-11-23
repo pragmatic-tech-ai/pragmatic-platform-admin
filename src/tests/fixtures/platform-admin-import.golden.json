@@ -201,7 +201,8 @@
       "sha256:legacy": {
         "": "bGVnYWN5LXNpZw=="
       }
-    }
+    },
+    "operator_directory": {}
   },
   "audit": [
     {

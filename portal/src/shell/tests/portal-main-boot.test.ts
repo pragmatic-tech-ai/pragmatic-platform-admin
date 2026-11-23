@@ -4,7 +4,7 @@ import { ServiceProvider, type IServiceProvider } from '@pragmatic-tech-ai/mural
 import { ContentHostService } from '@pragmatic-tech-ai/mural/framework/shell/services/content-host-service.js'
 import { ApiError, type ControlPlaneClient } from '../../api-client.js'
 import { OperatorContext } from '../../operator-context.js'
-import { PlatformSignInHost } from '../platform-sign-in-host.js'
+import { OperatorSignInHost } from '../../sign-in/operator-sign-in-host.js'
 import { PortalApplications } from '../portal-boot.js'
 import { PageState, PortalPageViewModel } from '../portal-page-view-model.js'
 import { PortalSectionService } from '../portal-section-service.js'
@@ -135,16 +135,16 @@ describe('PortalApplications.ShowSignInError', () =>
     it("shows the boot's reason on the sign-in page", () =>
     {
         const provider = new ServiceProvider()
-        provider.register(PlatformSignInHost.Key, (p) => new PlatformSignInHost(p))
+        provider.register(OperatorSignInHost.Key, (p) => new OperatorSignInHost(p))
         PortalApplications.ShowSignInError(provider, "Can't reach Platform Admin: boom")
-        assert.equal(provider.getRequired(PlatformSignInHost.Key).Page.ErrorText, "Can't reach Platform Admin: boom")
+        assert.equal(provider.getRequired(OperatorSignInHost.Key).Page.NoticeText, "Can't reach Platform Admin: boom")
     })
 
-    it('the sign-in page offers password sign-in only', () =>
+    it('the break-glass form inside the sign-in page offers password sign-in only', () =>
     {
-        const host = new PlatformSignInHost(new ServiceProvider())
-        assert.equal(host.Page.OffersPassword, true)
-        assert.equal(host.Page.OffersOidc, false)
+        const host = new OperatorSignInHost(new ServiceProvider())
+        assert.equal(host.Page.BreakGlass.OffersPassword, true)
+        assert.equal(host.Page.BreakGlass.OffersOidc, false)
         assert.equal(host.Page.ProductName, 'Platform Admin')
     })
 })

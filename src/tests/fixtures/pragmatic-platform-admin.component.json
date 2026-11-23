@@ -163,6 +163,54 @@
       ]
     },
     {
+      "name": "operatorSignIn",
+      "description": "Operator sign-in through the operators' realm (OIDC), besides the break-glass operator password (off unless the issuer is set).",
+      "settings": [
+        {
+          "name": "issuer",
+          "type": "url",
+          "required": true,
+          "secret": false,
+          "description": "PRAGMATIC_ADMIN_OPERATOR_OIDC_ISSUER: The issuer of the operators' realm, as its tokens carry it."
+        },
+        {
+          "name": "discoveryUrl",
+          "type": "url",
+          "required": false,
+          "secret": false,
+          "description": "PRAGMATIC_ADMIN_OPERATOR_OIDC_DISCOVERY_URL: The realm's discovery document (defaults to the issuer's well-known document)."
+        },
+        {
+          "name": "clientId",
+          "type": "string",
+          "required": true,
+          "secret": false,
+          "description": "PRAGMATIC_ADMIN_OPERATOR_OIDC_CLIENT_ID: The console's client id at the realm."
+        },
+        {
+          "name": "clientSecret",
+          "type": "string",
+          "required": true,
+          "secret": true,
+          "description": "PRAGMATIC_ADMIN_OPERATOR_OIDC_CLIENT_SECRET_FILE: The console's client secret at the realm (a mounted secret file)."
+        },
+        {
+          "name": "caBundleFile",
+          "type": "string",
+          "required": false,
+          "secret": false,
+          "description": "PRAGMATIC_ADMIN_OPERATOR_OIDC_CA_BUNDLE_FILE: A PEM CA bundle trusted besides the public roots for the realm (a realm on a private CA)."
+        },
+        {
+          "name": "publicUrl",
+          "type": "url",
+          "required": true,
+          "secret": false,
+          "description": "PRAGMATIC_ADMIN_PUBLIC_URL: The console's browser-facing origin; the realm sends operators back to <publicUrl>/auth/oidc/callback."
+        }
+      ]
+    },
+    {
       "name": "releases",
       "description": "The release catalogue: signed release descriptors read from an OCI registry and imported on a poll.",
       "settings": [

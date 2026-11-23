@@ -49,6 +49,18 @@ export class PlatformAdminComponent
                 ],
             },
             {
+                name: 'operatorSignIn',
+                description: 'Operator sign-in through the operators\' realm (OIDC), besides the break-glass operator password (off unless the issuer is set).',
+                settings: [
+                    { name: 'issuer', type: SettingType.Url, source: 'PRAGMATIC_ADMIN_OPERATOR_OIDC_ISSUER', required: true, description: 'The issuer of the operators\' realm, as its tokens carry it.' },
+                    { name: 'discoveryUrl', type: SettingType.Url, source: 'PRAGMATIC_ADMIN_OPERATOR_OIDC_DISCOVERY_URL', description: 'The realm\'s discovery document (defaults to the issuer\'s well-known document).' },
+                    { name: 'clientId', type: SettingType.String, source: 'PRAGMATIC_ADMIN_OPERATOR_OIDC_CLIENT_ID', required: true, description: 'The console\'s client id at the realm.' },
+                    { name: 'clientSecret', type: SettingType.String, source: 'PRAGMATIC_ADMIN_OPERATOR_OIDC_CLIENT_SECRET_FILE', required: true, secret: true, description: 'The console\'s client secret at the realm (a mounted secret file).' },
+                    { name: 'caBundleFile', type: SettingType.String, source: 'PRAGMATIC_ADMIN_OPERATOR_OIDC_CA_BUNDLE_FILE', description: 'A PEM CA bundle trusted besides the public roots for the realm (a realm on a private CA).' },
+                    { name: 'publicUrl', type: SettingType.Url, source: 'PRAGMATIC_ADMIN_PUBLIC_URL', required: true, description: 'The console\'s browser-facing origin; the realm sends operators back to <publicUrl>/auth/oidc/callback.' },
+                ],
+            },
+            {
                 name: 'releases',
                 description: 'The release catalogue: signed release descriptors read from an OCI registry and imported on a poll.',
                 settings: [

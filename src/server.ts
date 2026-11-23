@@ -53,6 +53,9 @@ import { DockerImageDigest, RegistryRefImageDigest } from './image-digest.js'
 import { FileSignatureStore } from './signature-store.js'
 import { PlatformAdminDatabase, PlatformAdminRegistry } from './platform-admin-database.js'
 import { OperatorSessions } from './operator-sessions.js'
+import { OperatorOidcSettings } from './operator-sign-in/operator-oidc-settings.js'
+import { OperatorOidcSignIn } from './operator-sign-in/operator-oidc-sign-in.js'
+import { OperatorDirectory } from './operator-sign-in/operator-directory.js'
 import { PlatformAdminImport } from './platform-admin-import.js'
 import { OperatorIdentity } from './operator-identity.js'
 import { ExecFileDockerExec, IdpContainerEnv } from './idp-container-env.js'
@@ -60,7 +63,7 @@ import { IdpRegistry } from './idp-registry.js'
 import { DockerIdpDriver } from './docker-idp-driver.js'
 import { IdpService } from './idp-service.js'
 import { TenantProvisioningService } from './tenant-provisioning-service.js'
-import type { IAuditRepository } from '@pragmatic-tech-ai/pragmatic-app-host'
+import { OidcRelyingParty, type IAuditRepository } from '@pragmatic-tech-ai/pragmatic-app-host'
 import { InProcessRolloutClient } from './tenant-api/in-process-rollout-client.js'
 import { ControlPlaneRoles, ControlPlaneStart, type IControlPlaneListenerStarts } from './control-plane-role.js'
 import { ReleaseCatalogConfig, type IReleaseServices } from './release/release-catalog-config.js'
@@ -232,11 +235,14 @@ export class ControlPlaneServer
         const dataRoot = ControlPlaneServer.DataRootOf(process.env, here)
         mkdirSync(dataRoot, { recursive: true })
         const opts = ControlPlaneServer.ReadOperatorOptions(process.env, dataRoot)
+        // Read (and checked) before anything is opened, so a half-set operator sign-in option fails at start.
+        const operatorOidc = OperatorOidcSettings.Of(process.env)
         // Every record of the console lives in its own Postgres database (A5); only keys and public material stay on files.
         const database = await PlatformAdminDatabase.Open(process.env)
         await PlatformAdminImport.RequireImported(dataRoot, database)
         const sessions = new OperatorSessions(await database.SessionRepositories(), opts.secureCookie)
         const operator = await OperatorIdentity.Compose({ session: database.Session, masterKeyFile: opts.masterKeyFile, operatorEmail: opts.operatorEmail, initialPassword: opts.initialPassword, sessions: sessions.Store })
+        const staffSignIn = await ControlPlaneServer.StaffSignInOf(operatorOidc, database, sessions)
         const masterKey = MasterKeyFile.Load(opts.masterKeyFile)
         const signatures = await database.Signatures()
         // Only `local` has a Docker engine. `none` (no target) and `hosted` (registered clusters on our machines, pushed over
@@ -352,6 +358,7 @@ export class ControlPlaneServer
             TrustedProxy: opts.trustedProxy, AllowedHosts: opts.allowedHosts, Audit: audit, Idp: idpService, AgentChannelUrl: agentChannelUrl,
             AgentInstaller: agentInstaller, AgentUninstaller: new HiveAgentUninstaller(orchestrators), Discovery: discovery, ConsoleInstaller: consoleInstaller,
             Adverts: adverts, Approvals: approvals, EmailDomains: emailDomains, Releases: releases?.Refresher, PlatformImages: platformImages,
+            OperatorSignIn: staffSignIn?.SignIn, StaffOperators: staffSignIn?.Directory,
         })
         const port = ControlPlaneServer.ResolvePort(process.env[ControlPlaneServer.PortEnvVar])
         // Resolve (and validate) the tenant port + bind BEFORE binding the operator listener, so a misconfigured
@@ -379,6 +386,22 @@ export class ControlPlaneServer
             releases.Poll.Start()
             ControlPlaneServer.StopOnShutdown(releases.Poll)
         }
+    }
+
+    /**
+     * Operator sign-in through the operators' realm, when its option is set: the relying party (flow state in the
+     * console's database, the realm's CA bundle when given) and the operator directory it records staff operators in.
+     * Undefined when the option is off: only the break-glass password signs operators in.
+     */
+    public static async StaffSignInOf(settings: OperatorOidcSettings | undefined, database: PlatformAdminDatabase, sessions: OperatorSessions): Promise<{ SignIn: OperatorOidcSignIn; Directory: OperatorDirectory } | undefined>
+    {
+        if (settings === undefined)
+        {
+            return undefined
+        }
+        const directory = new OperatorDirectory(await database.Map(PlatformAdminRegistry.OperatorDirectory))
+        const rp = new OidcRelyingParty(await database.FlowStates(), settings.CaBundleFile === undefined ? {} : { CaBundleFile: settings.CaBundleFile })
+        return { SignIn: new OperatorOidcSignIn(settings, rp, directory, sessions), Directory: directory }
     }
 
     /** The in-process agent channel (registries + console advert receiver) the internal API answers the edge with. */

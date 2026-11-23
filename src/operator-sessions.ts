@@ -5,6 +5,7 @@ import {
     InMemoryTicketRepository,
     LoginThrottle,
     RateLimiter,
+    type AuditTrail,
     SessionClaims,
     SessionCookie,
     SessionGate,
@@ -21,6 +22,7 @@ import {
     type WsTicketStoreOptions,
 } from '@pragmatic-tech-ai/pragmatic-app-host'
 import { OperatorRole, type IOperatorIdentity, type OperatorPrincipal } from './operator-identity.js'
+import { OperatorSignInMethod, type IStaffOperatorStanding } from './operator-sign-in/operator-directory.js'
 
 /**
  * The operator roles as session claims: the platform admin console's application roles (declared in its component
@@ -43,6 +45,11 @@ export class OperatorRoleClaims
     /** How the session was signed in (the OIDC `amr` claim): `pwd` for the console's own operator accounts. */
     public static readonly MethodClaim = 'amr'
     public static readonly PasswordMethod = 'pwd'
+    /** The method of a staff session: signed in through the realm (the console's OIDC relying party). */
+    public static readonly StaffMethod = 'oidc'
+    /** A staff operator's principal: `oidc:<issuer>#<subject>`, never the id of an operator account. */
+    private static readonly StaffPrincipalPrefix = 'oidc:'
+    private static readonly StaffPrincipalSeparator = '#'
 
     public static NameOf(role: OperatorRole): string
     {
@@ -54,6 +61,27 @@ export class OperatorRoleClaims
     {
         const C = OperatorRoleClaims
         return SessionClaims.From({ [C.EmailClaim]: principal.email, [C.RoleClaim]: [C.NameOf(principal.role)], [C.MethodClaim]: [C.PasswordMethod] })
+    }
+
+    /** The session claims of a staff operator: the realm's email, the operator roles the realm gave this application,
+     *  the staff sign-in method. */
+    public static OfStaff(email: string, roles: readonly string[]): SessionClaims
+    {
+        const C = OperatorRoleClaims
+        return SessionClaims.From({ [C.EmailClaim]: email, [C.RoleClaim]: [...roles], [C.MethodClaim]: [C.StaffMethod] })
+    }
+
+    /** The principal a staff operator's sessions and directory record carry: issuer and subject, so two realms never collide. */
+    public static StaffPrincipalOf(issuer: string, subject: string): string
+    {
+        return OperatorRoleClaims.StaffPrincipalPrefix + issuer + OperatorRoleClaims.StaffPrincipalSeparator + subject
+    }
+
+    /** Whether the session was signed in through the realm (a staff operator). */
+    public static IsStaffSession(session: SessionRecord): boolean
+    {
+        return session.Claims.Has(OperatorRoleClaims.MethodClaim, OperatorRoleClaims.StaffMethod)
+            && session.Subject.startsWith(OperatorRoleClaims.StaffPrincipalPrefix)
     }
 
     /** Whether the session belongs to one of the console's own operator accounts (signed in with its password). */
@@ -72,14 +100,15 @@ export class OperatorRoleClaims
 
 /**
  * The authentication step of the platform admin console: the cookie's session from the session store. A session of one
- * of the console's own operator accounts (the password sign-in) has its claims refreshed from the account on every
- * request, so a demotion, a promotion or a disabled account takes effect at once (as the identity-pack sessions did)
- * while the role still reaches authorization as a claim. A session signed in another way (the realm's OIDC sign-in, a
- * later step) keeps the claims it was issued with: its roles come from the realm.
+ * of the console's own operator accounts (the break-glass password sign-in) has its claims refreshed from the account on
+ * every request, so a demotion, a promotion or a disabled account takes effect at once while the role still reaches
+ * authorization as a claim. A staff session (the realm's OIDC sign-in) keeps the claims it was issued with (its roles
+ * come from the realm at sign-in) and is refused at once when an operator disabled it in the operator directory, or when
+ * staff sign-in is off. Any other session (the co-hosted tenant plane's, or a shape this console never issues) is refused.
  */
 export class OperatorSessionGate extends SessionGate
 {
-    public constructor(sessions: SessionStore, cookie: SessionCookie, private readonly operators: IOperatorIdentity)
+    public constructor(sessions: SessionStore, cookie: SessionCookie, private readonly operators: IOperatorIdentity, private readonly staff?: IStaffOperatorStanding)
     {
         super(sessions, cookie)
     }
@@ -93,7 +122,7 @@ export class OperatorSessionGate extends SessionGate
     /**
      * The session with its claims as the operator's account says now; null when the operator is gone or disabled, or when
      * it is not an operator session at all (a session of the co-hosted tenant plane, which shares the session table, names
-     * its tenant: it never authenticates here).
+     * its tenant: it never authenticates here). A staff session as issued, unless its operator is disabled here.
      */
     public async Refreshed(session: SessionRecord): Promise<SessionRecord | null>
     {
@@ -101,9 +130,13 @@ export class OperatorSessionGate extends SessionGate
         {
             return null
         }
+        if (OperatorRoleClaims.IsStaffSession(session))
+        {
+            return this.staff === undefined || await this.staff.IsDisabled(session.Subject) ? null : session
+        }
         if (!OperatorRoleClaims.IsOperatorAccount(session))
         {
-            return session
+            return null
         }
         const principal = await this.operators.PrincipalOf(session.Subject)
         if (principal === null)
@@ -114,17 +147,29 @@ export class OperatorSessionGate extends SessionGate
     }
 }
 
-/** The break-glass password sign-in of PasswordLoginEndpoint over the operator accounts. */
+/**
+ * The break-glass password sign-in of PasswordLoginEndpoint over the operator accounts. Every successful one is written
+ * to the activity log as a `break-glass` sign-in of the operator (never the password); a failed one is not (no subject).
+ */
 export class OperatorPasswordAuthenticator implements IPasswordAuthenticator
 {
-    public constructor(private readonly operators: IOperatorIdentity)
+    private static readonly AuditAction = 'POST'
+    private static readonly StatusOk = 200
+
+    public constructor(private readonly operators: IOperatorIdentity, private readonly audit?: AuditTrail, private readonly loginPath: string = OperatorSessions.LoginPath)
     {
     }
 
     public async Authenticate(account: string, password: string): Promise<SignedInIdentity | null>
     {
+        const P = OperatorPasswordAuthenticator
         const principal = await this.operators.Verify(account, password)
-        return principal === null ? null : new SignedInIdentity(principal.principalId, OperatorRoleClaims.Of(principal))
+        if (principal === null)
+        {
+            return null
+        }
+        await this.audit?.Record(principal.email, P.AuditAction, this.loginPath, P.StatusOk, OperatorSignInMethod.BreakGlass)
+        return new SignedInIdentity(principal.principalId, OperatorRoleClaims.Of(principal))
     }
 }
 
@@ -155,6 +200,8 @@ export class OperatorSessions
     public static readonly TtlMs = 60 * 60 * 1000
     /** The console's cookie name (unchanged from the identity-pack sessions). */
     public static readonly CookieName = 'cp_session'
+    /** The break-glass password sign-in route (PasswordLoginEndpoint). */
+    public static readonly LoginPath = '/api/login'
     /** Refused unauthenticated mutations per client address: 30 a minute, then a minute locked (the host's default). */
     private static readonly DenialName = 'denials'
     private static readonly DenialMaxHits = 30
@@ -179,10 +226,11 @@ export class OperatorSessions
         this.Denials = new RateLimiter(repositories.Throttles, { Name: S.DenialName, MaxHits: S.DenialMaxHits, WindowMs: S.DenialWindowMs, LockoutMs: S.DenialLockoutMs })
     }
 
-    /** The authentication step over these sessions, refreshing each session's claims from `operators`. */
-    public GateOver(operators: IOperatorIdentity): OperatorSessionGate
+    /** The authentication step over these sessions, refreshing each session's claims from `operators`; staff sessions
+     *  authenticate only with `staff` (staff sign-in on) and while their operator is not disabled there. */
+    public GateOver(operators: IOperatorIdentity, staff?: IStaffOperatorStanding): OperatorSessionGate
     {
-        return new OperatorSessionGate(this.Store, this.Cookie, operators)
+        return new OperatorSessionGate(this.Store, this.Cookie, operators, staff)
     }
 
     /** Process-local repositories: tests and tools that keep nothing (`now`: the tickets' and throttles' clock). */

@@ -4,6 +4,7 @@ import type { IncomingMessage } from 'node:http'
 import { SessionClaims } from '@pragmatic-tech-ai/pragmatic-app-host'
 import { OperatorRole, type IOperatorIdentity, type OperatorPrincipal, type OperatorSummary } from '../operator-identity.js'
 import { OperatorPasswordAuthenticator, OperatorRoleClaims, OperatorSessions } from '../operator-sessions.js'
+import type { IStaffOperatorStanding } from '../operator-sign-in/operator-directory.js'
 
 /** An operator directory whose principals a test edits between requests. */
 class LiveOperators implements IOperatorIdentity
@@ -30,6 +31,17 @@ class LiveOperators implements IOperatorIdentity
     public async ChangeOwnPassword(): Promise<boolean> { return false }
     public async SetOperatorDisabled(): Promise<void> { }
     public async RevokeOperatorSessions(): Promise<void> { }
+}
+
+/** A staff standing a test flips: every staff principal is disabled or none is. */
+class FixedStanding implements IStaffOperatorStanding
+{
+    public Disabled = false
+
+    public async IsDisabled(): Promise<boolean>
+    {
+        return this.Disabled
+    }
 }
 
 class SessionFixture
@@ -81,15 +93,29 @@ describe('OperatorSessions', () =>
         assert.equal(await gate.Current(SessionFixture.Request('cp_session=unknown')), null)
     })
 
-    it('a session signed in another way (no pwd method) keeps its issued claims: the seam for the realm sign-in', async () =>
+    it('a staff session (oidc method, oidc: principal) keeps its issued claims while its operator is not disabled', async () =>
     {
         const operators = new LiveOperators()
         const sessions = new OperatorSessions(OperatorSessions.InMemory(), false)
-        const gate = sessions.GateOver(operators)
-        const realmClaims = SessionClaims.From({ email: 'sso@example.com', app_roles: ['operator.read-only'], amr: ['oidc'] })
-        const issued = await sessions.Store.Issue('realm-subject', realmClaims)
+        const standing = new FixedStanding()
+        const gate = sessions.GateOver(operators, standing)
+        const realmClaims = OperatorRoleClaims.OfStaff('sso@example.com', [OperatorRoleClaims.ReadOnly])
+        const issued = await sessions.Store.Issue(OperatorRoleClaims.StaffPrincipalOf('https://realm.example/realms/r', 'sub-1'), realmClaims)
         const current = await gate.Current(SessionFixture.Request(`cp_session=${issued.Token}`))
-        assert.deepEqual(current?.Claims.ToJson(), realmClaims.ToJson())
+        assert.deepEqual(current?.Claims.ToJson(), { email: ['sso@example.com'], app_roles: ['operator.read-only'], amr: ['oidc'] })
+        standing.Disabled = true
+        assert.equal(await gate.Current(SessionFixture.Request(`cp_session=${issued.Token}`)), null)
+    })
+
+    it('a session of no known shape (neither pwd nor a staff principal) never authenticates', async () =>
+    {
+        const operators = new LiveOperators()
+        const sessions = new OperatorSessions(OperatorSessions.InMemory(), false)
+        const gate = sessions.GateOver(operators, new FixedStanding())
+        const forged = await sessions.Store.Issue('realm-subject', SessionClaims.From({ email: 'sso@example.com', app_roles: ['operator.full'], amr: ['oidc'] }))
+        assert.equal(await gate.Current(SessionFixture.Request(`cp_session=${forged.Token}`)), null)
+        const bare = await sessions.Store.Issue('someone', SessionClaims.From({ email: 'x@example.com', app_roles: ['operator.full'] }))
+        assert.equal(await gate.Current(SessionFixture.Request(`cp_session=${bare.Token}`)), null)
     })
 
     it('a session of the co-hosted tenant plane (it names its tenant) never authenticates an operator, whatever its roles', async () =>

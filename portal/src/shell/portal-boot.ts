@@ -3,22 +3,34 @@ import { NavigationService } from '@pragmatic-tech-ai/mural/framework/shell/serv
 import { AppShellBoot, BrowserPage, BrowserShellMount, type AppSession, type IPageReloader, type IShellApplications } from '@pragmatic-tech-ai/pragmatic-app-shell'
 import { ControlPlaneClient } from '../api-client.js'
 import { PortalLiveUpdateBridge } from './portal-live-update-bridge.js'
-import { PlatformSignInHost } from './platform-sign-in-host.js'
+import { OperatorSignInHost } from '../sign-in/operator-sign-in-host.js'
 import { PortalSessionService } from './portal-session-service.js'
 
 // The console's two compiled applications for the shell's boot: sign-in.mu when there is no session (or the probe
-// failed, with the reason on its page), app.mu (the shell) when there is one. Each is imported only when needed.
+// failed, with the reason on its page), app.mu (the shell) when there is one. Each is imported only when needed. The
+// sign-in page asks the console whether staff sign-in is on and shows what the page's query says the last staff sign-in
+// did (`search`: the console's callback lands a refused or failed one on `/?sign_in=forbidden|failed`).
 export class PortalApplications implements IShellApplications<Application>
 {
     private static readonly LiveUpdateFailed = 'PortalBoot: live update failed'
 
-    public constructor(private readonly client: ControlPlaneClient, private readonly reloader: IPageReloader)
+    public constructor(private readonly client: ControlPlaneClient, private readonly reloader: IPageReloader, private readonly search: string = '')
     {
     }
 
     public async LoadSignIn(): Promise<Application>
     {
-        return (await import('../sign-in.mu.js')).app
+        const app = (await import('../sign-in.mu.js')).app
+        await PortalApplications.PrepareSignIn(app.Services, this.search)
+        return app
+    }
+
+    // The sign-in page before it mounts: the staff sign-in offer, and the last staff sign-in's outcome from the query.
+    public static async PrepareSignIn(services: IServiceProvider, search: string): Promise<void>
+    {
+        const page = services.getRequired(OperatorSignInHost.Key).Page
+        page.ApplyMarker(search)
+        await page.Load()
     }
 
     public async LoadShell(): Promise<Application>
@@ -44,7 +56,7 @@ export class PortalApplications implements IShellApplications<Application>
     // The sign-in page's message when the session probe failed for a reason other than "not signed in".
     public static ShowSignInError(services: IServiceProvider, message: string): void
     {
-        services.getRequired(PlatformSignInHost.Key).Page.ShowError(message)
+        services.getRequired(OperatorSignInHost.Key).Page.ShowError(message)
     }
 
     // Wires the imported shell to the signed-in session. Importing app.mu.js composes the shell and activates the
@@ -71,6 +83,7 @@ export class PortalBoot
     {
         const client = new ControlPlaneClient()
         const page = new BrowserPage()
-        await new AppShellBoot(client, new PortalApplications(client, page), page).Run()
+        const search = window.location.search
+        await new AppShellBoot(client, new PortalApplications(client, page, search), page, search, window.location.pathname).Run()
     }
 }

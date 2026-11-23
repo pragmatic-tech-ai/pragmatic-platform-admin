@@ -23,8 +23,10 @@ import {
 import { EnvironmentDtoMapper, type EnvironmentDto, type IIdpService, TenantEmailDomainsLimits, HiveBackend, InfraMode, type ClientRecord, type ClusterSpec, type HiveRecord, type RegistrySpec, type TenantRecord, type HiveRolloutStatus, type ManifestRecord, type IEnvironmentService, type IGraphService } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import type { HiveObservationRegistry } from './hive-observation-record.js'
 import type { OwnerPasswordReset, TenantProvisioningService } from './tenant-provisioning-service.js'
-import { OperatorRole, type IOperatorIdentity, type OperatorPrincipal } from './operator-identity.js'
+import { OperatorRole, OperatorSelfLockoutError, type IOperatorIdentity, type OperatorPrincipal } from './operator-identity.js'
 import { OperatorPasswordAuthenticator, OperatorRoleClaims, OperatorSessions, type OperatorSessionGate } from './operator-sessions.js'
+import type { OperatorOidcSignIn } from './operator-sign-in/operator-oidc-sign-in.js'
+import type { OperatorDirectory } from './operator-sign-in/operator-directory.js'
 import { type DesktopDiscoveryEndpoint, ReleaseRegistryUnavailableError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { Channel, ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { OperatorSocketRegistry } from './operator-socket-registry.js'
@@ -183,6 +185,12 @@ export interface ControlPlaneHostOptions
     Releases?: ReleaseRefresher
     /** Where the hive agent image in a bootstrap bundle comes from; without a release the bundle is refused (409). */
     PlatformImages?: IPlatformImages
+    /** Operator sign-in through the operators' realm (OIDC, /auth/oidc/*); undefined: those routes are 404 and only the
+     *  break-glass password signs operators in. */
+    OperatorSignIn?: OperatorOidcSignIn
+    /** The operators who signed in through the realm (the operators view; disabling one ends their sessions). Required
+     *  with OperatorSignIn; without it staff sessions never authenticate and the staff roster is empty. */
+    StaffOperators?: OperatorDirectory
 }
 
 /**
@@ -214,6 +222,13 @@ export class ControlPlaneHost
     private static readonly SessionPath = '/api/session'
     private static readonly LogoutPath = '/api/logout'
     private static readonly SessionPasswordPath = '/api/session/password'
+    private static readonly SessionMethodsPath = '/api/session/methods'
+    private static readonly StaffOperatorsPath = '/api/operators/staff'
+    private static readonly StaffOperatorDisabledPath = '/api/operators/staff/disabled'
+    private static readonly StaffField = 'staff'
+    private static readonly StaffPrincipalMessage = 'principal (non-empty string) and disabled (boolean) are required'
+    private static readonly StaffPasswordMessage = 'Staff operators change their password at the Pragmatic staff realm, not here.'
+    private static readonly StaffUnknownMessage = 'No staff operator with that principal was recorded'
     private static readonly DiscoverPath = '/api/desktop/discover'
     private static readonly EventsPath = '/api/events'
     private static readonly TicketPath = '/api/ws-ticket'
@@ -389,7 +404,7 @@ export class ControlPlaneHost
     public constructor(private readonly options: ControlPlaneHostOptions)
     {
         this.sessions = options.Sessions
-        this.gate = options.Sessions.GateOver(options.Operator)
+        this.gate = options.Sessions.GateOver(options.Operator, options.StaffOperators)
         this.audit = options.Audit === undefined ? undefined : new AuditTrail(options.Audit, { MaxTargetLength: ControlPlaneHost.MaxAuditTargetLength })
         this.registry = options.Sockets ?? new OperatorSocketRegistry<WebSocket>()
         this.revalidateIntervalMs = options.RevalidateIntervalMs ?? ControlPlaneHost.RevalidateIntervalMs
@@ -476,7 +491,10 @@ export class ControlPlaneHost
         }
         // Public.
         table.Add({ Method: HttpMethod.Get, Pattern: C.PingPath, Auth: RouteAuth.Public, Handler: async ctx => ctx.WriteJson(C.StatusOk, { ok: true }) })
-        new PasswordLoginEndpoint(new OperatorPasswordAuthenticator(this.options.Operator), this.gate, this.sessions.LoginThrottle).Register(table, C.LoginPath)
+        // Break-glass: the operator password sign-in stays whatever else is configured.
+        new PasswordLoginEndpoint(new OperatorPasswordAuthenticator(this.options.Operator, this.audit, C.LoginPath), this.gate, this.sessions.LoginThrottle).Register(table, C.LoginPath)
+        this.options.OperatorSignIn?.Register(table, this.audit)
+        table.Add({ Method: HttpMethod.Get, Pattern: C.SessionMethodsPath, Auth: RouteAuth.Public, Handler: async ctx => this.HandleSessionMethods(ctx) })
         table.Add({ Method: HttpMethod.Get, Pattern: C.SessionPath, Auth: RouteAuth.Public, Handler: async ctx => this.HandleSession(ctx) })
         table.Add({ Method: HttpMethod.Post, Pattern: C.LogoutPath, Auth: RouteAuth.Public, Audited: false, Handler: ctx => this.HandleLogout(ctx) })
         const discovery = this.options.Discovery
@@ -490,6 +508,8 @@ export class ControlPlaneHost
         table.AddSocket({ Pattern: C.EventsPath, Auth: RouteAuth.Session, AppRole: any, Handler: (ws, ctx) => this.AdmitClient(ws, ctx) })
         // Operators.
         read(C.OperatorsPath, ctx => this.HandleListOperators(ctx), full)
+        read(C.StaffOperatorsPath, ctx => this.HandleListStaffOperators(ctx), full)
+        write(HttpMethod.Post, C.StaffOperatorDisabledPath, ctx => this.HandleStaffOperatorDisabled(ctx))
         write(HttpMethod.Post, C.OperatorsPath, ctx => this.HandleCreateOperator(ctx))
         write(HttpMethod.Post, C.OperatorMutationPath, ctx => this.HandleOperatorMutation(ctx))
         // Activity, releases, fleet-wide reads.
@@ -593,6 +613,14 @@ export class ControlPlaneHost
         ctx.WriteJson(ControlPlaneHost.StatusOk, { [ControlPlaneHost.SubjectField]: ctx.Session.Subject, [ControlPlaneHost.ClaimsField]: ctx.Session.Claims.ToJson() })
     }
 
+    /** GET /api/session/methods: how operators may sign in, `{ staff }` (the realm's OIDC sign-in is on); the break-glass
+     *  password is always offered. Public: the sign-in page asks before anyone is signed in. */
+    private HandleSessionMethods(ctx: RequestContext): void
+    {
+        CacheControl.NoStore(ctx.Response)
+        ctx.WriteJson(ControlPlaneHost.StatusOk, { [ControlPlaneHost.StaffField]: this.options.OperatorSignIn !== undefined })
+    }
+
     /** POST /api/logout: ends the cookie's session (if any) and its event sockets, clears the cookie. Public, so a stale cookie can still sign out. */
     private async HandleLogout(ctx: RequestContext): Promise<void>
     {
@@ -633,6 +661,13 @@ export class ControlPlaneHost
         {
             JsonApi.Drain(ctx.Request)
             ctx.WriteJson(C.StatusUnauthorized, { error: C.UnauthenticatedMessage })
+            return
+        }
+        if (OperatorRoleClaims.IsStaffSession(session))
+        {
+            // A staff operator has no password here: their realm owns it.
+            JsonApi.Drain(ctx.Request)
+            ctx.WriteJson(C.StatusConflict, { error: C.StaffPasswordMessage })
             return
         }
         const who = OperatorRoleClaims.PrincipalOf(session)
@@ -770,6 +805,49 @@ export class ControlPlaneHost
     {
         const roster = await this.options.Operator.ListOperators()
         ctx.WriteJson(ControlPlaneHost.StatusOk, roster.map(o => ({ email: o.email, role: ControlPlaneHost.RoleWire(o.role), disabled: o.disabled })))
+    }
+
+    /** GET /api/operators/staff: the operators who signed in through the realm (principal, email, role, sign-ins, disabled). */
+    private async HandleListStaffOperators(ctx: RequestContext): Promise<void>
+    {
+        const roster = this.options.StaffOperators === undefined ? [] : await this.options.StaffOperators.List()
+        ctx.WriteJson(ControlPlaneHost.StatusOk, roster)
+    }
+
+    /**
+     * POST /api/operators/staff/disabled `{ principal, disabled }`: disables (or enables) a staff operator here, whatever
+     * the realm says; disabling ends their sessions and live sockets at once. An operator cannot disable themselves (409).
+     */
+    private async HandleStaffOperatorDisabled(ctx: RequestContext): Promise<void>
+    {
+        const C = ControlPlaneHost
+        const body = await this.ReadJsonObject(ctx)
+        if (body === undefined)
+        {
+            return
+        }
+        const principal = body.principal
+        if (typeof principal !== 'string' || principal.trim().length === 0 || typeof body.disabled !== 'boolean')
+        {
+            ctx.WriteJson(C.StatusBadRequest, { error: C.StaffPrincipalMessage })
+            return
+        }
+        if (body.disabled && C.Who(ctx).principalId === principal)
+        {
+            throw new OperatorSelfLockoutError()
+        }
+        const directory = this.options.StaffOperators
+        if (directory === undefined || !(await directory.SetDisabled(principal, body.disabled)))
+        {
+            ctx.WriteJson(C.StatusNotFound, { error: C.StaffUnknownMessage })
+            return
+        }
+        if (body.disabled)
+        {
+            await this.sessions.Store.RevokeSubject(principal)
+            await this.CloseRevokedSockets()
+        }
+        ctx.WriteJson(C.StatusOk, {})
     }
 
     /** The password is never echoed. */
