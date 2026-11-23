@@ -62,6 +62,23 @@ export class PlatformAdminComponent
                 ],
             },
             {
+                name: 'entitlements',
+                description: 'Entitlement statements from the clients ledger, received on the internal listener (off unless enabled).',
+                settings: [
+                    { name: 'secret', type: SettingType.String, source: 'PRAGMATIC_ADMIN_ENTITLEMENTS_SECRET_FILE', required: true, secret: true, description: 'The shared secret of the ledger to platform admin console entitlements link (a mounted secret file, at least 32 bytes).' },
+                ],
+            },
+            {
+                name: 'customerApi',
+                description: 'The customer API the platform edge relays for the personal cabinet, on the internal listener (off unless enabled).',
+                settings: [
+                    { name: 'secret', type: SettingType.String, source: 'PRAGMATIC_ADMIN_CUSTOMER_API_SECRET_FILE', required: true, secret: true, description: 'The shared secret of the edge to platform admin console customer API link (a mounted secret file, at least 32 bytes).' },
+                    { name: 'centralIssuer', type: SettingType.Url, source: 'PRAGMATIC_ADMIN_CENTRAL_ISSUER', default: 'https://login.pragmatic-tech.ai/realms/central', description: 'The issuer of the central login whose tokens name the customer admins.' },
+                    { name: 'centralAudience', type: SettingType.String, source: 'PRAGMATIC_ADMIN_CENTRAL_AUDIENCE', default: 'pragmatic-cabinet', description: 'The audience central-login tokens of customer admins must carry (the personal cabinet relays its own ID token).' },
+                    { name: 'caBundle', type: SettingType.String, source: 'PRAGMATIC_ADMIN_OIDC_CA_BUNDLE', description: 'A PEM CA bundle trusted for the discovery and keys of the central login (a realm on a private CA).' },
+                ],
+            },
+            {
                 name: 'releases',
                 description: 'The release catalogue: signed release descriptors read from an OCI registry and imported on a poll.',
                 settings: [

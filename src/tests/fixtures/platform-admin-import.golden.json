@@ -202,7 +202,8 @@
         "": "bGVnYWN5LXNpZw=="
       }
     },
-    "operator_directory": {}
+    "operator_directory": {},
+    "entitlements": {}
   },
   "audit": [
     {

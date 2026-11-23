@@ -5,9 +5,9 @@ plane (operators, clients, tenants, hives, the tenants' IdPs, email domains, rel
 imports signed platform releases into, and the co-hosted tenant plane (`pragmatic-tenant-plane`, transitional until
 C5.3). Its operator UI is `portal/`.
 
-Split out of pragmatic-server (seed commit `chore: seed from pragmatic-server@2a2e8138`); image name, ports
-(7000; 7001 is exposed by the image but served by the platform edge, never the console), environment variables, wire paths and the component descriptor are unchanged
-(`tests/descriptor-golden.test.ts` pins the pragmatic-server digest).
+Split out of pragmatic-server (seed commit `chore: seed from pragmatic-server@2a2e8138`). Ports: 7000 (the operator
+listener) and 7001 (the internal listener, loopback or mesh only). `tests/descriptor-golden.test.ts` pins the component
+descriptor's digest (D4 added the `entitlements` and `customerApi` options).
 
 ## Roles
 
@@ -17,6 +17,24 @@ platform edge (`pragmatic-platform-edge`) serves it and answers through the inte
 `PRAGMATIC_AGENT_CHANNEL_PORT` / `PRAGMATIC_AGENT_CHANNEL_URL` only name that channel in hive bundles.
 `PRAGMATIC_CONTROL_PLANE_ROLE=edge` and the retired `all` (the former single dev process that also served the agent
 channel) are refused at start. Local stacks run the console and the edge as two processes (pragmatic-e2e's live loop).
+
+## The internal listener
+
+`PRAGMATIC_ADMIN_INTERNAL_PORT` (with `PRAGMATIC_ADMIN_INTERNAL_BIND`, default `127.0.0.1`) turns on the internal
+listener (`internal/internal-host.ts`, an AppHost answering the loopback host names only). It carries one link per
+caller, each with its own secret file (at least 32 bytes; a refusal names the setting, never the content):
+
+| Link | Setting | Routes |
+|---|---|---|
+| The edge's internal API (agent channel, desktop discovery) | `PRAGMATIC_INTERNAL_API_SECRET_FILE` (required) | `POST /internal/v1/agent`, `POST /internal/v1/desktop/discover`, `GET /internal/v1/healthz` |
+| The clients ledger's entitlement statements | `PRAGMATIC_ADMIN_ENTITLEMENTS_SECRET_FILE` (the ledger's `PRAGMATIC_LEDGER_ENTITLEMENTS_SECRET_FILE`) | `POST /internal/entitlements/v1/statements` |
+| The customer API the edge relays for the personal cabinet | `PRAGMATIC_ADMIN_CUSTOMER_API_SECRET_FILE` (the edge's `PRAGMATIC_EDGE_CUSTOMER_API_SECRET_FILE`) | `POST /internal/customer/v1/<operation>` |
+
+Without a link's setting its routes answer 404. The customer API verifies the customer admin's own central-login token
+(header `x-pragmatic-customer-token`): issuer `PRAGMATIC_ADMIN_CENTRAL_ISSUER` (default the central realm), audience
+`PRAGMATIC_ADMIN_CENTRAL_AUDIENCE` (default `pragmatic-cabinet`), CA bundle `PRAGMATIC_ADMIN_OIDC_CA_BUNDLE` (optional).
+The statements land in `records_entitlements` (`entitlements/sql-entitlement-sink.ts`, newest version per client) and
+derive the client records (`entitlements/client-projection.ts`).
 
 The co-hosted tenant plane serves its SPA from `PRAGMATIC_TENANT_PORTAL_DIR` when set, else from
 `<repository root>/tenant-portal/dist` (`server.ts`), a folder this repository does not hold (the tenant portal lives in

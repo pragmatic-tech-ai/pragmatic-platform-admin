@@ -5,8 +5,11 @@ import { dirname, join, resolve } from 'node:path'
 import { AuditRegistry, TenantIdpMode, TenantAccountIndex, UserSeeder, AdminProxy, WsAdminConnector, type IEnvironmentService, HiveOrchestratorFactory, ClusterTunnelPool, EnvironmentEndpoints, ManifestRegistry, AdoptionLedgerRegistry, ConsoleFingerprintKeys, type ITenantEmailDomains, EnvironmentPlacement, BundleBuilderAdapter, UserSeederAdapter, DockerEnvironmentRuntime, EnvironmentRuntimeResolver, InClusterEnvironmentRuntime, EnvironmentRegistry, InClusterRegistry, K8sManifestBuilder, EnvironmentService, GraphService, NetPortProbe, PortAllocator, type IIdpService, IdpAdminClient, TenantSessions, TenantPrincipalSessions, TenantAdminClientRegistry, MasterKeyFile, TenantAdminEnv, TenantHostResolver, TenantGraphAccess, TenantPlaneComposer, type TenantPlaneParts, TenantConsoleHost, TenantHealthMonitor, type IEnvStatusReconciler, type IHiveLister, HiveHealthProducer, type TenantPlane, type ITenantDirectory, type IRolloutClient } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { SealedSecretStore } from './sealed-secret-store.js'
 import { LocalDesktopDiscoveryBackend } from './desktop-discovery-backend.js'
-import { InternalApiLink, DesktopDiscoveryEndpoint } from '@pragmatic-tech-ai/pragmatic-platform-link'
-import { InternalApiHost } from './internal-api-host.js'
+import { DesktopDiscoveryEndpoint } from '@pragmatic-tech-ai/pragmatic-platform-link'
+import { InternalHost } from './internal/internal-host.js'
+import { InternalSettings } from './internal/internal-settings.js'
+import { ClientProjection } from './entitlements/client-projection.js'
+import { SqlEntitlementSink } from './entitlements/sql-entitlement-sink.js'
 import { InfraTargetMode, InfraTargetModes } from './infra-target-mode.js'
 import { NoTargetEnvironmentRuntime, NoTargetHiveOrchestratorFactory, NoTargetIdpDriver } from './no-infra-target.js'
 import { HostedHiveOrchestratorFactory } from './hosted-hive-orchestrator-factory.js'
@@ -89,21 +92,6 @@ interface IOperatorSideStart
     tenant: ITenantPlaneStart | undefined
 }
 
-/** Admin's internal API listener for the edge; absent unless PRAGMATIC_ADMIN_INTERNAL_PORT is set. */
-interface IInternalApiStart
-{
-    host: InternalApiHost
-    settings: InternalApiSettings
-}
-
-/** The parsed internal-API settings. */
-export interface InternalApiSettings
-{
-    Port: number
-    Bind: string
-    SecretFile: string
-}
-
 /** What ControlPlaneServer.Main composed for each listener, started in ControlPlaneStart's order. */
 class ComposedListeners implements IControlPlaneListenerStarts
 {
@@ -111,10 +99,12 @@ class ComposedListeners implements IControlPlaneListenerStarts
     private static readonly ListeningSuffix = '/'
     private static readonly TenantListeningPrefix = 'Tenant plane listening on '
     private static readonly InternalListeningPrefix = 'Internal API listening on '
+    private static readonly LinksPrefix = ', links: '
+    private static readonly LinkSeparator = ', '
     private static readonly SchemeHostSeparator = '://'
     private static readonly HostPortSeparator = ':'
 
-    public constructor(private readonly operator: IOperatorSideStart, private readonly internal?: IInternalApiStart)
+    public constructor(private readonly operator: IOperatorSideStart, private readonly internal?: InternalHost)
     {
     }
 
@@ -125,8 +115,9 @@ class ComposedListeners implements IControlPlaneListenerStarts
         {
             return
         }
-        await i.host.Listen(i.settings.Port, i.settings.Bind)
-        console.log(ComposedListeners.InternalListeningPrefix + i.settings.Bind + ComposedListeners.HostPortSeparator + String(i.settings.Port))
+        await i.Listen()
+        const address = i.Address()
+        console.log(ComposedListeners.InternalListeningPrefix + address.address + ComposedListeners.HostPortSeparator + String(address.port) + ComposedListeners.LinksPrefix + i.Links.join(ComposedListeners.LinkSeparator))
     }
 
     /** No tenant route is mounted on the operator listener. It binds PRAGMATIC_ADMIN_BIND (default loopback); a
@@ -163,12 +154,6 @@ export class ControlPlaneServer
     private static readonly StaffSignInOffPrefix = '[control-plane] staff sign-in is off (break-glass only): '
     private static readonly PortEnvVar = 'PRAGMATIC_ADMIN_PORT'
     private static readonly AdminBindEnvVar = 'PRAGMATIC_ADMIN_BIND'
-    private static readonly InternalPortEnvVar = 'PRAGMATIC_ADMIN_INTERNAL_PORT'
-    private static readonly InternalBindEnvVar = 'PRAGMATIC_ADMIN_INTERNAL_BIND'
-    private static readonly DisabledPortText = '0'
-    private static readonly BadInternalPortPrefix = 'Invalid PRAGMATIC_ADMIN_INTERNAL_PORT (expected 0 or a port 1-65535): '
-    private static readonly BadInternalBindPrefix = 'Invalid PRAGMATIC_ADMIN_INTERNAL_BIND (expected an IP address or localhost): '
-    private static readonly InternalSecretRequired = 'PRAGMATIC_ADMIN_INTERNAL_PORT is set, so PRAGMATIC_INTERNAL_API_SECRET_FILE is required'
     private static readonly DefaultAdminBind = '127.0.0.1'
     private static readonly LocalhostName = 'localhost'
     private static readonly BadAdminBindPrefix = 'Invalid PRAGMATIC_ADMIN_BIND (expected an IP address or localhost): '
@@ -274,12 +259,15 @@ export class ControlPlaneServer
         const digests: IImageDigest = noDocker ? new RegistryRefImageDigest() : new DockerImageDigest()
         await registry.Load()
         await registry.Reconcile()
+        const clients = new ClientRegistry(await database.Map(PlatformAdminRegistry.Clients))
         const directory = new PlatformDirectory(
-            new ClientRegistry(await database.Map(PlatformAdminRegistry.Clients)),
+            clients,
             new TenantRegistry(await database.Map(PlatformAdminRegistry.Tenants)),
             new HiveRegistry(await database.Map(PlatformAdminRegistry.Hives)),
             registry)
         await directory.Load()
+        // The ledger's entitlement statements (newest per client); opening re-projects them onto the client records.
+        const entitlements = await SqlEntitlementSink.Open(database, new ClientProjection(clients))
         // The deployment registry the agent channel serves (through the edge) is built over the manifest signer, which needs
         // the platform key (the trust-root back-fill this runs is idempotent).
         // One key store for every signer: the signing-key file (if any) is read once, here.
@@ -352,9 +340,9 @@ export class ControlPlaneServer
         const discoveryBackend = new LocalDesktopDiscoveryBackend(accountIndex, directory, ControlPlaneServer.DesktopTenantPlaneUrlOf(process.env),
             adverts, fingerprintKeys, approvals, registry)
         const discovery = new DesktopDiscoveryEndpoint(discoveryBackend, DesktopDiscoveryEndpoint.NewThrottle())
-        const internalSettings = ControlPlaneServer.InternalApiSettingsOf(process.env)
-        const internalStart: IInternalApiStart | undefined = internalSettings === undefined ? undefined
-            : { host: new InternalApiHost(InternalApiLink.Credential(internalSettings.SecretFile), agentBackend, discoveryBackend), settings: internalSettings }
+        const internalSettings = InternalSettings.Of(process.env)
+        const internalStart = internalSettings === undefined ? undefined
+            : new InternalHost(internalSettings, { Agent: agentBackend, Discovery: discoveryBackend, Sink: entitlements })
         // Installs a Local hive's tenant console through the same cluster access.
         const consoleInstaller = new TenantConsoleInstaller(directory, orchestrators, new TenantAdminBootstrap(deployments), fingerprintKeys,
             new DevCertificateAuthority(join(dataRoot, DevCertificateAuthority.DirName), sealed), new InHiveIdpAdmin(orchestrators, sealed),
@@ -437,34 +425,6 @@ export class ControlPlaneServer
         ownerResets: ConsoleOwnerResets, emailDomains: PlatformEmailDomains): LocalAgentChannelBackend
     {
         return new LocalAgentChannelBackend(deployments, new ConsoleAdvertReceiver(directory, adverts, undefined, ownerResets, emailDomains))
-    }
-
-    /** PRAGMATIC_ADMIN_INTERNAL_PORT (0/blank = off), _BIND (default loopback) and PRAGMATIC_INTERNAL_API_SECRET_FILE (required when on). */
-    public static InternalApiSettingsOf(env: NodeJS.ProcessEnv): InternalApiSettings | undefined
-    {
-        const C = ControlPlaneServer
-        const rawPort = env[C.InternalPortEnvVar]?.trim() ?? ''
-        if (rawPort === '' || rawPort === C.DisabledPortText)
-        {
-            return undefined
-        }
-        const port = Number(rawPort)
-        if (!Number.isInteger(port) || port < 1 || port > C.MaxPort)
-        {
-            throw new Error(C.BadInternalPortPrefix + rawPort)
-        }
-        const rawBind = env[C.InternalBindEnvVar]?.trim() ?? ''
-        const bind = rawBind === '' ? C.DefaultAdminBind : rawBind
-        if (isIP(bind) === 0 && bind !== C.LocalhostName)
-        {
-            throw new Error(C.BadInternalBindPrefix + rawBind)
-        }
-        const secretFile = env[InternalApiLink.SecretFileEnvVar]?.trim() ?? ''
-        if (secretFile === '')
-        {
-            throw new Error(C.InternalSecretRequired)
-        }
-        return { Port: port, Bind: bind, SecretFile: secretFile }
     }
 
     /**

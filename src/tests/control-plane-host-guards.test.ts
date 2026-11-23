@@ -87,6 +87,10 @@ class Fixture
     public static readonly HealthPath = '/healthz'
     public static readonly HealthBody = 'ok'
     public static readonly Ok = 200
+    public static readonly NotFound = 404
+    public static readonly StatementsPath = '/internal/entitlements/v1/statements'
+    public static readonly CustomerCreateTenantPath = '/internal/customer/v1/create-tenant'
+    public static readonly AgentPath = '/internal/v1/agent'
 
     public static Body(host: ControlPlaneHost, path: string): Promise<string>
     {
@@ -142,6 +146,15 @@ describe('ControlPlaneHost host guards', () =>
     {
         await host.Close()
         rmSync(root, { recursive: true, force: true })
+    })
+
+    it('the operator listener answers 404 for the routes of the internal links (they are mounted only on the internal listener)', async () =>
+    {
+        await Start()
+        for (const path of [Fixture.StatementsPath, Fixture.CustomerCreateTenantPath, Fixture.AgentPath])
+        {
+            assert.equal(await Fixture.Send(host, Fixture.Post, path, { [Fixture.ContentType]: Fixture.JsonType }), Fixture.NotFound)
+        }
     })
 
     it('rejects an attacker Host even for a GET', async () =>
