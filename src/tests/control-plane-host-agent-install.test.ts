@@ -148,6 +148,28 @@ class Harness
     public static readonly ChannelUrl = 'http://host.docker.internal:7001'
     /** The hives the suite installs on: the cleanup waits for every install a test left running on them. */
     public static readonly HiveIds: readonly string[] = ['local1', 'aks1', 'kind1']
+    /** Past the installer's own 5 s timeout: a run still unsettled then is one a test holds on purpose (a gate). */
+    public static readonly SettleLimitMs = 6000
+    public static readonly CleanupRetries = 10
+    public static readonly CleanupRetryDelayMs = 50
+
+    /**
+     * Waits until every install the installers ran has settled, at most SettleLimitMs. The installer's timers are
+     * unref'd, so a ref'd timer holds the event loop meanwhile (without it Linux ends the loop under the pending wait).
+     */
+    public static async SettleAll(installers: readonly HiveAgentInstaller[]): Promise<void>
+    {
+        let timer: NodeJS.Timeout | undefined
+        const limit = new Promise<void>(resolve => { timer = setTimeout(resolve, Harness.SettleLimitMs) })
+        try
+        {
+            await Promise.race([Promise.all(installers.flatMap(installer => Harness.HiveIds.map(id => installer.WhenSettled(id)))), limit])
+        }
+        finally
+        {
+            clearTimeout(timer)
+        }
+    }
 
     public static Send(host: ControlPlaneHost, method: string, path: string, token: string = FakeOperator.FullToken): Promise<Reply>
     {
@@ -241,9 +263,10 @@ describe('ControlPlaneHost automatic agent install', () =>
     {
         await host.Close()
         // An install a test left running still writes its records into the folder (ENOTEMPTY on removal): wait until
-        // every such install has settled (connected, failed or timed out) before the folder goes.
-        await Promise.all(installers.flatMap(installer => Harness.HiveIds.map(id => installer.WhenSettled(id))))
-        rmSync(parent, { recursive: true, force: true })
+        // every such install has settled (connected, failed or timed out) before the folder goes; the removal still
+        // retries for a run a test holds on purpose.
+        await Harness.SettleAll(installers)
+        rmSync(parent, { recursive: true, force: true, maxRetries: Harness.CleanupRetries, retryDelay: Harness.CleanupRetryDelayMs })
     })
 
     it('POST starts the install (202, no-store, no token); the hive checks in with the stored token and GET ends Connected', async () =>
