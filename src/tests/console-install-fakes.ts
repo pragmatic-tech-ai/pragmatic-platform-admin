@@ -113,11 +113,11 @@ export class ConsoleFakeKubectl implements IKubectl
         let all = true
         for (const item of ConsoleFakeKubectl.ItemsOf(manifestJson))
         {
-            if (item.kind !== 'Secret' || item.metadata?.name === undefined || item.metadata.namespace === undefined)
+            if ((item.kind !== 'Secret' && item.kind !== 'ConfigMap') || item.metadata?.name === undefined || item.metadata.namespace === undefined)
             {
                 continue
             }
-            const key = ConsoleFakeKubectl.Key(item.metadata.namespace, 'secret/' + item.metadata.name)
+            const key = ConsoleFakeKubectl.Key(item.metadata.namespace, item.kind.toLowerCase() + '/' + item.metadata.name)
             if (this.Objects.has(key))
             {
                 all = false

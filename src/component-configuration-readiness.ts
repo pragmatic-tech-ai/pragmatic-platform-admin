@@ -53,14 +53,19 @@ export class ComponentConfigurationReadiness
         const refusal = status.RefusalFor(digest)
         if (refusal !== undefined) return new ConfigurationReadiness(R.Refused, refusal)
         if (!status.IsPrepared(digest)) return new ConfigurationReadiness(R.Waiting)
-        let present: boolean
-        try
+        // Only the entry for `digest`: another one that does not read never holds this one up.
+        const entry = map.data?.[AppliedConfigurationEntries.KeyOf(digest)]
+        let present = false
+        if (typeof entry === 'string')
         {
-            present = AppliedConfigurationEntries.Prepared(map).has(digest)
-        }
-        catch
-        {
-            present = false
+            try
+            {
+                present = AppliedConfigurationCodec.Decode(entry).DescriptorDigest === digest
+            }
+            catch
+            {
+                present = false
+            }
         }
         return new ConfigurationReadiness(present ? R.Ready : R.Waiting)
     }

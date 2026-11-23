@@ -10,7 +10,6 @@ import { ConsoleInstallState, ConsoleInstallStep, ConsoleInstallUnavailableError
 import { AppliedConfiguration, AppliedConfigurationCodec, AppliedConfigurationEntries, AppliedConfigurationKeys, ConfigurationPreparationRefusal, ConfigurationPreparationStatus } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
 import type { ComponentDescriptorSet } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ConsoleFakeKubectl, ConsoleInstallFixture } from './console-install-fakes.js'
-import { ConsoleBootstrapSplit } from '../console-bootstrap-split.js'
 import { FakeAssets, FakeComponentsArtifact, FakeManifestSource, FakeReleaseRecords, ReleaseDescriptorFixtures as F } from './release-descriptor-fixtures.js'
 
 type K8sItem = {
@@ -350,8 +349,8 @@ describe('TenantConsoleInstaller: the release descriptors ConfigMap', () =>
     {
         fx = await ConsoleInstallFixture.Create()
         await D.Installed(fx)
-        // Client-side and server-side (the empty configuration objects go server-side, so no client-side apply clears their data).
-        const items = [...fx.Kubectl.Applied, ...fx.Kubectl.ServerApplied].flatMap(m => D.Items(m))
+        // Applied, and created (the empty configuration objects are created when missing, never applied over their data).
+        const items = [...fx.Kubectl.Applied, ...fx.Kubectl.ServerApplied, ...fx.Kubectl.Created].flatMap(m => D.Items(m))
         const system = K8sManifestBuilder.SystemNamespace
         const idp = K8sManifestBuilder.IdpNameOf(D.Tenant)
         const admin = K8sManifestBuilder.TenantAdminNameOf(D.Tenant)
@@ -417,6 +416,10 @@ class PreparedInstall
     public static readonly OldDigest = `sha256:${'0'.repeat(64)}`
     public static readonly RefusedSetting = 'core.databaseUrl'
     public static readonly RefusedRule = '/options/core/databaseUrl is not a setting of this option'
+    public static readonly FindCall = 'Find'
+    public static readonly CreateCall = 'Create'
+    public static readonly RolloutStatusCall = 'RolloutStatus'
+    public static readonly DeploymentResource = 'deployment/'
     public static readonly RunningTemplate = { metadata: { labels: { 'pragmatic/app': 'pragmatic-idp-acme' } }, spec: { containers: [{ name: 'idp', image: 'ghcr.io/x/pragmatic-tenant-idp@sha256:' + '1'.repeat(64) }] } }
 
     /** The digest of the release's tenant-idp descriptor (what the new pods will carry). */
@@ -460,7 +463,7 @@ class PreparedInstall
     public static Cluster(fx: ConsoleInstallFixture, answers: Array<string | undefined>, last: string | undefined): void
     {
         const P = PreparedInstall
-        fx.Kubectl.Put(P.Idp, 'deployment/' + P.Idp, { kind: 'Deployment', metadata: { name: P.Idp, namespace: P.Idp }, spec: { replicas: 1, template: P.RunningTemplate } })
+        fx.Kubectl.Put(P.Idp, P.DeploymentResource + P.Idp, { kind: 'Deployment', metadata: { name: P.Idp, namespace: P.Idp }, spec: { replicas: 1, template: P.RunningTemplate } })
         if (last !== undefined) fx.Kubectl.Objects.set(ConsoleFakeKubectl.Key(P.Idp, P.ConfigResource), last)
         fx.Kubectl.FindAnswers.set(ConsoleFakeKubectl.Key(P.Idp, P.ConfigResource), answers)
     }
@@ -497,15 +500,16 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         await D.Installed(fx)
         const calls = fx.Kubectl.Calls
         const admin = K8sManifestBuilder.TenantAdminNameOf(P.Tenant)
-        const consoleReady = calls.findIndex(c => c[0] === 'RolloutStatus' && c[2] === admin)
-        const lastConfigRead = calls.map((c, i) => [c, i] as const).filter(([c]) => c[0] === 'Find' && c[2] === P.ConfigResource).map(([, i]) => i).pop() ?? -1
+        const consoleReady = calls.findIndex(c => c[0] === P.RolloutStatusCall && c[2] === admin)
+        const lastConfigRead = calls.map((c, i) => [c, i] as const).filter(([c]) => c[0] === P.FindCall && c[2] === P.ConfigResource).map(([, i]) => i).pop() ?? -1
         const [idpApply] = P.IdpDeploymentApplies(fx)
         assert.ok(idpApply !== undefined, 'the IdP Deployment is applied')
-        assert.ok(calls.findIndex(c => c[0] === 'RolloutRestart' && c[2] === admin) < consoleReady)
+        const consoleRestart = calls.findIndex(c => c[0] === D.RolloutRestartCall && c[2] === admin)
+        assert.ok(consoleRestart < consoleReady)
         assert.ok(consoleReady < lastConfigRead, 'the configuration is read after the console is ready')
         assert.ok(lastConfigRead < idpApply, 'the IdP image is applied only after the configuration was prepared')
-        assert.ok(idpApply < calls.findIndex(c => c[0] === 'RolloutRestart' && c[1] === P.Idp))
-        assert.ok(calls.findIndex(c => c[0] === 'RolloutRestart' && c[1] === P.Idp) < calls.findIndex(c => c[0] === 'RolloutStatus' && c[1] === P.Idp))
+        assert.ok(idpApply < calls.findIndex(c => c[0] === D.RolloutRestartCall && c[1] === P.Idp))
+        assert.ok(calls.findIndex(c => c[0] === D.RolloutRestartCall && c[1] === P.Idp) < calls.findIndex(c => c[0] === P.RolloutStatusCall && c[1] === P.Idp))
         // The first apply carries no IdP Deployment; the IdP gets its new labels on its own running template (nothing rolls).
         const first = D.Items(fx.Kubectl.Applied[0] as string)
         assert.equal(first.some(i => P.IsIdpDeployment(i)), false)
@@ -515,7 +519,38 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         assert.equal(held.metadata.labels?.[ComponentConfigurationMounts.ManagedByLabel], ComponentConfigurationMounts.ManagedBy)
         const idpItem = D.Items(fx.Kubectl.Applied[1] as string).find(i => P.IsIdpDeployment(i))
         assert.notDeepEqual((idpItem?.spec as { template?: unknown }).template, P.RunningTemplate, 'the later apply carries the release template')
-        assert.ok(calls.indexOf(calls.find(c => c[0] === 'ApplyServerSide') as string[]) < consoleReady)
+        // The hold and the configuration objects land before the console restarts (it finds its target and writes into them).
+        const serverCalls = calls.map((c, i) => [c[0], i] as const).filter(([verb]) => verb === D.ApplyServerSideCall).map(([, i]) => i)
+        const holdAt = serverCalls[fx.Kubectl.ServerApplied.findIndex(m => D.Items(m).some(i => P.IsIdpDeployment(i)))] ?? Infinity
+        const createCalls = calls.map((c, i) => [c[0], i] as const).filter(([verb]) => verb === P.CreateCall).map(([, i]) => i)
+        const configAt = createCalls[fx.Kubectl.Created.findIndex(m => D.Items(m).some(i => i.metadata.namespace === P.Idp && i.metadata.name === AppliedConfigurationKeys.ObjectNamePrefix + ReleaseApp.TenantIdp))] ?? Infinity
+        assert.ok(holdAt < consoleRestart, 'the hold before the console restarts')
+        assert.ok(configAt < consoleRestart, 'the configuration object before the console restarts')
+    })
+
+    it('a fresh install (no IdP yet) holds nothing and applies the IdP Deployment after the console is ready', async () =>
+    {
+        const d = D.WithRelease()
+        fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery, runningIdp: false })
+        await D.Installed(fx)
+        const calls = fx.Kubectl.Calls
+        assert.equal(fx.Kubectl.ServerApplied.flatMap(m => D.Items(m)).some(i => P.IsIdpDeployment(i)), false)
+        const consoleReady = calls.findIndex(c => c[0] === P.RolloutStatusCall && c[2] === K8sManifestBuilder.TenantAdminNameOf(P.Tenant))
+        const [idpApply] = P.IdpDeploymentApplies(fx)
+        assert.ok(idpApply !== undefined && consoleReady < idpApply)
+    })
+
+    it('delivered descriptors without the IdP digest stop the install before the IdP rolls', async () =>
+    {
+        const C = ReleaseDescriptorsConfigMap
+        const manifest = JSON.stringify({ apiVersion: 'v1', kind: D.ConfigMapKind, metadata: { name: C.Name, namespace: C.Namespace, labels: K8sManifestBuilder.HiveLabelsOf(D.Hive) }, data: { [C.DigestsKey]: '{}' } })
+        const delivery = { IsMixed: () => false, ReleaseOfConsole: () => F.Version, ManifestFor: async () => manifest }
+        fx = await ConsoleInstallFixture.Create({ descriptors: delivery as unknown as ConsoleReleaseDescriptors })
+        fx.Installer.Start(D.Hive)
+        const status = await fx.Installer.WhenSettled(D.Hive)
+        assert.equal(status?.step, ConsoleInstallStep.PreparingConfiguration)
+        assert.match(status?.error ?? '', /name no descriptor for the identity provider/)
+        assert.deepEqual(P.IdpDeploymentApplies(fx), [])
     })
 
     it('a refusal stops the install at preparing-configuration naming the settings, before the IdP is touched', async () =>
@@ -530,7 +565,7 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         assert.match(status?.error ?? '', new RegExp(P.RefusedSetting.replace('.', '\\.')))
         assert.match(status?.error ?? '', /identity provider was not changed/)
         assert.deepEqual(P.IdpDeploymentApplies(fx), [])
-        assert.equal(fx.Kubectl.Calls.some(c => (c[0] === 'RolloutRestart' || c[0] === 'RolloutStatus') && c[1] === P.Idp), false)
+        assert.equal(fx.Kubectl.Calls.some(c => (c[0] === D.RolloutRestartCall || c[0] === P.RolloutStatusCall) && c[1] === P.Idp), false)
     })
 
     it('a console that never prepares stops the install with a bounded wait, the IdP untouched', async () =>
@@ -541,8 +576,8 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         fx.Installer.Start(D.Hive)
         const status = await fx.Installer.WhenSettled(D.Hive)
         assert.equal(status?.step, ConsoleInstallStep.PreparingConfiguration)
-        assert.match(status?.error ?? '', /did not prepare/)
-        const reads = fx.Kubectl.Calls.filter(c => c[0] === 'Find' && c[2] === P.ConfigResource).length
+        assert.match(status?.error ?? '', /did not prepare .* within 3 minutes/)
+        const reads = fx.Kubectl.Calls.filter(c => c[0] === P.FindCall && c[2] === P.ConfigResource).length
         assert.equal(reads, TenantConsoleInstaller.PreparationTimeoutMs / TenantConsoleInstaller.PreparationPollMs + 1)
         assert.deepEqual(P.IdpDeploymentApplies(fx), [])
     })
@@ -553,38 +588,30 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
         P.Cluster(fx, [], JSON.stringify({ kind: 'ConfigMap', metadata: { name: 'pragmatic-config-pragmatic-tenant-idp' } }))
         await D.Installed(fx)
-        assert.equal(fx.Kubectl.Calls.filter(c => c[0] === 'Find' && c[2] === P.ConfigResource).length, 1)
+        assert.equal(fx.Kubectl.Calls.filter(c => c[0] === P.FindCall && c[2] === P.ConfigResource).length, 1)
         fx.Dispose()
         fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
         const current = new AppliedConfiguration(P.Tenant, ReleaseApp.TenantIdp, 4, F.ComponentVersion, P.ReleaseDigest(d), { options: {} })
         P.Cluster(fx, [], JSON.stringify(AppliedConfigurationCodec.ToConfigMap(current, P.Idp)))
         await D.Installed(fx)
+        assert.equal(fx.Kubectl.Calls.filter(c => c[0] === P.FindCall && c[2] === P.ConfigResource).length, 1, 'read once: already for the release descriptor')
     })
 
-    it('the empty configuration objects are applied server-side, never in the client-side apply that would clear what a client-side apply wrote', async () =>
+    it('the empty configuration objects are created when missing, never applied, so a hand-applied configuration survives every install', async () =>
     {
         const d = D.WithRelease()
         fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
+        const current = new AppliedConfiguration(P.Tenant, ReleaseApp.TenantIdp, 4, F.ComponentVersion, P.ReleaseDigest(d), { options: {} })
+        const handApplied = JSON.stringify(AppliedConfigurationCodec.ToConfigMap(current, P.Idp))
+        P.Cluster(fx, [], handApplied)
+        await D.Installed(fx)
         await D.Installed(fx)
         const isConfigurationObject = (i: K8sItem): boolean => i.metadata.name.startsWith(AppliedConfigurationKeys.ObjectNamePrefix) || i.metadata.name.startsWith(ComponentConfigurationMounts.SecretNamePrefix)
-        assert.equal(fx.Kubectl.Applied.flatMap(m => D.Items(m)).some(isConfigurationObject), false)
-        const server = fx.Kubectl.ServerApplied.flatMap(m => D.Items(m)).filter(isConfigurationObject)
-        assert.ok(server.some(i => i.metadata.namespace === P.Idp && i.metadata.name === AppliedConfigurationKeys.ObjectNamePrefix + ReleaseApp.TenantIdp))
-        assert.ok(server.every(i => (i as unknown as { data?: unknown }).data === undefined))
+        assert.equal([...fx.Kubectl.Applied, ...fx.Kubectl.ServerApplied].flatMap(m => D.Items(m)).some(isConfigurationObject), false)
+        const created = fx.Kubectl.Created.flatMap(m => D.Items(m)).filter(isConfigurationObject)
+        assert.ok(created.some(i => i.metadata.namespace === P.Idp && i.metadata.name === AppliedConfigurationKeys.ObjectNamePrefix + ReleaseApp.TenantIdp))
+        assert.ok(created.every(i => i.data === undefined))
+        assert.equal(fx.Kubectl.Objects.get(ConsoleFakeKubectl.Key(P.Idp, P.ConfigResource)), handApplied, 'two installs later the configuration is as it was')
     })
 })
 
-describe('ConsoleBootstrapSplit', () =>
-{
-    it('holds a running IdP only when it has a pod template, keeping its replicas', () =>
-    {
-        const idp = K8sManifestBuilder.IdpNameOf('acme')
-        const manifest = JSON.stringify({ kind: 'List', items: [{ apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: idp, namespace: idp, labels: { a: 'b' } }, spec: { replicas: 1, template: { spec: { containers: [{ name: 'idp', image: 'new' }] } } } }] })
-        const split = ConsoleBootstrapSplit.Of(manifest, 'acme')
-        assert.equal(split.IdpHold(undefined), undefined)
-        assert.equal(split.IdpHold(JSON.stringify({ metadata: {} })), undefined)
-        const hold = JSON.parse(split.IdpHold(JSON.stringify({ spec: { replicas: 0, template: { spec: { containers: [{ name: 'idp', image: 'old' }] } } } })) as string).items[0]
-        assert.deepEqual([hold.metadata.labels, hold.spec.replicas, hold.spec.template.spec.containers[0].image], [{ a: 'b' }, 0, 'old'])
-        assert.equal(JSON.parse(split.Console).items.length, 0)
-    })
-})

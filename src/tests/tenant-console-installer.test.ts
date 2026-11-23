@@ -250,7 +250,11 @@ describe('TenantConsoleInstaller', () =>
         const idp = K8sManifestBuilder.IdpNameOf('acme')
         const admin = K8sManifestBuilder.TenantAdminNameOf('acme')
         const run = (Items.Of(fx.Kubectl.ServerApplied[3] as string)[0] as unknown as { metadata: { labels: Record<string, string> } }).metadata.labels['pragmatic/tls-copy-run']
-        assert.deepEqual(fx.Kubectl.Calls.filter(c => c[0] !== 'Find'), [
+        // The empty configuration objects are created (never applied) right after the console apply.
+        const applyAt = fx.Kubectl.Calls.findIndex(c => c[0] === 'Apply')
+        const creates = fx.Kubectl.Calls.map((c, i) => [c[0], i] as const).filter(([verb]) => verb === 'Create').map(([, i]) => i)
+        assert.ok(creates.length > 0 && creates.every(i => i > applyAt && i < fx.Kubectl.Calls.findIndex(c => c[0] === 'ApplyServerSide')))
+        assert.deepEqual(fx.Kubectl.Calls.filter(c => c[0] !== 'Find' && c[0] !== 'Create'), [
             ['ServesResource', 'admissionregistration.k8s.io/v1', 'validatingadmissionpolicies'],
             ['ServesResource', 'admissionregistration.k8s.io/v1', 'validatingadmissionpolicybindings'],
             ['Apply'],
@@ -261,8 +265,7 @@ describe('TenantConsoleInstaller', () =>
             ['ApplyServerSide'],
             ['DeleteBySelector', idp, 'secret', 'pragmatic/hive=h1,pragmatic/tls-copy=true,pragmatic/tls-copy-run!=' + run],
             ['Remember', 'acme'],
-            // The empty configuration objects (server-side), then the console first; the IdP's Deployment only after.
-            ['ApplyServerSide'],
+            // The console first; the IdP's Deployment only after.
             ['RolloutRestart', 'pragmatic-system', admin],
             ['RolloutStatus', 'pragmatic-system', admin],
             ['Apply'],

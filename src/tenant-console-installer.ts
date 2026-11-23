@@ -240,10 +240,13 @@ export class TenantConsoleInstaller
     private static readonly DescriptorsHeldSuffix = ': one cluster holds the console of one hive only. Remove that console first.'
     private static readonly RefusedPrefix = "The realm sign-in service's configuration does not validate for version "
     private static readonly RefusedChange = ' of this release: change '
-    private static readonly RefusedWhere = ' in the tenant admin console (Configuration, pragmatic-tenant-idp), then install again. The identity provider was not changed. ('
+    private static readonly RefusedWhere = ' in the tenant admin console (Configuration, ' + ReleaseApp.TenantIdp + '), then install again. The identity provider was not changed. ('
     private static readonly RefusedEnd = ')'
     private static readonly SettingsSeparator = ', '
-    private static readonly NotPreparedMessage = "The tenant admin console did not prepare the realm sign-in service's configuration for this release within 3 minutes. The identity provider was not changed; open the console's Configuration page, then install again."
+    private static readonly NotPreparedPrefix = "The tenant admin console did not prepare the realm sign-in service's configuration for this release within "
+    private static readonly NotPreparedSuffix = " minutes. The identity provider was not changed. The console prepares it when it starts: its Configuration page for " + ReleaseApp.TenantIdp + " shows a refusal or an error; it prepares nothing when this release's identity provider is not newer than the configured one, or when the configuration was applied for another realm. Then install again."
+    private static readonly NoIdpDigestMessage = "The release's component descriptors name no descriptor for the identity provider, so its configuration cannot be prepared; the identity provider was not changed. Publish a complete release."
+    private static readonly MinuteMs = 60_000
     private static readonly ConfigMapPrefix = 'configmap/'
     private static readonly StepFailureMessages: Readonly<Record<ConsoleInstallStep, string>> = {
         [ConsoleInstallStep.CheckingAgent]: 'Could not check the hive agent.',
@@ -667,6 +670,19 @@ export class TenantConsoleInstaller
             // configuration objects go server-side (a client-side apply would clear data a client-side apply wrote).
             const parts = ConsoleBootstrapSplit.Of(bootstrap.manifest, t)
             await kubectl.Apply(parts.Console)
+            // The empty configuration objects the console writes into are created when missing and otherwise never touched:
+            // applying them (either way) could take over, then drop, the data another writer put there.
+            for (const item of parts.ConfigurationObjects)
+            {
+                await kubectl.Create(item)
+            }
+            // A running IdP gets the new labels on its own pod template, so the restarted console finds it as a configuration
+            // target while the IdP does not roll.
+            const hold = parts.IdpHold(await kubectl.Find(idpName, C.DeploymentPrefix + idpName))
+            if (hold !== undefined)
+            {
+                await kubectl.ApplyServerSide(hold)
+            }
             this.Enter(run, ConsoleInstallStep.StoringSecrets)
             await kubectl.ApplyServerSide(bootstrap.secrets.RenderManifest())
             if (idp.secretsManifest !== undefined)
@@ -699,27 +715,22 @@ export class TenantConsoleInstaller
             await this.idpAdmin.RememberOwner(t, hive.id)
             // Last before the restarts: a step that failed earlier leaves the running console the descriptors of the release it runs
             // (a mounted ConfigMap updates in place), and the restarted console reads this release's.
-            // Before the console restarts: the empty configuration objects it writes into, and a running IdP's new labels on its
-            // own pod template (so the console finds it as a configuration target while the IdP does not roll).
-            if (parts.ConfigurationObjects !== undefined)
-            {
-                await kubectl.ApplyServerSide(parts.ConfigurationObjects)
-            }
-            const hold = parts.IdpHold(await kubectl.Find(idpName, C.DeploymentPrefix + idpName))
-            if (hold !== undefined)
-            {
-                await kubectl.ApplyServerSide(hold)
-            }
             await C.DeliverDescriptors(kubectl, hive.id, descriptors)
             // The console first: it restarts onto the release (and its new Secrets), and once ready prepares every configuration
             // for the release's descriptors.
-            await kubectl.RolloutRestart(system, K8sManifestBuilder.TenantAdminNameOf(t))
             this.Enter(run, ConsoleInstallStep.WaitingForRollout)
+            await kubectl.RolloutRestart(system, K8sManifestBuilder.TenantAdminNameOf(t))
             await kubectl.RolloutStatus(system, K8sManifestBuilder.TenantAdminNameOf(t))
             this.Enter(run, ConsoleInstallStep.PreparingConfiguration)
-            const idpDigest = ReleaseDescriptorsConfigMap.DigestOf(descriptors, ReleaseApp.TenantIdp)
-            if (idpDigest !== undefined)
+            // Without delivered descriptors (a development box) nothing describes the IdP image: nothing to wait for. Delivered
+            // descriptors without the IdP's digest are a broken release: never roll the IdP blind.
+            if (descriptors !== undefined)
             {
+                const idpDigest = ReleaseDescriptorsConfigMap.DigestOf(descriptors, ReleaseApp.TenantIdp)
+                if (idpDigest === undefined)
+                {
+                    throw new ConsoleInstallStepError(C.NoIdpDigestMessage)
+                }
                 await this.AwaitPrepared(kubectl, idpName, idpDigest)
             }
             // Then the IdP: its Deployment with the release's image, restarted for the new Secrets.
@@ -768,7 +779,7 @@ export class TenantConsoleInstaller
                 const r = readiness.Refusal
                 throw new ConsoleInstallStepError(C.RefusedPrefix + r.ComponentVersion + C.RefusedChange + r.Settings.join(C.SettingsSeparator) + C.RefusedWhere + r.Reason + C.RefusedEnd)
             }
-            if (attempt * C.PreparationPollMs >= C.PreparationTimeoutMs) throw new ConsoleInstallStepError(C.NotPreparedMessage)
+            if (attempt * C.PreparationPollMs >= C.PreparationTimeoutMs) throw new ConsoleInstallStepError(C.NotPreparedPrefix + String(C.PreparationTimeoutMs / C.MinuteMs) + C.NotPreparedSuffix)
             await this.clock.Delay(C.PreparationPollMs)
         }
     }

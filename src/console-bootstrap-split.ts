@@ -9,8 +9,10 @@ type ManifestItem = { apiVersion?: string; kind?: string; metadata?: { name?: st
  * - `Console`: everything but the parts below, applied first. The console rolls onto the release with it, and prepares
  *   every configuration for the release's descriptors before anything else moves.
  * - `ConfigurationObjects`: the empty `pragmatic-config-<component>` ConfigMaps and `pragmatic-secrets-<component>`
- *   Secrets the manifests render so the console never needs `create` beside them. They go server-side: a client-side
- *   apply of an object with no `data` deletes the data its last client-side apply recorded (a hand-built configuration).
+ *   Secrets the manifests render so the console never needs `create` beside them. They are created when missing and never
+ *   applied: a client-side apply of an object with no `data` deletes the data its last client-side apply recorded (a
+ *   hand-built configuration), and kubectl's server-side apply migrates that ownership to its field manager, so a later
+ *   server-side apply without `data` would drop it.
  * - `IdpDeployment`: the realm sign-in service's Deployment, which carries the release's IdP image, applied only once
  *   its configuration is prepared for that image's descriptor (applying it rolls the IdP). `IdpHold` is that Deployment
  *   with the running IdP's own pod template and replica count, applied first (server-side) so the IdP gets the labels the
@@ -28,7 +30,8 @@ export class ConsoleBootstrapSplit
 
     private constructor(
         public readonly Console: string,
-        public readonly ConfigurationObjects: string | undefined,
+        /** One manifest per object (each created on its own when missing). */
+        public readonly ConfigurationObjects: readonly string[],
         public readonly IdpDeployment: string | undefined,
         private readonly idp: ManifestItem | undefined,
     )
@@ -46,7 +49,7 @@ export class ConsoleBootstrapSplit
         const deployment = items.find(isIdp)
         const objects = items.filter(i => S.IsConfigurationObject(i))
         const rest = items.filter(i => !isIdp(i) && !S.IsConfigurationObject(i))
-        return new ConsoleBootstrapSplit(S.List(rest), objects.length === 0 ? undefined : S.List(objects), deployment === undefined ? undefined : S.List([deployment]), deployment)
+        return new ConsoleBootstrapSplit(S.List(rest), objects.map(o => JSON.stringify(o)), deployment === undefined ? undefined : S.List([deployment]), deployment)
     }
 
     /** The rendered IdP Deployment holding the running one's pod template and replicas (`live`, as kubectl returns it), so
