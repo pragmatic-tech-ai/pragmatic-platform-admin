@@ -27,6 +27,11 @@ export class ConsoleBootstrapSplit
     private static readonly ApiVersionCore = 'v1'
     private static readonly TemplateKey = 'template'
     private static readonly ReplicasKey = 'replicas'
+    private static readonly MetadataKey = 'metadata'
+    private static readonly AnnotationsKey = 'annotations'
+    /** What `kubectl rollout restart` sets: a new value rolls the pods. */
+    public static readonly RestartedAtAnnotation = 'kubectl.kubernetes.io/restartedAt'
+    private static readonly NoIdpDeployment = 'the bootstrap renders no IdP Deployment'
 
     private constructor(
         public readonly Console: string,
@@ -50,6 +55,19 @@ export class ConsoleBootstrapSplit
         const objects = items.filter(i => S.IsConfigurationObject(i))
         const rest = items.filter(i => !isIdp(i) && !S.IsConfigurationObject(i))
         return new ConsoleBootstrapSplit(S.List(rest), objects.map(o => JSON.stringify(o)), deployment === undefined ? undefined : S.List([deployment]), deployment)
+    }
+
+    /** The IdP Deployment with `kubectl.kubernetes.io/restartedAt` = `at` on its pod template: applying it rolls the pods
+     *  once even when the image is unchanged (a reinstall's new Secrets), one revision instead of an apply and a restart. */
+    public IdpDeploymentRestartedAt(at: string): string
+    {
+        const S = ConsoleBootstrapSplit
+        if (this.idp === undefined) throw new Error(S.NoIdpDeployment)
+        const spec = (this.idp.spec ?? {}) as Record<string, Record<string, Record<string, unknown>>>
+        const template = spec[S.TemplateKey] ?? {}
+        const metadata = (template[S.MetadataKey] ?? {}) as Record<string, Record<string, string>>
+        const stamped = { ...metadata, [S.AnnotationsKey]: { ...metadata[S.AnnotationsKey], [S.RestartedAtAnnotation]: at } }
+        return S.List([{ ...this.idp, spec: { ...spec, [S.TemplateKey]: { ...template, [S.MetadataKey]: stamped } } }])
     }
 
     /** The rendered IdP Deployment holding the running one's pod template and replicas (`live`, as kubectl returns it), so

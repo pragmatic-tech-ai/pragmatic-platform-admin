@@ -10,6 +10,7 @@ import { ConsoleInstallState, ConsoleInstallStep, ConsoleInstallUnavailableError
 import { AppliedConfiguration, AppliedConfigurationCodec, AppliedConfigurationEntries, AppliedConfigurationKeys, ConfigurationPreparationRefusal, ConfigurationPreparationStatus } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
 import type { ComponentDescriptorSet } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ConsoleFakeKubectl, ConsoleInstallFixture } from './console-install-fakes.js'
+import { ConsoleBootstrapSplit } from '../console-bootstrap-split.js'
 import { FakeAssets, FakeComponentsArtifact, FakeManifestSource, FakeReleaseRecords, ReleaseDescriptorFixtures as F } from './release-descriptor-fixtures.js'
 
 type K8sItem = {
@@ -508,8 +509,11 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         assert.ok(consoleRestart < consoleReady)
         assert.ok(consoleReady < lastConfigRead, 'the configuration is read after the console is ready')
         assert.ok(lastConfigRead < idpApply, 'the IdP image is applied only after the configuration was prepared')
-        assert.ok(idpApply < calls.findIndex(c => c[0] === D.RolloutRestartCall && c[1] === P.Idp))
-        assert.ok(calls.findIndex(c => c[0] === D.RolloutRestartCall && c[1] === P.Idp) < calls.findIndex(c => c[0] === P.RolloutStatusCall && c[1] === P.Idp))
+        assert.ok(idpApply < calls.findIndex(c => c[0] === P.RolloutStatusCall && c[1] === P.Idp))
+        // One new revision: the restart stamp rides in the applied template, no separate restart.
+        assert.equal(calls.some(c => c[0] === D.RolloutRestartCall && c[1] === P.Idp), false)
+        const stamped = D.Items(fx.Kubectl.Applied[1] as string).find(i => P.IsIdpDeployment(i)) as unknown as { spec: { template: { metadata: { annotations: Record<string, string> } } } }
+        assert.equal(stamped.spec.template.metadata.annotations[ConsoleBootstrapSplit.RestartedAtAnnotation], new Date(fx.ClockMs).toISOString())
         // The first apply carries no IdP Deployment; the IdP gets its new labels on its own running template (nothing rolls).
         const first = D.Items(fx.Kubectl.Applied[0] as string)
         assert.equal(first.some(i => P.IsIdpDeployment(i)), false)
@@ -526,6 +530,36 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         const configAt = createCalls[fx.Kubectl.Created.findIndex(m => D.Items(m).some(i => i.metadata.namespace === P.Idp && i.metadata.name === AppliedConfigurationKeys.ObjectNamePrefix + ReleaseApp.TenantIdp))] ?? Infinity
         assert.ok(holdAt < consoleRestart, 'the hold before the console restarts')
         assert.ok(configAt < consoleRestart, 'the configuration object before the console restarts')
+    })
+
+    it('an IdP that does not start on the release is put back on its own template, and the install says so', async () =>
+    {
+        const d = D.WithRelease()
+        fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
+        P.Cluster(fx, [], P.Prepared(P.ReleaseDigest(d)))
+        fx.Kubectl.RolloutStatusFailures.set(P.Idp, [true])
+        fx.Installer.Start(D.Hive)
+        const status = await fx.Installer.WhenSettled(D.Hive)
+        assert.equal(status?.state, ConsoleInstallState.Failed)
+        assert.equal(status?.step, ConsoleInstallStep.RollingOutIdp)
+        assert.match(status?.error ?? '', /previous version was put back and runs again/)
+        const idpApplies = fx.Kubectl.Applied.map(m => D.Items(m).find(i => P.IsIdpDeployment(i))).filter(i => i !== undefined)
+        assert.equal(idpApplies.length, 2, 'the release template, then the running one back')
+        assert.deepEqual((idpApplies[1]?.spec as { template?: unknown }).template, P.RunningTemplate)
+        assert.equal(fx.Kubectl.Calls.filter(c => c[0] === P.RolloutStatusCall && c[1] === P.Idp).length, 2, 'waits for the previous pods too')
+        assert.equal(fx.IdpAdmin.Seeded.length, 0)
+    })
+
+    it('a fresh install whose IdP does not start fails at rolling-out-idp with nothing to put back', async () =>
+    {
+        const d = D.WithRelease()
+        fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery, runningIdp: false })
+        fx.Kubectl.RolloutStatusFailures.set(P.Idp, [true])
+        fx.Installer.Start(D.Hive)
+        const status = await fx.Installer.WhenSettled(D.Hive)
+        assert.equal(status?.step, ConsoleInstallStep.RollingOutIdp)
+        assert.match(status?.error ?? '', /^The identity provider did not roll out\./)
+        assert.equal(fx.Kubectl.Applied.filter(m => D.Items(m).some(i => P.IsIdpDeployment(i))).length, 1)
     })
 
     it('a fresh install (no IdP yet) holds nothing and applies the IdP Deployment after the console is ready', async () =>

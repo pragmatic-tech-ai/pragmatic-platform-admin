@@ -265,11 +265,10 @@ describe('TenantConsoleInstaller', () =>
             ['ApplyServerSide'],
             ['DeleteBySelector', idp, 'secret', 'pragmatic/hive=h1,pragmatic/tls-copy=true,pragmatic/tls-copy-run!=' + run],
             ['Remember', 'acme'],
-            // The console first; the IdP's Deployment only after.
+            // The console first; the IdP's Deployment only after, with its restart stamp (one revision, no separate restart).
             ['RolloutRestart', 'pragmatic-system', admin],
             ['RolloutStatus', 'pragmatic-system', admin],
             ['Apply'],
-            ['RolloutRestart', idp, idp],
             ['RolloutStatus', idp, idp],
             ['SeedOwner', 'h1'],
         ])

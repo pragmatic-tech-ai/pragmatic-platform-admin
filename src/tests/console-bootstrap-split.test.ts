@@ -32,6 +32,15 @@ describe('ConsoleBootstrapSplit', () =>
         assert.deepEqual(names(split.IdpDeployment as string), [SplitCase.Idp])
     })
 
+    it('stamps the IdP Deployment pod template with the restart time, keeping its other annotations', () =>
+    {
+        const split = ConsoleBootstrapSplit.Of(SplitCase.Manifest(), SplitCase.Tenant)
+        const item = JSON.parse(split.IdpDeploymentRestartedAt('2026-11-23T22:00:00.000Z')).items[0]
+        assert.equal(item.spec.template.metadata.annotations[ConsoleBootstrapSplit.RestartedAtAnnotation], '2026-11-23T22:00:00.000Z')
+        assert.equal(item.spec.template.spec.containers[0].image, 'new')
+        assert.throws(() => ConsoleBootstrapSplit.Of(JSON.stringify({ kind: 'List', items: [] }), SplitCase.Tenant).IdpDeploymentRestartedAt('x'))
+    })
+
     it('holds a running IdP only when it has a pod template, keeping its replicas', () =>
     {
         const split = ConsoleBootstrapSplit.Of(SplitCase.Manifest(), SplitCase.Tenant)

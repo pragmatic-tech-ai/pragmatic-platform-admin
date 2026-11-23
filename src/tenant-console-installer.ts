@@ -247,6 +247,9 @@ export class TenantConsoleInstaller
     private static readonly NotPreparedSuffix = " minutes. The identity provider was not changed. The console prepares it when it starts: its Configuration page for " + ReleaseApp.TenantIdp + " shows a refusal or an error; it prepares nothing when this release's identity provider is not newer than the configured one, when the configuration was applied for another realm, when the configuration object's hash annotation does not match its file, or when the identity provider's Deployment is not one the console may configure. Then install again."
     private static readonly NoIdpDigestMessage = "The release's component descriptors name no descriptor for the identity provider, so its configuration cannot be prepared; the identity provider was not changed. Publish a complete release."
     private static readonly MinuteMs = 60_000
+    private static readonly IdpPutBackMessage = 'The identity provider did not start on this release; its previous version was put back and runs again. Check its logs (a configuration it refuses names the setting), then install again.'
+    private static readonly IdpPutBackPendingMessage = 'The identity provider did not start on this release; its previous version was put back but is not ready yet. Check both in the cluster, then install again.'
+    private static readonly NoDetail = ''
     private static readonly ConfigMapPrefix = 'configmap/'
     private static readonly StepFailureMessages: Readonly<Record<ConsoleInstallStep, string>> = {
         [ConsoleInstallStep.CheckingAgent]: 'Could not check the hive agent.',
@@ -735,12 +738,7 @@ export class TenantConsoleInstaller
             }
             // Then the IdP: its Deployment with the release's image, restarted for the new Secrets.
             this.Enter(run, ConsoleInstallStep.RollingOutIdp)
-            if (parts.IdpDeployment !== undefined)
-            {
-                await kubectl.Apply(parts.IdpDeployment)
-            }
-            await kubectl.RolloutRestart(idpName, idpName)
-            await kubectl.RolloutStatus(idpName, idpName)
+            await this.RollOutIdp(kubectl, idpName, parts, hold)
             this.Enter(run, ConsoleInstallStep.SeedingOwner)
             await this.idpAdmin.SeedOwner(hive, tenant)
             run.state = ConsoleInstallState.Deployed
@@ -759,6 +757,41 @@ export class TenantConsoleInstaller
         {
             run.secrets.splice(0)
         }
+    }
+
+    /**
+     * The IdP onto the release: its Deployment applied with a restart stamp in the pod template (the new Secrets are read
+     * too), so the install leaves exactly one new revision. When the new pods do not become ready and the install held a
+     * running IdP, that IdP's own template is applied back (client-side, so what the release's template added goes too):
+     * the previous pods come back and the install fails saying so. A fresh install has nothing to put back.
+     */
+    private async RollOutIdp(kubectl: IKubectl, idpName: string, parts: ConsoleBootstrapSplit, hold: string | undefined): Promise<void>
+    {
+        const C = TenantConsoleInstaller
+        if (parts.IdpDeployment === undefined)
+        {
+            await kubectl.RolloutRestart(idpName, idpName)
+            await kubectl.RolloutStatus(idpName, idpName)
+            return
+        }
+        await kubectl.Apply(parts.IdpDeploymentRestartedAt(new Date(this.clock.Now()).toISOString()))
+        try
+        {
+            await kubectl.RolloutStatus(idpName, idpName)
+        }
+        catch (failed)
+        {
+            if (hold === undefined) throw failed
+            await kubectl.Apply(hold)
+            const back = await kubectl.RolloutStatus(idpName, idpName).then(() => true, () => false)
+            throw new ConsoleInstallStepError((back ? C.IdpPutBackMessage : C.IdpPutBackPendingMessage) + C.DetailSeparator + C.Scrubbed(failed))
+        }
+    }
+
+    // A rollout failure's own text when it is a showable one (kubectl's), else nothing more.
+    private static Scrubbed(err: unknown): string
+    {
+        return err instanceof KubectlError ? KubectlError.Redact(err.message) : TenantConsoleInstaller.NoDetail
     }
 
     /**

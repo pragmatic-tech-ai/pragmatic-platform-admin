@@ -10,7 +10,7 @@ import type { IDevCertificateIssuer, IssuedCertificate } from '../dev-certificat
 import { InClusterIdpSeedSource } from '../in-cluster-idp-seed.js'
 import type { IInHiveIdpAdmin, InHiveOwnerPassword } from '../in-hive-idp-admin.js'
 import type { IKeyStore, VerifiedImage } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
-import type { IKubectl } from '@pragmatic-tech-ai/pragmatic-kube'
+import { KubectlError, type IKubectl } from '@pragmatic-tech-ai/pragmatic-kube'
 import { TenantAdminBootstrap, type IHiveRegistrar } from '../tenant-admin-bootstrap.js'
 import { TenantConsoleInstaller, type IConsoleDirectory, type IConsoleImageApproval } from '../tenant-console-installer.js'
 import type { IPlatformImages } from '../platform-images.js'
@@ -188,6 +188,8 @@ export class ConsoleFakeKubectl implements IKubectl
 
     public async RolloutRestart(n: string, d: string): Promise<void> { this.Calls.push(['RolloutRestart', n, d]) }
     public RolloutStatusError: Error | undefined
+    /** Rollout waits of a namespace that fail, in turn (true: fails), before it answers normally. */
+    public readonly RolloutStatusFailures = new Map<string, boolean[]>()
 
     public async RolloutStatus(n: string, d: string): Promise<void>
     {
@@ -195,6 +197,10 @@ export class ConsoleFakeKubectl implements IKubectl
         if (this.RolloutStatusError !== undefined)
         {
             throw this.RolloutStatusError
+        }
+        if (this.RolloutStatusFailures.get(n)?.shift() === true)
+        {
+            throw new KubectlError('rollout of ' + d + ' timed out')
         }
     }
     public async DeleteBySelector(n: string, r: string, s: string): Promise<void> { this.Calls.push(['DeleteBySelector', n, r, s]); this.events.push('DeleteBySelector') }
