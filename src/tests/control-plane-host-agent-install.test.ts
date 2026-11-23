@@ -145,6 +145,9 @@ class GatedKindFactory extends HiveOrchestratorFactory
 class Harness
 {
     public static readonly ChannelUrl = 'http://host.docker.internal:7001'
+    /** The folder removal's retries (an install left running may still be writing into it). */
+    public static readonly CleanupRetries = 10
+    public static readonly CleanupRetryDelayMs = 50
 
     public static Send(host: ControlPlaneHost, method: string, path: string, token: string = FakeOperator.FullToken): Promise<Reply>
     {
@@ -229,7 +232,9 @@ describe('ControlPlaneHost automatic agent install', () =>
     afterEach(async () =>
     {
         await host.Close()
-        rmSync(parent, { recursive: true, force: true })
+        // An install a test left running may still write its records into the folder while it is removed (ENOTEMPTY):
+        // the removal retries until the folder stays empty.
+        rmSync(parent, { recursive: true, force: true, maxRetries: Harness.CleanupRetries, retryDelay: Harness.CleanupRetryDelayMs })
     })
 
     it('POST starts the install (202, no-store, no token); the hive checks in with the stored token and GET ends Connected', async () =>
