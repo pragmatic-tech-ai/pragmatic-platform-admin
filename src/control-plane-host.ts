@@ -20,7 +20,7 @@ import {
     type RequestContext,
     type SocketContext,
 } from '@pragmatic-tech-ai/pragmatic-app-host'
-import { EnvironmentDtoMapper, type EnvironmentDto, type IIdpService, TenantEmailDomainsLimits, HiveBackend, InfraMode, type ClientRecord, type ClusterSpec, type HiveRecord, type RegistrySpec, type TenantRecord, type HiveRolloutStatus, type ManifestRecord, type IEnvironmentService, type IGraphService } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { EnvironmentDtoMapper, type EnvironmentDto, type IIdpService, TenantEmailDomainsLimits, HiveBackend, InfraMode, type ClusterSpec, type HiveRecord, type RegistrySpec, type TenantRecord, type HiveRolloutStatus, type ManifestRecord, type IEnvironmentService, type IGraphService } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import type { HiveObservationRegistry } from './hive-observation-record.js'
 import type { OwnerPasswordReset, TenantProvisioningService } from './tenant-provisioning-service.js'
 import { OperatorRole, OperatorSelfLockoutError, type IOperatorIdentity, type OperatorPrincipal } from './operator-identity.js'
@@ -47,6 +47,7 @@ import type { PlatformDeploymentRegistry } from './platform-deployment-registry.
 import { ReleaseRefresher } from './release/release-refresher.js'
 import type { ReleaseRefreshResult } from './release/release-catalog.js'
 import { ControlPlaneProblems } from './control-plane-problems.js'
+import type { ClientRecord } from './platform-records.js'
 
 export type { EnvironmentDto }
 
@@ -1964,7 +1965,7 @@ export class ControlPlaneHost
                 ctx.WriteJson(C.StatusBadRequest, { error: C.OptionalStringMessage })
                 return
             }
-            created = await directory.CreateClient({ id, displayName, subscriptionRef: body.subscriptionRef as string | undefined })
+            created = await directory.CreateClient({ id, displayName })
         }
         else if (resource === PlatformResource.Tenants)
         {
@@ -2097,7 +2098,7 @@ export class ControlPlaneHost
             const result = await this.orchestrator.Provision({
                 client: existingClient
                     ? { existing: true, id: client.id as string }
-                    : { id: client.id as string, displayName: client.displayName as string, subscriptionRef: client.subscriptionRef as string | undefined },
+                    : { id: client.id as string, displayName: client.displayName as string },
                 tenant: existingTenant
                     ? { existing: true, id: tenant.id as string }
                     : { id: tenant.id as string, displayName: tenant.displayName as string, ownerEmail: tenant.ownerEmail as string },

@@ -1,9 +1,10 @@
 import type { ClientRegistry } from './client-registry.js'
 import type { TenantRegistry } from './tenant-registry.js'
 import type { HiveRegistry } from './hive-registry.js'
-import { type EnvironmentRecord, HivePlacementError, RecordId, type ClientRecord, type TenantRecord, type HiveRecord, type ClusterSpec, type RegistrySpec, K8sManifestBuilder, EmailDomainPolicy, type HiveConsoleSpec, type ITenantRecordSource } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { type EnvironmentRecord, HivePlacementError, RecordId, type TenantRecord, type HiveRecord, type ClusterSpec, type RegistrySpec, K8sManifestBuilder, EmailDomainPolicy, type HiveConsoleSpec, type ITenantRecordSource } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { HiveConsoleSpecs } from './hive-console-spec.js'
+import type { ClientRecord } from './platform-records.js'
 
 export interface IEnvironmentLookup
 {
@@ -186,10 +187,10 @@ export class PlatformDirectory implements ITenantRecordSource
         return this.clients.Get(id)
     }
 
-    public async CreateClient(input: { id: string; displayName: string; subscriptionRef?: string }): Promise<ClientRecord>
+    public async CreateClient(input: { id: string; displayName: string }): Promise<ClientRecord>
     {
         this.AssertNew(RecordKind.Client, input.id, this.clients.Get(input.id))
-        const record: ClientRecord = { id: input.id, displayName: input.displayName, subscriptionRef: input.subscriptionRef, createdAt: this.Stamp() }
+        const record: ClientRecord = { id: input.id, displayName: input.displayName, createdAt: this.Stamp() }
         await this.clients.Put(record)
         return record
     }

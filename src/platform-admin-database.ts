@@ -32,6 +32,7 @@ export enum PlatformAdminRegistry
     Signatures = 'signatures',
     /** The operators who signed in through the realm (OperatorDirectory): never imported, the JSON data root had none. */
     OperatorDirectory = 'operator_directory',
+    Entitlements = 'entitlements',
 }
 
 /** The database URL setting is missing or blank (the console stores everything in its own Postgres). */

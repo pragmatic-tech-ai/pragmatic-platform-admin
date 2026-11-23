@@ -1,12 +1,13 @@
-import { RecordId, K8sManifestBuilder, type ClientRecord, type ClusterSpec, type HiveRecord, type RegistrySpec, type TenantRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { RecordId, K8sManifestBuilder, type ClusterSpec, type HiveRecord, type RegistrySpec, type TenantRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { RecordExistsError, RecordKind, TenantClientMismatchError, UnknownClientError, UnknownTenantError, type PlatformDirectory } from './platform-directory.js'
 import type { TenantProvisioningService } from './tenant-provisioning-service.js'
 import type { PlatformDeploymentRegistry } from './platform-deployment-registry.js'
+import type { ClientRecord } from './platform-records.js'
 
 // A reference to a record that already exists: provisioning uses it as is.
 export type ExistingRecordRef = { existing: true; id: string }
 
-export type NewClientInput = { existing?: false; id: string; displayName: string; subscriptionRef?: string }
+export type NewClientInput = { existing?: false; id: string; displayName: string }
 export type NewTenantInput = { existing?: false; id: string; displayName: string; ownerEmail: string }
 
 // The client and the tenant are each either created or an existing record;

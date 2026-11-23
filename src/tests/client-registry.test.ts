@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClientRegistry } from '../client-registry.js'
-import type { ClientRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import type { ClientRecord } from '../platform-records.js'
 
 class ClientFixture
 {
@@ -16,7 +16,7 @@ class ClientFixture
 
     public static Record(): ClientRecord
     {
-        return { id: 'acme', displayName: 'Acme Corp', subscriptionRef: 'sub-1', createdAt: '2026-10-22T00:00:00.000Z' }
+        return { id: 'acme', displayName: 'Acme Corp', createdAt: '2026-10-22T00:00:00.000Z' }
     }
 }
 
