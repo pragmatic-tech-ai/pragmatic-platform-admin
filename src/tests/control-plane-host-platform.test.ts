@@ -1,3 +1,6 @@
+import { TestEntitlements } from './test-entitlements.js'
+import { EntitlementState } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
+import { EntitlementSamples } from '../entitlements/tests/entitlement-samples.js'
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
@@ -79,7 +82,7 @@ class Harness
     public static ProvisionBody(): { client: Record<string, unknown>; tenant: Record<string, unknown>; hive: Record<string, unknown> }
     {
         return {
-            client: { id: 'acme', displayName: 'Acme' },
+            client: { existing: true, id: 'acme' },
             tenant: { id: 't1', displayName: 'T', ownerEmail: 'o@x.test' },
             hive: { id: 'h1', displayName: 'H', cluster: { backend: 'local', mode: 'provision' }, registry: { mode: 'provision' } }
         }
@@ -167,6 +170,7 @@ describe('ControlPlaneHost platform routes', () =>
     let factory: FakeKindFactory
     let idp: FakeIdpService
     let deployments: PlatformDeploymentRegistry
+    let statements: TestEntitlements
 
     beforeEach(async () =>
     {
@@ -180,11 +184,12 @@ describe('ControlPlaneHost platform routes', () =>
             new HiveRegistry(join(parent, 'hives.json')),
             { List: () => [] })
         await directory.Load()
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         factory = new FakeKindFactory()
         deployments = await RolloutFixture.Create(parent, directory, factory)
         const sessions = await HostSessions.With(FakeOperator.Token, FakeOperator.Principal())
         host = new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: sessions.Sessions,
-            Directory: directory, Deployments: deployments, Provisioning: (fake = new FakeProvisioning(directory)).AsService(), Observations: RolloutFixture.Observations(parent),
+            Directory: directory, Entitlements: TestEntitlements.Gate(directory, statements = new TestEntitlements()), Deployments: deployments, Provisioning: (fake = new FakeProvisioning(directory)).AsService(), Observations: RolloutFixture.Observations(parent),
             Idp: (idp = new FakeIdpService()) })
         await host.Listen(0, '127.0.0.1')
     })
@@ -200,21 +205,47 @@ describe('ControlPlaneHost platform routes', () =>
         assert.equal((await Harness.Send(host, 'GET', '/api/clients', undefined, false)).status, 401)
     })
 
-    it('creates a client then lists it', async () =>
+    it('operators cannot create, edit or delete clients (405: the client routes are read-only)', async () =>
     {
-        const created = await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
-        assert.equal(created.status, 201)
-        const list = await Harness.Send(host, 'GET', '/api/clients')
-        assert.equal(list.status, 200)
-        const arr = JSON.parse(list.body)
-        assert.equal(arr.length, 1)
-        assert.equal(arr[0].id, 'acme')
-        assert.equal((await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Dup' })).status, 409)
+        assert.equal((await Harness.Send(host, 'POST', '/api/clients', { id: 'globex', displayName: 'Globex' })).status, 405)
+        assert.equal((await Harness.Send(host, 'PUT', '/api/clients/acme', { id: 'acme', displayName: 'Renamed' })).status, 405)
+        assert.equal((await Harness.Send(host, 'DELETE', '/api/clients/acme')).status, 405)
+        const list = JSON.parse((await Harness.Send(host, 'GET', '/api/clients')).body)
+        assert.deepEqual(list.map((c: { id: string, displayName: string }) => [c.id, c.displayName]), [['acme', 'Acme']])
+    })
+
+    it('the client view shows plan, state, limits and version, never a price', async () =>
+    {
+        statements.State('acme', { State: EntitlementState.Suspended, Limits: { 'tenants': 2, 'hives': 3 } })
+        const one = JSON.parse((await Harness.Send(host, 'GET', '/api/clients/acme')).body)
+        assert.deepEqual(Object.keys(one.entitlement).sort(), ['admins', 'issuedAt', 'limits', 'planId', 'state', 'version'])
+        assert.equal(one.entitlement.state, EntitlementState.Suspended)
+        assert.deepEqual(one.entitlement.limits, { 'tenants': 2, 'hives': 3 })
+        assert.equal(one.entitlement.version, 1)
+        assert.deepEqual(one.entitlement.admins, [{ issuer: EntitlementSamples.Issuer, subject: EntitlementSamples.AdminSubject, email: EntitlementSamples.AdminEmail }])
+        assert.ok(!/price|amount|currency|paddle|subscription/i.test(JSON.stringify(one)))
+        assert.deepEqual(JSON.parse((await Harness.Send(host, 'GET', '/api/clients')).body)[0].entitlement, one.entitlement)
+        statements.State('acme', undefined)
+        assert.equal(JSON.parse((await Harness.Send(host, 'GET', '/api/clients/acme')).body).entitlement, undefined)
+    })
+
+    it('an operator creating a tenant or a hive for a client at its limit is refused with not-entitled limit-reached', async () =>
+    {
+        statements.State('acme', { Limits: { 'tenants': 1, 'hives': 0 } })
+        assert.equal((await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })).status, 201)
+        const tenant = await Harness.Send(host, 'POST', '/api/tenants', { id: 't2', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })
+        assert.equal(tenant.status, 403)
+        assert.deepEqual([JSON.parse(tenant.body).code, JSON.parse(tenant.body).reason], ['not-entitled', 'limit-reached'])
+        const hive = await Harness.Send(host, 'POST', '/api/hives', { id: 'h1', tenantId: 't1', displayName: 'H', cluster: { backend: 'local', mode: 'provision' }, registry: { mode: 'provision' } })
+        assert.equal(hive.status, 403)
+        assert.deepEqual([JSON.parse(hive.body).code, JSON.parse(hive.body).reason], ['not-entitled', 'limit-reached'])
+        assert.equal(JSON.parse((await Harness.Send(host, 'GET', '/api/hives')).body).length, 0)
+        statements.State('acme', { State: EntitlementState.Suspended, Limits: { 'tenants': 5 } })
+        assert.equal(JSON.parse((await Harness.Send(host, 'POST', '/api/tenants', { id: 't3', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })).body).reason, 'suspended')
     })
 
     it('provisions a tenant and reveals the one-time Owner password with no-store', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         const r = await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })
         assert.equal(r.status, 201)
         assert.equal(r.cacheControl, 'no-store')
@@ -226,7 +257,6 @@ describe('ControlPlaneHost platform routes', () =>
     it('POST /api/tenants answers 201 with owner {email, principalId} and no password in in-hive mode', async () =>
     {
         fake.RecordOnly = true
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         const r = await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })
         assert.equal(r.status, 201)
         const body = JSON.parse(r.body)
@@ -236,7 +266,6 @@ describe('ControlPlaneHost platform routes', () =>
 
     it('rejects a tenant create without ownerEmail or with a reserved _ id', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         assert.equal((await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T' })).status, 400)
         assert.equal((await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: '' })).status, 400)
         assert.equal((await Harness.Send(host, 'POST', '/api/tenants', { id: '_sys', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })).status, 400)
@@ -245,7 +274,6 @@ describe('ControlPlaneHost platform routes', () =>
 
     it('maps provisioning failures to 400 and 409', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         const body = { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' }
         fake.FailWith = new InvalidTenantIdError('bad id')
         assert.equal((await Harness.Send(host, 'POST', '/api/tenants', body)).status, 400)
@@ -255,7 +283,6 @@ describe('ControlPlaneHost platform routes', () =>
 
     it('answers 503 with the plain message when there is no Docker/cluster target (D28 interim)', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         fake.FailWith = new NoInfraTargetError()
         const r = await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })
         assert.equal(r.status, 503)
@@ -264,9 +291,8 @@ describe('ControlPlaneHost platform routes', () =>
 
     it('maps a cascade violation to 409 and an unknown parent to 404', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         assert.equal((await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })).status, 201)
-        assert.equal((await Harness.Send(host, 'DELETE', '/api/clients/acme')).status, 409)
+        assert.equal((await Harness.Send(host, 'DELETE', '/api/clients/acme')).status, 405)
         assert.equal((await Harness.Send(host, 'POST', '/api/tenants', { id: 't2', clientId: 'nope', displayName: 'T', ownerEmail: 'o@x.test' })).status, 404)
         const hive = { id: 'h1', tenantId: 't1', displayName: 'H', cluster: { backend: 'local', mode: 'provision' }, registry: { mode: 'provision' } }
         assert.equal((await Harness.Send(host, 'POST', '/api/hives', hive)).status, 201)
@@ -279,7 +305,6 @@ describe('ControlPlaneHost platform routes', () =>
 
     it('deleting a tenant tears down its IdP; the hives guard precedes; a teardown failure leaves the record', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })
         const hive = { id: 'h1', tenantId: 't1', displayName: 'H', cluster: { backend: 'local', mode: 'provision' }, registry: { mode: 'provision' } }
         await Harness.Send(host, 'POST', '/api/hives', hive)
@@ -300,7 +325,6 @@ describe('ControlPlaneHost platform routes', () =>
 
     it('deleting a tenant with no IdP record is a no-op teardown and still succeeds', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         await Harness.Send(host, 'POST', '/api/tenants', { id: 't2', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })
         assert.equal((await Harness.Send(host, 'DELETE', '/api/tenants/t2')).status, 200)
         assert.deepEqual(idp.TornDown, ['t2'])
@@ -308,7 +332,6 @@ describe('ControlPlaneHost platform routes', () =>
 
     it('deleting a Provision-mode hive destroys its cluster; a destroy failure leaves the record', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })
         const hive = { id: 'h1', tenantId: 't1', displayName: 'H', cluster: { backend: 'local', mode: 'provision' }, registry: { mode: 'provision' } }
         await Harness.Send(host, 'POST', '/api/hives', hive)
@@ -323,7 +346,6 @@ describe('ControlPlaneHost platform routes', () =>
 
     it('deleting an Attach-mode hive never destroys a cluster', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })
         await Harness.Send(host, 'POST', '/api/hives', { id: 'h2', tenantId: 't1', displayName: 'H', cluster: { backend: 'local', mode: 'attach' }, registry: { mode: 'attach' } })
         assert.equal((await Harness.Send(host, 'DELETE', '/api/hives/h2')).status, 200)
@@ -347,25 +369,18 @@ describe('ControlPlaneHost platform routes', () =>
         assert.ok(!fetched.body.includes(body.secrets.agentToken))
     })
 
-    it('POST /api/provision with a duplicate client id -> 409 and no partial tenant/hive', async () =>
+    it('POST /api/provision with a new client -> 400 and zero writes (the clients ledger owns clients)', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
-        const r = await Harness.Send(host, 'POST', '/api/provision', Harness.ProvisionBody())
-        assert.equal(r.status, 409)
+        const body = Harness.ProvisionBody()
+        body.client = { id: 'globex', displayName: 'Globex' }
+        const r = await Harness.Send(host, 'POST', '/api/provision', body)
+        assert.equal(r.status, 400)
         assert.equal(JSON.parse((await Harness.Send(host, 'GET', '/api/tenants')).body).length, 0)
-        assert.equal(JSON.parse((await Harness.Send(host, 'GET', '/api/hives')).body).length, 0)
-    })
-
-    it('POST /api/provision with a duplicate client id names the record in the error', async () =>
-    {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
-        const r = await Harness.Send(host, 'POST', '/api/provision', Harness.ProvisionBody())
-        assert.equal(JSON.parse(r.body).error, 'Client "acme" already exists')
+        assert.equal(JSON.parse((await Harness.Send(host, 'GET', '/api/clients')).body).length, 1)
     })
 
     it('POST /api/provision onto an existing client and tenant -> 201, hive created, no Owner secrets', async () =>
     {
-        await Harness.Send(host, 'POST', '/api/clients', { id: 'acme', displayName: 'Acme' })
         await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })
         const body = Harness.ProvisionBody()
         body.client = { existing: true, id: 'acme' }
@@ -420,10 +435,11 @@ describe('ControlPlaneHost platform routes', () =>
         bad.hive.cluster = { backend: 'bogus', mode: 'provision' }
         const r = await Harness.Send(host, 'POST', '/api/provision', bad)
         assert.equal(r.status, 400)
-        for (const path of ['/api/clients', '/api/tenants', '/api/hives'])
+        for (const path of ['/api/tenants', '/api/hives'])
         {
             assert.equal(JSON.parse((await Harness.Send(host, 'GET', path)).body).length, 0, path)
         }
+        assert.equal(JSON.parse((await Harness.Send(host, 'GET', '/api/clients')).body).length, 1)
     })
 })
 
@@ -444,9 +460,10 @@ describe('ControlPlaneHost hive bootstrap with the agent channel on', () =>
             new HiveRegistry(join(parent, 'hives.json')),
             { List: () => [] })
         await directory.Load()
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         const sessions = await HostSessions.With(FakeOperator.Token, FakeOperator.Principal())
         host = new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: sessions.Sessions,
-            Directory: directory, Deployments: await RolloutFixture.Create(parent, directory, new FakeKindFactory()), Provisioning: new FakeProvisioning(directory).AsService(),
+            Directory: directory, Entitlements: TestEntitlements.Gate(directory), Deployments: await RolloutFixture.Create(parent, directory, new FakeKindFactory()), Provisioning: new FakeProvisioning(directory).AsService(),
             Observations: RolloutFixture.Observations(parent), Idp: new FakeIdpService(), AgentChannelUrl: 'http://host.docker.internal:7001' })
         await host.Listen(0, '127.0.0.1')
     })

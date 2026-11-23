@@ -1,3 +1,4 @@
+import { TestEntitlements } from './test-entitlements.js'
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
@@ -77,7 +78,7 @@ describe('ControlPlaneHost hive console settings', () =>
             new HiveRegistry(join(parent, 'hives.json')),
             { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'acme', displayName: 'Acme' })
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         await directory.CreateTenant({ id: 't1', clientId: 'acme', displayName: 'T' })
         const spec = { cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Provision } }
         await directory.CreateHive({ id: 'h1', tenantId: 't1', displayName: 'H1', ...spec })
@@ -85,7 +86,7 @@ describe('ControlPlaneHost hive console settings', () =>
         audit = new ActivityLog()
         const deployments = await RolloutFixture.Create(parent, directory, new HiveOrchestratorFactory())
         host = new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: (await FakeOperator.Sessions()).Sessions,
-            Directory: directory, Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent),
+            Directory: directory, Entitlements: TestEntitlements.Gate(directory), Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent),
             Audit: audit.Repository })
         await host.Listen(0, '127.0.0.1')
     })
@@ -369,7 +370,7 @@ describe('ControlPlaneHost in-hive console install', () =>
             { List: () => [] })
         await directory.Load()
         await directory.UseDefaultTrustRoot('platform-signing')
-        await directory.CreateClient({ id: 'acme', displayName: 'Acme' })
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         await directory.CreateProvisionedTenant({ id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'owner@t1.test', ownerPrincipalId: 'owner', idpBaseUrl: 'https://idp.test' })
         await directory.CreateHive({ id: 'h1', tenantId: 't1', displayName: 'H1', cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Provision } })
         await directory.SetHiveConsole('h1', { baseDomain: 'localtest.me', tls: { source: IngressTlsSource.Development } })
@@ -387,7 +388,7 @@ describe('ControlPlaneHost in-hive console install', () =>
         checkIns = new HeldCheckIns()
         agentInstaller = new HiveAgentInstaller(directory, fx.Orchestrators, deployments, checkIns, ConsoleInstallFixture.ChannelUrl, undefined, { pollIntervalMs: 20, timeoutMs: 60000 })
         host = new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: (await FakeOperator.Sessions()).Sessions,
-            Directory: directory, Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent),
+            Directory: directory, Entitlements: TestEntitlements.Gate(directory), Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent),
             Audit: audit.Repository, AgentChannelUrl: ConsoleInstallFixture.ChannelUrl, AgentInstaller: agentInstaller, AgentUninstaller: new HiveAgentUninstaller(fx.Orchestrators),
             ConsoleInstaller: installer, Adverts: adverts, Approvals: approvals })
         await host.Listen(0, '127.0.0.1')

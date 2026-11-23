@@ -83,7 +83,7 @@ describe('No infrastructure target (D28 interim)', () =>
         const directory = new PlatformDirectory(new ClientRegistry(join(root, 'clients.json')), new TenantRegistry(join(root, 'tenants.json')),
             new HiveRegistry(join(root, 'hives.json')), { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'acme', displayName: 'Acme' })
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         const idps = new IdpRegistry(join(root, 'idps.json'))
         const provisioning = new TenantProvisioningService(new IdpService(idps, new NoTargetIdpDriver()), directory, c => new IdpAdminClient(c))
         await assert.rejects(provisioning.Provision({ id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' }), NoInfraTargetError)

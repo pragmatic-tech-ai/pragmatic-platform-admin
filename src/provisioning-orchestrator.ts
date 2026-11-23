@@ -3,17 +3,19 @@ import { RecordExistsError, RecordKind, TenantClientMismatchError, UnknownClient
 import type { TenantProvisioningService } from './tenant-provisioning-service.js'
 import type { PlatformDeploymentRegistry } from './platform-deployment-registry.js'
 import type { ClientRecord } from './platform-records.js'
+import { EntitledOperation } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
+import { OperatorEntitlementGate } from './entitlements/operator-entitlement-gate.js'
 
 // A reference to a record that already exists: provisioning uses it as is.
 export type ExistingRecordRef = { existing: true; id: string }
 
-export type NewClientInput = { existing?: false; id: string; displayName: string }
 export type NewTenantInput = { existing?: false; id: string; displayName: string; ownerEmail: string }
 
-// The client and the tenant are each either created or an existing record;
-// an existing tenant needs an existing client it belongs to. The hive is always new.
+// The client is always an existing record (the clients ledger owns clients: an operator never creates one); the tenant
+// is created or an existing record of that client. The hive is always new. Creating the tenant and the hive pass the
+// client's entitlement (OperatorEntitlementGate), decided together before anything is written.
 export type ProvisionInput = {
-    client: NewClientInput | ExistingRecordRef
+    client: ExistingRecordRef
     tenant: NewTenantInput | ExistingRecordRef
     hive: { id: string; displayName: string; cluster: ClusterSpec; registry: RegistrySpec; trustRootRef?: string }
 }
@@ -44,7 +46,6 @@ export class ProvisionFailedError extends Error
 /** Which creation steps have completed, so rollback undoes exactly those. */
 class CompletedSteps
 {
-    public client = false
     public tenantAttempted = false
     public tenant = false
     public hive = false
@@ -53,7 +54,6 @@ class CompletedSteps
 
 export class ProvisioningOrchestrator
 {
-    private static readonly ClientPrefix = 'client:'
     private static readonly TenantPrefix = 'tenant:'
     private static readonly HivePrefix = 'hive:'
     private static readonly RegistrationPrefix = 'registration:'
@@ -63,7 +63,8 @@ export class ProvisioningOrchestrator
     public constructor(
         private readonly directory: PlatformDirectory,
         private readonly provisioning: TenantProvisioningService,
-        private readonly deployments: PlatformDeploymentRegistry
+        private readonly deployments: PlatformDeploymentRegistry,
+        private readonly entitlements: OperatorEntitlementGate = OperatorEntitlementGate.DenyAll()
     )
     {
     }
@@ -71,10 +72,16 @@ export class ProvisioningOrchestrator
     public async Provision(input: ProvisionInput): Promise<ProvisionResult>
     {
         this.PreValidate(input)
+        const operations = input.tenant.existing === true ? [EntitledOperation.EnrolHive] : [EntitledOperation.CreateTenant, EntitledOperation.EnrolHive]
+        return await this.entitlements.Run(input.client.id, operations, () => this.ProvisionAllowed(input))
+    }
+
+    private async ProvisionAllowed(input: ProvisionInput): Promise<ProvisionResult>
+    {
         const completed = new CompletedSteps()
         try
         {
-            const client = await this.ClientFor(input.client, completed)
+            const client = this.directory.GetClient(input.client.id) as ClientRecord
             const { tenant, secrets } = await this.TenantFor(input, completed)
             const hive = await this.directory.CreateHive({
                 id: input.hive.id,
@@ -94,18 +101,6 @@ export class ProvisioningOrchestrator
             const rollback = await this.Rollback(input, completed)
             throw new ProvisionFailedError(rollback, this.CauseLabel(e))
         }
-    }
-
-    // Creates the client, or returns the existing one (which rollback never touches).
-    private async ClientFor(input: ProvisionInput['client'], completed: CompletedSteps): Promise<ClientRecord>
-    {
-        if (input.existing === true)
-        {
-            return this.directory.GetClient(input.id) as ClientRecord
-        }
-        const client = await this.directory.CreateClient(input)
-        completed.client = true
-        return client
     }
 
     // Provisions the tenant with its first Owner, or returns the existing one
@@ -138,14 +133,9 @@ export class ProvisioningOrchestrator
         RecordId.Validate(input.tenant.id)
         RecordId.Validate(input.hive.id)
         K8sManifestBuilder.AssertValidHiveId(input.hive.id)
-        const client = this.directory.GetClient(input.client.id)
-        if (input.client.existing === true && client === undefined)
+        if (this.directory.GetClient(input.client.id) === undefined)
         {
             throw new UnknownClientError(input.client.id)
-        }
-        if (input.client.existing !== true && client !== undefined)
-        {
-            throw new RecordExistsError(RecordKind.Client, input.client.id)
         }
         const tenant = this.directory.GetTenant(input.tenant.id)
         if (input.tenant.existing === true)
@@ -188,10 +178,6 @@ export class ProvisioningOrchestrator
         if (completed.tenantAttempted)
         {
             residue.push(ProvisioningOrchestrator.IdpRealmPrefix + input.tenant.id)
-        }
-        if (completed.client)
-        {
-            await this.Compensate(ProvisioningOrchestrator.ClientPrefix + input.client.id, () => this.directory.DeleteClient(input.client.id), rolledBack, residue)
         }
         return { rolledBack, residue }
     }

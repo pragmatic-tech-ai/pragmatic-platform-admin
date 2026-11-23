@@ -23,7 +23,7 @@ class SignerComposeFixture
     {
         const directory = new PlatformDirectory(new ClientRegistry(join(dataRoot, 'clients.json')), new TenantRegistry(join(dataRoot, 'tenants.json')), new HiveRegistry(join(dataRoot, 'hives.json')), { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'c1', displayName: 'C1' })
+        await directory.RecordClient({ id: 'c1', displayName: 'C1' })
         await directory.CreateTenant({ id: 't1', clientId: 'c1', displayName: 'T1' })
         await directory.CreateHive({ id: 'h1', tenantId: 't1', displayName: 'H1', cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Attach } })
         return directory

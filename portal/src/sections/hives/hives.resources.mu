@@ -492,18 +492,10 @@ resources HivesResources {
                     // Step 1: the client.
                     StackPanel [ Orientation = Vertical, Visibility = $IsClientStep << ToVisibility ] {
                         TextBlock [ Text = "Which client is this hive for?", Style = @UiLabel, Foreground = @Fg0, Margin = (0,0,0,4) ]
-                        TextBlock [ Text = "Pick an existing client, or New client to create one. A new client's id is permanent.",
+                        TextBlock [ Text = "Pick the client. Clients come from the clients ledger; they are never created here.",
                                     Style = @UiCaption, Foreground = @Fg2, TextWrapping = Wrap, Margin = (0,0,0,12) ]
                         TextBlock [ Text = "Client", Style = @UiCaption, Foreground = @Fg2, Margin = (0,0,0,4) ]
                         ComboBox [ ItemsSource = $Clients, SelectedItem = $SelectedClient, HorizontalAlignment = Stretch, Margin = (0,0,0,12) ]
-                        StackPanel [ Orientation = Vertical, Visibility = $IsNewClient << ToVisibility ] {
-                            TextBlock [ Text = "Client id", Style = @UiCaption, Foreground = @Fg2, Margin = (0,0,0,4) ]
-                            TextBox [ UsesNativeInput = true, Text = $ClientId, Placeholder = "e.g. tailspin", Margin = (0,0,0,12) ]
-                            TextBlock [ Text = "Display name", Style = @UiCaption, Foreground = @Fg2, Margin = (0,0,0,4) ]
-                            TextBox [ UsesNativeInput = true, Text = $ClientDisplayName, Placeholder = "e.g. Tailspin Toys", Margin = (0,0,0,12) ]
-                            TextBlock [ Text = "Subscription reference (optional)", Style = @UiCaption, Foreground = @Fg2, Margin = (0,0,0,4) ]
-                            TextBox [ UsesNativeInput = true, Text = $SubscriptionRef ]
-                        }
                         TextBlock [ Text = $ErrorText, Foreground = @StateDangerInk, TextWrapping = Wrap, Margin = (0,12,0,0),
                                     Visibility = $ErrorText << ToVisibility ]
                     }

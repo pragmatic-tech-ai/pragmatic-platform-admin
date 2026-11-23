@@ -1,3 +1,4 @@
+import { TestEntitlements } from './test-entitlements.js'
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
@@ -84,7 +85,7 @@ describe('ControlPlaneHost tenant Owner password reset', () =>
             new HiveRegistry(join(parent, 'hives.json')),
             { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'acme', displayName: 'Acme' })
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         provisioning = new FakeProvisioning(directory)
         await provisioning.Provision({ id: 't1', clientId: 'acme', displayName: 'T1', ownerEmail: 'owner@acme.test' })
         audit = new InMemoryAuditRepository()
@@ -92,7 +93,7 @@ describe('ControlPlaneHost tenant Owner password reset', () =>
         const sessions = await HostSessions.With(FakeOperator.FullToken, FakeOperator.Full)
         await sessions.Seed(FakeOperator.ReadOnlyToken, FakeOperator.ReadOnly)
         host = new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: sessions.Sessions,
-            Directory: directory, Deployments: deployments, Provisioning: provisioning.AsService(), Observations: RolloutFixture.Observations(parent), Audit: audit })
+            Directory: directory, Entitlements: TestEntitlements.Gate(directory), Deployments: deployments, Provisioning: provisioning.AsService(), Observations: RolloutFixture.Observations(parent), Audit: audit })
         await host.Listen(0, '127.0.0.1')
         logged = []
         originalError = console.error

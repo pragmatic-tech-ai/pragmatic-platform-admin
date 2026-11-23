@@ -1,6 +1,7 @@
 import { ObservableCollection, RelayCommand } from '@pragmatic-tech-ai/mural/runtime'
 import { Observable } from '@pragmatic-tech-ai/todl-runtime'
 import { FleetViewModel, type FleetRow } from '../../fleet-view-model.js'
+import { ClientsViewModel } from '../../clients-view-model.js'
 import { PortalDates } from '../../portal-dates.js'
 import type { ClientDto, FleetHiveDto, TenantDto } from '../../portal-types.js'
 import { PortalPageViewModel } from '../../shell/portal-page-view-model.js'
@@ -50,30 +51,31 @@ export class ClientTenantRowViewModel extends Observable
     }
 }
 
-// A client's detail: its profile and its tenants with their hives. Delete is
-// irreversible, so it asks for the client id to be typed.
+// A client's detail: what the clients ledger states of it (plan, state, limits, statement version, customer admins;
+// never a price) and its tenants with their hives. Read-only: the ledger owns the client.
 export class ClientDetailPageViewModel extends PortalPageViewModel
 {
     private static readonly NotFoundTemplate = 'Client {id} was not found.'
     private static readonly IdToken = '{id}'
-    private static readonly NoneLabel = '-'
-    private static readonly DeleteTitle = 'Delete this client?'
-    private static readonly DeleteMessage = 'The client record is removed. A client that still has tenants cannot be deleted; delete its tenants first.'
+    private static readonly AdminSeparator = ', '
+    private static readonly VersionPrefix = 'v'
     private static readonly ClientProperty = 'Client'
     private static readonly DisplayNameProperty = 'DisplayName'
-    private static readonly SubscriptionLabelProperty = 'SubscriptionLabel'
+    private static readonly PlanLabelProperty = 'PlanLabel'
+    private static readonly StateLabelProperty = 'StateLabel'
+    private static readonly LimitsLabelProperty = 'LimitsLabel'
+    private static readonly VersionLabelProperty = 'VersionLabel'
+    private static readonly AdminsLabelProperty = 'AdminsLabel'
     private static readonly ClientSinceLabelProperty = 'ClientSinceLabel'
     private static readonly HasTenantsProperty = 'HasTenants'
     private static readonly HasNoTenantsProperty = 'HasNoTenants'
 
     private client: ClientDto | undefined
     private readonly tenants = new ObservableCollection<ClientTenantRowViewModel>()
-    private readonly deleteCommand: RelayCommand
 
     public constructor(session: PortalSessionService, private readonly section: ClientsSectionService, public readonly Id: string)
     {
         super(session)
-        this.deleteCommand = this.MutatingCommand(() => this.Delete())
     }
 
     public get DisplayName(): string
@@ -81,9 +83,32 @@ export class ClientDetailPageViewModel extends PortalPageViewModel
         return this.client?.displayName ?? this.Id
     }
 
-    public get SubscriptionLabel(): string
+    public get PlanLabel(): string
     {
-        return this.client?.subscriptionRef ?? ClientDetailPageViewModel.NoneLabel
+        return this.client?.entitlement?.planId ?? ClientsViewModel.NoneLabel
+    }
+
+    public get StateLabel(): string
+    {
+        return ClientsViewModel.StateLabel(this.client?.entitlement)
+    }
+
+    public get LimitsLabel(): string
+    {
+        return ClientsViewModel.LimitsLabel(this.client?.entitlement)
+    }
+
+    public get VersionLabel(): string
+    {
+        const entitlement = this.client?.entitlement
+        return entitlement === undefined ? ClientsViewModel.NoneLabel : ClientDetailPageViewModel.VersionPrefix + String(entitlement.version)
+    }
+
+    /** The customer admins' emails (informational; the central-login subject identifies each). */
+    public get AdminsLabel(): string
+    {
+        const admins = this.client?.entitlement?.admins ?? []
+        return admins.length === 0 ? ClientsViewModel.NoneLabel : admins.map(admin => admin.email).join(ClientDetailPageViewModel.AdminSeparator)
     }
 
     public get ClientSinceLabel(): string
@@ -111,11 +136,6 @@ export class ClientDetailPageViewModel extends PortalPageViewModel
         return this.section.BackCommand
     }
 
-    public get DeleteCommand(): RelayCommand
-    {
-        return this.deleteCommand
-    }
-
     protected override async LoadCore(): Promise<boolean>
     {
         const generation = this.LoadGeneration
@@ -136,8 +156,12 @@ export class ClientDetailPageViewModel extends PortalPageViewModel
 
     private Apply(client: ClientDto, tenants: TenantDto[], fleet: FleetHiveDto[]): void
     {
+        const D = ClientDetailPageViewModel
         const oldName = this.DisplayName
-        const oldSubscription = this.SubscriptionLabel
+        const oldLabels: Array<[string, string]> = [
+            [D.PlanLabelProperty, this.PlanLabel], [D.StateLabelProperty, this.StateLabel], [D.LimitsLabelProperty, this.LimitsLabel],
+            [D.VersionLabelProperty, this.VersionLabel], [D.AdminsLabelProperty, this.AdminsLabel],
+        ]
         const oldSince = this.ClientSinceLabel
         const hadTenants = this.HasTenants
         const old = this.client
@@ -155,20 +179,12 @@ export class ClientDetailPageViewModel extends PortalPageViewModel
         }
         this.RaisePropertyChanged(ClientDetailPageViewModel.ClientProperty, old, client)
         this.RaisePropertyChanged(ClientDetailPageViewModel.DisplayNameProperty, oldName, this.DisplayName)
-        this.RaisePropertyChanged(ClientDetailPageViewModel.SubscriptionLabelProperty, oldSubscription, this.SubscriptionLabel)
+        for (const [property, before] of oldLabels)
+        {
+            this.RaisePropertyChanged(property, before, this[property as keyof this] as unknown as string)
+        }
         this.RaisePropertyChanged(ClientDetailPageViewModel.ClientSinceLabelProperty, oldSince, this.ClientSinceLabel)
         this.RaisePropertyChanged(ClientDetailPageViewModel.HasTenantsProperty, hadTenants, this.HasTenants)
         this.RaisePropertyChanged(ClientDetailPageViewModel.HasNoTenantsProperty, !hadTenants, this.HasNoTenants)
-    }
-
-    private Delete(): Promise<void>
-    {
-        return this.ConfirmByName(this.section.Dialogs, {
-            Expected: this.Id,
-            Title: ClientDetailPageViewModel.DeleteTitle,
-            Message: ClientDetailPageViewModel.DeleteMessage,
-            Action: () => this.Session.Client.DeleteClient(this.Id),
-            OnConfirmed: () => this.section.BackAndRefresh(),
-        })
     }
 }

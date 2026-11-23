@@ -101,7 +101,7 @@ class DomainsFixture
         this.approvals = new ConsoleDomainApprovals(join(this.dir, ConsoleDomainApprovals.FileName))
         await this.approvals.Load()
         this.domains = new PlatformEmailDomains(this.directory, this.adverts, this.approvals, new DomainTxtVerifier(this.resolver), undefined, () => new Date(this.clock))
-        await this.directory.CreateClient({ id: 'c1', displayName: 'C1' })
+        await this.directory.RecordClient({ id: 'c1', displayName: 'C1' })
         await this.directory.CreateTenant({ id: 'beta', clientId: 'c1', displayName: 'Beta' })
         await this.directory.CreateTenant({ id: 'acme', clientId: 'c1', displayName: 'Acme' })
         await this.directory.CreateHive({ id: 'acme-hive', tenantId: 'acme', displayName: 'Acme hive', ...DomainsFixture.Spec })

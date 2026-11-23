@@ -40,24 +40,6 @@ describe('ControlPlaneClient platform records', () =>
         assert.deepEqual(clients, [{ id: 'c1', displayName: 'Acme' }])
     })
 
-    it('CreateClient POSTs the body', async () =>
-    {
-        FetchStub.Install({ id: 'c1', displayName: 'Acme', subscriptionRef: 'sub' })
-        const dto = await new ControlPlaneClient().CreateClient('c1', 'Acme', 'sub')
-        const call = FetchStub.Calls[0]!
-        assert.equal(call.route, '/api/clients')
-        assert.equal(call.init?.method, 'POST')
-        assert.deepEqual(JSON.parse(call.init?.body as string), { id: 'c1', displayName: 'Acme', subscriptionRef: 'sub' })
-        assert.equal(dto.id, 'c1')
-    })
-
-    it('CreateClient omits an absent subscriptionRef', async () =>
-    {
-        FetchStub.Install({ id: 'c1', displayName: 'Acme' })
-        await new ControlPlaneClient().CreateClient('c1', 'Acme')
-        assert.deepEqual(JSON.parse(FetchStub.Calls[0]!.init?.body as string), { id: 'c1', displayName: 'Acme' })
-    })
-
     it('CreateOperator POSTs email, password and role', async () =>
     {
         FetchStub.Install({ email: 'a@x.test' })
@@ -107,14 +89,6 @@ describe('ControlPlaneClient platform records', () =>
         assert.equal(call.route, '/api/operators/revoke-sessions')
         assert.equal(call.init?.method, 'POST')
         assert.deepEqual(JSON.parse(call.init?.body as string), { email: 'a@x.test' })
-    })
-
-    it('DeleteClient DELETEs the item route', async () =>
-    {
-        FetchStub.Install({ ok: true })
-        await new ControlPlaneClient().DeleteClient('c 1')
-        assert.equal(FetchStub.Calls[0]!.route, '/api/clients/c%201')
-        assert.equal(FetchStub.Calls[0]!.init?.method, 'DELETE')
     })
 
     it('ListTenants returns all when no client is given', async () =>

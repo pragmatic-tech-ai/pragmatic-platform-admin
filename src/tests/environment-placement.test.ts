@@ -30,7 +30,7 @@ class PlacementFixture
             { List: () => [] },
             () => new Date(PlacementFixture.Now))
         await f.directory.Load()
-        await f.directory.CreateClient({ id: 'c1', displayName: 'C1' })
+        await f.directory.RecordClient({ id: 'c1', displayName: 'C1' })
         await f.directory.CreateTenant({ id: 't1', clientId: 'c1', displayName: 'T1' })
         await f.directory.CreateTenant({ id: 't2', clientId: 'c1', displayName: 'T2' })
         await f.directory.CreateHive({

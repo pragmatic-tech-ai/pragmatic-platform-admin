@@ -22,7 +22,9 @@ class WizardFixture
 
     public constructor(wireRole: string = OperatorContext.FullWireRole)
     {
+        // Clients come from the clients ledger: the wizard picks one (the first is chosen at load).
         this.Api = new FakeControlPlane()
+            .WithClient('initech', 'Initech')
             .WithClient('acme', 'Acme')
             .WithTenant('acme-prod', 'acme', 'Acme Production')
             .WithHive('acme-hive', 'acme-prod')
@@ -68,8 +70,6 @@ class WizardFixture
     public async AtReview(): Promise<ProvisionWizardPageViewModel>
     {
         const wizard = await this.Wizard()
-        wizard.ClientId = 'initech'
-        wizard.ClientDisplayName = 'Initech'
         wizard.NextCommand.Execute()
         wizard.TenantId = 'initech-prod'
         wizard.TenantDisplayName = 'Initech Production'
@@ -112,13 +112,12 @@ describe('Stand up a hive (provision wizard)', () =>
     {
         const fx = new WizardFixture()
         const wizard = await fx.Wizard()
-        assert.equal(wizard.NextCommand.CanExecute(), false)
         assert.equal(wizard.BackStepCommand.CanExecute(), false)
-        wizard.ClientId = 'initech'
+        assert.equal(wizard.SelectedClient?.Value, 'initech')
+        assert.equal(wizard.NextCommand.CanExecute(), true)
+        wizard.SelectedClient = undefined
         assert.equal(wizard.NextCommand.CanExecute(), false)
-        wizard.ClientDisplayName = '   '
-        assert.equal(wizard.NextCommand.CanExecute(), false)
-        wizard.ClientDisplayName = 'Initech'
+        wizard.SelectedClient = wizard.Clients.Get(0)
         assert.equal(wizard.NextCommand.CanExecute(), true)
         wizard.NextCommand.Execute()
         assert.equal(wizard.StepIndex, ProvisionStep.Tenant)
@@ -135,15 +134,13 @@ describe('Stand up a hive (provision wizard)', () =>
         assert.equal(wizard.BackStepCommand.CanExecute(), true)
         wizard.BackStepCommand.Execute()
         assert.equal(wizard.StepIndex, ProvisionStep.Client)
-        assert.equal(wizard.ClientId, 'initech')
+        assert.equal(wizard.SelectedClient?.Value, 'initech')
     })
 
     it('the Hive step refuses an id that is not a lowercase Kubernetes name and says why', async () =>
     {
         const fx = new WizardFixture()
         const wizard = await fx.Wizard()
-        wizard.ClientId = 'initech'
-        wizard.ClientDisplayName = 'Initech'
         wizard.NextCommand.Execute()
         wizard.TenantId = 'initech-prod'
         wizard.TenantDisplayName = 'Initech Production'
@@ -189,7 +186,7 @@ describe('Stand up a hive (provision wizard)', () =>
         assert.equal(fx.Api.ProvisionCalls, 1)
         assert.equal(wizard.IsSubmitting, false)
         assert.deepEqual(fx.Api.Provisioned, [{
-            client: { id: 'initech', displayName: 'Initech' },
+            client: { existing: true, id: 'initech' },
             tenant: { id: 'initech-prod', displayName: 'Initech Production', ownerEmail: 'owner@initech.test' },
             hive: {
                 id: 'initech-hive', displayName: 'Initech hive',
@@ -274,9 +271,9 @@ describe('Stand up a hive (provision wizard)', () =>
         const fx = new WizardFixture()
         const wizard = await fx.Wizard()
         let raised = 0
-        const subscription = wizard.PropertyChanged('ClientId').subscribe(() => { raised++ })
-        wizard.ClientId = 'initech'
-        wizard.ClientId = 'initech'
+        const subscription = wizard.PropertyChanged('TenantId').subscribe(() => { raised++ })
+        wizard.TenantId = 'initech-prod'
+        wizard.TenantId = 'initech-prod'
         subscription.dispose()
         assert.equal(raised, 1)
     })
@@ -351,7 +348,7 @@ describe('Stand up a hive (provision wizard)', () =>
     {
         const fx = new WizardFixture()
         const wizard = await fx.Wizard()
-        wizard.ClientId = 'initech'
+        wizard.TenantId = 'initech-prod'
         assert.equal(wizard.HasPendingWork, true)
         fx.Rail.Select(TenantsSectionService)
         await Tick.Settle()
@@ -366,7 +363,7 @@ describe('Stand up a hive (provision wizard)', () =>
         assert.equal(fx.Rail.Navigation.ActiveService, fx.Section)
         assert.equal(fx.Section.Current, wizard)
         assert.equal(fx.Content, wizard)
-        assert.equal(wizard.ClientId, 'initech')
+        assert.equal(wizard.TenantId, 'initech-prod')
     })
 
     it('a cross-section open of a hive replaces an untouched wizard', async () =>
@@ -466,15 +463,13 @@ describe('Stand up a hive (provision wizard)', () =>
         assert.equal(wizard.AgentToken, fx.Api.AgentToken)
     })
 
-    it('the client and tenant choices list New first, then the existing records; tenants follow the client', async () =>
+    it('the client choices are the existing clients only (no New client); tenants list New first and follow the client', async () =>
     {
         const fx = new WizardFixture()
         const wizard = await fx.Wizard()
-        assert.deepEqual(wizard.Clients.ToArray().map(o => o.Label), ['New client', 'Acme'])
-        assert.equal(wizard.IsNewClient, true)
+        assert.deepEqual(wizard.Clients.ToArray().map(o => o.Label), ['Initech', 'Acme'])
         assert.deepEqual(wizard.Tenants.ToArray().map(o => o.Label), ['New tenant'])
         wizard.SelectedClient = wizard.Clients.Get(1)
-        assert.equal(wizard.IsNewClient, false)
         assert.equal(wizard.NextCommand.CanExecute(), true)
         assert.deepEqual(wizard.Tenants.ToArray().map(o => o.Label), ['New tenant', 'Acme Production'])
         assert.equal(wizard.IsNewTenant, true)
@@ -483,7 +478,6 @@ describe('Stand up a hive (provision wizard)', () =>
         wizard.SelectedClient = wizard.Clients.Get(0)
         assert.deepEqual(wizard.Tenants.ToArray().map(o => o.Label), ['New tenant'])
         assert.equal(wizard.IsNewTenant, true)
-        assert.equal(wizard.NextCommand.CanExecute(), false)
     })
 
     it('an existing client and tenant: the hive is provisioned onto them and only the agent token is revealed', async () =>
@@ -560,7 +554,7 @@ describe('Stand up a hive (provision wizard)', () =>
     {
         const fx = new WizardFixture()
         const wizard = await fx.Wizard()
-        wizard.ClientId = 'initech'
+        wizard.TenantId = 'initech-prod'
         assert.equal(wizard.CancelCommand.CanExecute(), true)
         wizard.CancelCommand.Execute()
         await Tick.Settle()
@@ -578,8 +572,7 @@ describe('Stand up a hive (provision wizard)', () =>
         assert.equal(fx.Content, list)
         const wizard = new ProvisionWizardPageViewModel(fx.Host.Session, fx.Section)
         assert.notEqual(wizard.DeniedReason, '')
-        wizard.ClientId = 'initech'
-        wizard.ClientDisplayName = 'Initech'
+        await wizard.Refresh()
         wizard.NextCommand.Execute()
         wizard.TenantId = 'initech-prod'
         wizard.TenantDisplayName = 'Initech Production'

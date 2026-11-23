@@ -1,3 +1,4 @@
+import { TestEntitlements } from './test-entitlements.js'
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
@@ -178,7 +179,7 @@ describe('ControlPlaneHost hive health route', () =>
             new HiveRegistry(join(parent, 'hives.json')),
             { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'acme', displayName: 'Acme' })
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         await directory.CreateTenant({ id: 't1', clientId: 'acme', displayName: 'T' })
         await directory.CreateHive({ id: 'local1', tenantId: 't1', displayName: 'L', cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Provision } })
         await directory.CreateHive({ id: 'cloud1', tenantId: 't1', displayName: 'C', cluster: { backend: HiveBackend.Aks, mode: InfraMode.Attach }, registry: { mode: InfraMode.Provision } })
@@ -188,7 +189,7 @@ describe('ControlPlaneHost hive health route', () =>
         deployments = await RolloutFixture.Create(parent, directory, factory)
         const sessions = await HostSessions.With(FakeOperator.Token, FakeOperator.Principal())
         host = new ControlPlaneHost({ Service: new FakeService() as unknown as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(),
-            Sessions: sessions.Sessions, Directory: directory, Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: observations })
+            Sessions: sessions.Sessions, Directory: directory, Entitlements: TestEntitlements.Gate(directory), Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: observations })
         await host.Listen(0, '127.0.0.1')
     })
 

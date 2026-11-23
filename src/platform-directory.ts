@@ -14,7 +14,6 @@ export interface IEnvironmentLookup
 // The kinds of platform record, as named in error messages.
 export enum RecordKind
 {
-    Client = 'Client',
     Tenant = 'Tenant',
     Hive = 'Hive',
 }
@@ -67,18 +66,6 @@ export class UnknownTenantError extends Error
     {
         super(UnknownTenantError.MessagePrefix + id)
         this.name = UnknownTenantError.ErrorName
-    }
-}
-
-export class ClientHasTenantsError extends Error
-{
-    private static readonly ErrorName = 'ClientHasTenantsError'
-    private static readonly MessagePrefix = 'Client still has tenants: '
-
-    public constructor(id: string)
-    {
-        super(ClientHasTenantsError.MessagePrefix + id)
-        this.name = ClientHasTenantsError.ErrorName
     }
 }
 
@@ -187,21 +174,25 @@ export class PlatformDirectory implements ITenantRecordSource
         return this.clients.Get(id)
     }
 
-    public async CreateClient(input: { id: string; displayName: string }): Promise<ClientRecord>
+    /**
+     * Upserts a client record as the clients ledger's statements describe it (ClientProjection derives the same record);
+     * the operators have no way to create, edit or delete a client: the ledger owns the client. Keeps an existing
+     * record's creation time unless one is given.
+     */
+    public async RecordClient(input: { id: string; displayName: string; kind?: ClientRecord['kind']; createdAt?: string; entitlementVersion?: number }): Promise<ClientRecord>
     {
-        this.AssertNew(RecordKind.Client, input.id, this.clients.Get(input.id))
-        const record: ClientRecord = { id: input.id, displayName: input.displayName, createdAt: this.Stamp() }
+        RecordId.Validate(input.id)
+        const record: ClientRecord = { id: input.id, displayName: input.displayName, createdAt: input.createdAt ?? this.clients.Get(input.id)?.createdAt ?? this.Stamp() }
+        if (input.kind !== undefined)
+        {
+            record.kind = input.kind
+        }
+        if (input.entitlementVersion !== undefined)
+        {
+            record.entitlementVersion = input.entitlementVersion
+        }
         await this.clients.Put(record)
         return record
-    }
-
-    public async DeleteClient(id: string): Promise<void>
-    {
-        if (this.tenants.List().some(t => t.clientId === id))
-        {
-            throw new ClientHasTenantsError(id)
-        }
-        await this.clients.Remove(id)
     }
 
     public ListTenants(clientId?: string): readonly TenantRecord[]

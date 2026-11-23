@@ -18,12 +18,26 @@ export type EnvironmentDto =
     wsUrl: string
 }
 
+// What the clients ledger's newest statement says of a client (never a price).
+export type ClientEntitlementDto =
+{
+    planId: string
+    state: string
+    limits: Record<string, number>
+    version: number
+    issuedAt: string
+    admins: Array<{ issuer: string; subject: string; email: string }>
+}
+
+// A client as the console derives it from the ledger's statements: read-only for operators.
 export type ClientDto =
 {
     id: string
     displayName: string
-    subscriptionRef?: string
+    kind?: string
     createdAt: string
+    entitlementVersion?: number
+    entitlement?: ClientEntitlementDto
 }
 
 export type TenantDto =
@@ -158,10 +172,10 @@ export type FleetHiveDto = {
 // A record that already exists, used as is by the provision.
 export type ExistingRecordRefDto = { existing: true; id: string }
 
-// The client and the tenant are each new or an existing record; the hive is always new.
+// The client is an existing record (the clients ledger owns clients); the tenant is new or existing; the hive is always new.
 export type ProvisionInputDto =
 {
-    client: { id: string; displayName: string; subscriptionRef?: string } | ExistingRecordRefDto
+    client: ExistingRecordRefDto
     tenant: { id: string; displayName: string; ownerEmail: string } | ExistingRecordRefDto
     hive: { id: string; displayName: string; cluster: HiveDto['cluster']; registry: HiveDto['registry']; trustRootRef?: string }
 }

@@ -5,13 +5,10 @@ import { PortalDates } from '../../portal-dates.js'
 import { PortalPageViewModel } from '../../shell/portal-page-view-model.js'
 import type { PortalSessionService } from '../../shell/portal-session-service.js'
 import type { ClientsSectionService } from './clients-section-service.js'
-import { NewClientDialogViewModel } from './new-client-dialog-view-model.js'
 
 // One clients-table row.
 export class ClientRowViewModel extends Observable
 {
-    private static readonly NoneLabel = '-'
-
     private readonly openCommand: RelayCommand
 
     public constructor(private readonly row: ClientListRow, open: RelayCommand)
@@ -30,9 +27,24 @@ export class ClientRowViewModel extends Observable
         return this.row.displayName
     }
 
-    public get SubscriptionLabel(): string
+    public get PlanLabel(): string
     {
-        return this.row.subscriptionRef ?? ClientRowViewModel.NoneLabel
+        return this.row.planLabel
+    }
+
+    public get StateLabel(): string
+    {
+        return this.row.stateLabel
+    }
+
+    public get LimitsLabel(): string
+    {
+        return this.row.limitsLabel
+    }
+
+    public get VersionLabel(): string
+    {
+        return this.row.versionLabel
     }
 
     public get TenantCountText(): string
@@ -62,21 +74,17 @@ export class ClientRowViewModel extends Observable
     }
 }
 
-// The Clients list: every client with its tenant and hive counts. Its one
-// primary action creates a client through a dialog.
+// The Clients list: every client the clients ledger states, with its plan, state, limits and statement version, and
+// its tenant and hive counts. Read-only: clients come from the ledger, never typed in here.
 export class ClientsPageViewModel extends PortalPageViewModel
 {
-    private static readonly NewClientTitle = 'Create client'
-
     private readonly rows = new ObservableCollection<ClientRowViewModel>()
     private readonly openCommand: RelayCommand
-    private readonly newCommand: RelayCommand
 
     public constructor(session: PortalSessionService, private readonly section: ClientsSectionService)
     {
         super(session)
         this.openCommand = new RelayCommand(row => this.Open(row))
-        this.newCommand = this.MutatingCommand(() => this.CreateClient())
     }
 
     public get Rows(): ObservableCollection<ClientRowViewModel>
@@ -88,11 +96,6 @@ export class ClientsPageViewModel extends PortalPageViewModel
     public get OpenCommand(): RelayCommand
     {
         return this.openCommand
-    }
-
-    public get NewCommand(): RelayCommand
-    {
-        return this.newCommand
     }
 
     protected override async LoadCore(): Promise<boolean>
@@ -118,11 +121,5 @@ export class ClientsPageViewModel extends PortalPageViewModel
         {
             this.section.OpenClient(row.Id)
         }
-    }
-
-    private CreateClient(): Promise<void>
-    {
-        return this.OpenCreate(this.section.Dialogs, dialogs => new NewClientDialogViewModel(this.Session, dialogs),
-            ClientsPageViewModel.NewClientTitle, () => this.Refresh())
     }
 }

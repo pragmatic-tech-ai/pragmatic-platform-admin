@@ -1,3 +1,4 @@
+import { TestEntitlements } from './test-entitlements.js'
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
@@ -125,7 +126,7 @@ describe('ControlPlaneHost tenant email domains', () =>
             new HiveRegistry(join(parent, 'hives.json')),
             { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'c1', displayName: 'C1' })
+        await directory.RecordClient({ id: 'c1', displayName: 'C1' })
         await directory.CreateTenant({ id: 'beta', clientId: 'c1', displayName: 'Beta' })
         await directory.CreateTenant({ id: 'acme', clientId: 'c1', displayName: 'Acme' })
         await directory.CreateHive({ id: 'acme-hive', tenantId: 'acme', displayName: 'Acme hive', cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Provision } })
@@ -140,7 +141,7 @@ describe('ControlPlaneHost tenant email domains', () =>
         domains = new PlatformEmailDomains(directory, adverts, approvals, new DomainTxtVerifier(resolver))
         const deployments = await RolloutFixture.Create(parent, directory, new HiveOrchestratorFactory())
         host = new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: (await FakeOperator.Sessions()).Sessions,
-            Directory: directory, Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent),
+            Directory: directory, Entitlements: TestEntitlements.Gate(directory), Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent),
             Audit: audit.Repository, Adverts: adverts, Approvals: approvals, EmailDomains: domains })
         await host.Listen(0, '127.0.0.1')
     })
@@ -465,11 +466,11 @@ describe('ControlPlaneHost without an email-domain service', () =>
             new HiveRegistry(join(parent, 'hives.json')),
             { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'c1', displayName: 'C1' })
+        await directory.RecordClient({ id: 'c1', displayName: 'C1' })
         await directory.CreateTenant({ id: 'beta', clientId: 'c1', displayName: 'Beta' })
         const deployments = await RolloutFixture.Create(parent, directory, new HiveOrchestratorFactory())
         const host = new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: (await FakeOperator.Sessions()).Sessions,
-            Directory: directory, Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent) })
+            Directory: directory, Entitlements: TestEntitlements.Gate(directory), Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent) })
         await host.Listen(0, '127.0.0.1')
         try
         {

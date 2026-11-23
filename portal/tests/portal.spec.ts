@@ -643,14 +643,12 @@ class PortalText
     public static readonly ClientsSubtitle = 'Contracting organisations. Each has one or more tenants; each tenant runs in exactly one hive.'
     public static readonly CreateClientLabel = 'Create client'
     // A single-line dialog caption: wrapped text renders as one SVG text per line.
-    public static readonly NewClientCaption = 'Subscription reference (optional)'
     public static readonly CancelLabel = 'Cancel'
     public static readonly NeedsAttentionCaption = 'Needs attention'
     public static readonly StandUpLabel = 'Stand up a hive'
     public static readonly NewClientChoice = 'New client'
     public static readonly NewTenantChoice = 'New tenant'
     public static readonly NextLabel = 'Next'
-    public static readonly ClientIdCaption = 'Client id'
     public static readonly TenantIdCaption = 'Tenant id'
     public static readonly HiveIdCaption = 'Hive id'
     public static readonly HiveIdPlaceholder = 'e.g. tailspin-hive'
@@ -1010,17 +1008,14 @@ test.describe('admin portal', () =>
         await expect(PortalSteps.Text(page, PortalText.TenantDetailCaption)).not.toBeVisible()
     })
 
-    test('Clients: Create client opens the dialog and Cancel closes it', async ({ page }) =>
+    test('Clients: the list is read-only (clients come from the clients ledger: no Create client)', async ({ page }) =>
     {
         await page.goto(base)
         await expect(PortalSteps.Text(page, PortalText.FleetSubtitle)).toBeVisible()
         await PortalSteps.OpenSection(page, RailEntry.Clients)
         await expect(PortalSteps.Text(page, PortalText.ClientsSubtitle)).toBeVisible()
-        await PortalSteps.Click(page, PortalText.CreateClientLabel)
-        await expect(PortalSteps.Text(page, PortalText.NewClientCaption)).toBeVisible()
-        await PortalSteps.Click(page, PortalText.CancelLabel)
-        await expect(PortalSteps.Text(page, PortalText.NewClientCaption)).not.toBeVisible()
-        await expect(PortalSteps.Text(page, PortalText.ClientsSubtitle)).toBeVisible()
+        await expect(PortalSteps.Text(page, PortalText.CreateClientLabel)).toHaveCount(0)
+        await PortalSteps.ExpectNoBrokenText(page)
     })
 
     test('Hives: the stand-up wizard picks an existing client and tenant from ComboBoxes', async ({ page }) =>
@@ -1029,11 +1024,8 @@ test.describe('admin portal', () =>
         await expect(PortalSteps.Text(page, PortalText.FleetSubtitle)).toBeVisible()
         await PortalSteps.OpenSection(page, RailEntry.Hives)
         await PortalSteps.Click(page, PortalText.StandUpLabel)
-        await expect(PortalSteps.Visible(page, PortalText.NewClientChoice)).toBeVisible()
-        await expect(PortalSteps.Visible(page, PortalText.ClientIdCaption)).toBeVisible()
-        await PortalSteps.Click(page, PortalText.NewClientChoice)
-        await PortalSteps.Visible(page, FakeControlPlane.ClientName).click({ force: true })
-        await expect(PortalSteps.Text(page, PortalText.ClientIdCaption).filter({ visible: true })).toHaveCount(0)
+        await expect(PortalSteps.Visible(page, FakeControlPlane.ClientName)).toBeVisible()
+        await expect(PortalSteps.Text(page, PortalText.NewClientChoice)).toHaveCount(0)
         await PortalSteps.Click(page, PortalText.NextLabel)
         await expect(PortalSteps.Visible(page, PortalText.NewTenantChoice)).toBeVisible()
         await PortalSteps.Click(page, PortalText.NewTenantChoice)
@@ -1050,9 +1042,7 @@ test.describe('admin portal', () =>
         await expect(PortalSteps.Text(page, PortalText.FleetSubtitle)).toBeVisible()
         await PortalSteps.OpenSection(page, RailEntry.Hives)
         await PortalSteps.Click(page, PortalText.StandUpLabel)
-        await expect(PortalSteps.Visible(page, PortalText.NewClientChoice)).toBeVisible()
-        await PortalSteps.Click(page, PortalText.NewClientChoice)
-        await PortalSteps.Visible(page, FakeControlPlane.ClientName).click({ force: true })
+        await expect(PortalSteps.Visible(page, FakeControlPlane.ClientName)).toBeVisible()
         await PortalSteps.Click(page, PortalText.NextLabel)
         await expect(PortalSteps.Visible(page, PortalText.NewTenantChoice)).toBeVisible()
         await PortalSteps.Click(page, PortalText.NewTenantChoice)

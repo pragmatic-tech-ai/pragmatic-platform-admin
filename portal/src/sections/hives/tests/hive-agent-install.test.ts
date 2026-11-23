@@ -76,8 +76,6 @@ class AutoFixture
         await Tick.Settle()
         const wizard: unknown = this.Host.Host.Content
         assert.ok(wizard instanceof ProvisionWizardPageViewModel)
-        wizard.ClientId = 'initech'
-        wizard.ClientDisplayName = 'Initech'
         wizard.NextCommand.Execute()
         wizard.TenantId = 'initech-prod'
         wizard.TenantDisplayName = 'Initech Production'

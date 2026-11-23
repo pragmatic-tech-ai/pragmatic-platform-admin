@@ -1,3 +1,4 @@
+import { TestEntitlements } from './test-entitlements.js'
 import { strict as assert } from 'node:assert'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { request } from 'node:http'
@@ -127,6 +128,7 @@ class Harness
             Operator: new FakeOperator(),
             Sessions: sessions.Sessions,
             Directory: directory,
+            Entitlements: TestEntitlements.Gate(directory),
             Deployments: await RolloutFixture.Create(parent, directory, factory),
             Provisioning: new FakeProvisioning(directory).AsService(),
             Observations: RolloutFixture.Observations(parent),

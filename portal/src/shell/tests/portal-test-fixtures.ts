@@ -10,7 +10,7 @@ import { Signal } from '@pragmatic-tech-ai/todl-runtime'
 import { ApiError, type ControlPlaneClient } from '../../api-client.js'
 import { PlatformShell } from '../platform-shell.js'
 import { OperatorContext } from '../../operator-context.js'
-import { AgentInstallState, AgentInstallStep, ConsoleInstallState, ConsoleInstallStep, DomainApprovalState, EmailDomainSource, type AgentInstallStatusDto, type ConsoleInstallStatusDto, type TenantEmailDomainsDto } from '../../portal-types.js'
+import { AgentInstallState, AgentInstallStep, ConsoleInstallState, ConsoleInstallStep, DomainApprovalState, EmailDomainSource, type AgentInstallStatusDto, type ConsoleInstallStatusDto, type TenantEmailDomainsDto, type ClientEntitlementDto } from '../../portal-types.js'
 import type { ConsoleRemovalDto, HiveConsoleSpecDto, HiveDeleteOutcomeDto, InHiveOwnerPasswordDto, OwnerPasswordResetDto } from '../../portal-types.js'
 import type { ActivityDto, ClientDto, CreatedTenantDto, FleetHiveDto, GatingDto, HiveBootstrapDto, HiveDto, HiveRolloutDto, LedgerDto, ManifestDto, ObservationDto, OperatorSummaryDto, StaffOperatorDto, PolicyDto, ProvisionInputDto, ProvisionResultDto, ReleaseRefreshDto, SelectionDto, TenantDto } from '../../portal-types.js'
 import { DownloadService } from '../download-service.js'
@@ -274,7 +274,6 @@ export class FakeControlPlane
     public FailPolicyCall: string | undefined
     // Each operator-management write as 'Method email [argument]', in call order.
     public readonly OperatorCalls: string[] = []
-    public readonly CreatedClients: Array<[string, string, string | undefined]> = []
     public readonly CreatedTenants: Array<[string, string, string, string]> = []
     public readonly CreatedHives: HiveDto[] = []
     public readonly Deleted: string[] = []
@@ -318,10 +317,10 @@ export class FakeControlPlane
     private createGate: Promise<void> | undefined
     private releaseCreates: (() => void) | undefined
 
-    // Seeds a client.
-    public WithClient(id: string, displayName: string = 'Client ' + id): this
+    // Seeds a client, optionally with what its statement says.
+    public WithClient(id: string, displayName: string = 'Client ' + id, entitlement?: ClientEntitlementDto): this
     {
-        this.Clients.push({ id, displayName, createdAt: '2026-10-01T00:00:00.000Z' })
+        this.Clients.push(entitlement === undefined ? { id, displayName, createdAt: '2026-10-01T00:00:00.000Z' } : { id, displayName, createdAt: '2026-10-01T00:00:00.000Z', entitlement })
         return this
     }
 
@@ -633,16 +632,6 @@ export class FakeControlPlane
         this.releaseCreates = undefined
     }
 
-    public async CreateClient(id: string, displayName: string, subscriptionRef?: string): Promise<ClientDto>
-    {
-        await this.createGate
-        this.ThrowIfFailing()
-        this.CreatedClients.push([id, displayName, subscriptionRef])
-        const client = { id, displayName, subscriptionRef, createdAt: new Date().toISOString() }
-        this.Clients.push(client)
-        return client
-    }
-
     public async CreateTenant(id: string, clientId: string, displayName: string, ownerEmail: string): Promise<CreatedTenantDto>
     {
         await this.createGate
@@ -712,13 +701,6 @@ export class FakeControlPlane
             lastSeen: null,
             environments: [],
         })
-    }
-
-    public async DeleteClient(id: string): Promise<void>
-    {
-        this.ThrowIfFailing()
-        this.Deleted.push(id)
-        this.Clients = this.Clients.filter(c => c.id !== id)
     }
 
     public async DeleteTenant(id: string): Promise<void>

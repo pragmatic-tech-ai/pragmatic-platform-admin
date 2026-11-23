@@ -1,3 +1,4 @@
+import { TestEntitlements } from './test-entitlements.js'
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
@@ -197,7 +198,7 @@ describe('ControlPlaneHost automatic agent install', () =>
 
     const Make = (installer: HiveAgentInstaller | undefined, images?: IPlatformImages): ControlPlaneHost =>
         new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: sessions.Sessions,
-            Directory: directory, Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: observations,
+            Directory: directory, Entitlements: TestEntitlements.Gate(directory), Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: observations,
             AgentChannelUrl: Harness.ChannelUrl, AgentInstaller: installer, PlatformImages: images })
 
     beforeEach(async () =>
@@ -213,7 +214,7 @@ describe('ControlPlaneHost automatic agent install', () =>
             new HiveRegistry(join(parent, 'hives.json')),
             { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'acme', displayName: 'Acme' })
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         await directory.CreateTenant({ id: 't1', clientId: 'acme', displayName: 'T' })
         await directory.CreateTenant({ id: 't2', clientId: 'acme', displayName: 'T2' })
         await directory.CreateHive({ id: 'local1', tenantId: 't1', displayName: 'L', cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Provision } })

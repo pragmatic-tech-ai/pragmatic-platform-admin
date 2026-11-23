@@ -10,6 +10,15 @@ import { InternalHost } from './internal/internal-host.js'
 import { InternalSettings } from './internal/internal-settings.js'
 import { ClientProjection } from './entitlements/client-projection.js'
 import { SqlEntitlementSink } from './entitlements/sql-entitlement-sink.js'
+import { OperatorEntitlementGate } from './entitlements/operator-entitlement-gate.js'
+import { CentralLoginVerifiers } from './customer/central-login-verifiers.js'
+import { ClientLock } from './customer/client-lock.js'
+import { ClientUsage } from './customer/client-usage.js'
+import { PlatformCustomerApiService } from './customer/platform-customer-api-service.js'
+import { EnrolmentCodeIssuer } from './enrolment/enrolment-code-issuer.js'
+import { EnrolmentCodeRegistry } from './enrolment/enrolment-code-record.js'
+import { PlacementRegistry } from './placement/placement-registry.js'
+import { PlacementStore } from './placement/placement-record.js'
 import { InfraTargetMode, InfraTargetModes } from './infra-target-mode.js'
 import { NoTargetEnvironmentRuntime, NoTargetHiveOrchestratorFactory, NoTargetIdpDriver } from './no-infra-target.js'
 import { HostedHiveOrchestratorFactory } from './hosted-hive-orchestrator-factory.js'
@@ -326,6 +335,19 @@ export class ControlPlaneServer
         // channel receives, over the shared adverts and approvals.
         const domainVerifier = new DomainTxtVerifier(new NodeTxtResolver())
         const emailDomains = new PlatformEmailDomains(directory, adverts, approvals, domainVerifier)
+        // The customer API's records (one-time enrolment codes, hosted placements) and the per-client decisions it shares
+        // with the operator side: one usage count and one lock, so an operator's create and a customer's are decided in turn.
+        const enrolmentCodes = new EnrolmentCodeRegistry(await database.Map(PlatformAdminRegistry.EnrolmentCodes))
+        const placementStore = new PlacementStore(await database.Map(PlatformAdminRegistry.Placements))
+        await Promise.all([enrolmentCodes.Load(), placementStore.Load()])
+        const codes = new EnrolmentCodeIssuer(enrolmentCodes)
+        const hostedPlacements = new PlacementRegistry(placementStore)
+        const usage = new ClientUsage(directory, emailDomains, [codes, hostedPlacements])
+        const clientLock = new ClientLock()
+        const customerApi = new PlatformCustomerApiService({
+            Statements: entitlements, Directory: directory, Domains: emailDomains, Usage: usage, Lock: clientLock, Codes: codes, Placements: hostedPlacements,
+            Releases: deployments, Registrations: deployments, Reports: observations, Adverts: adverts,
+        })
         const agentBackend = ControlPlaneServer.AgentChannelBackendOf(deployments, directory, adverts, ownerResets, emailDomains)
         // One tenant session layer for the tenant plane and the Owner password reset (which ends the Owner's sessions), over the
         // console's own session tables (each plane's gate refuses the other's sessions).
@@ -342,7 +364,10 @@ export class ControlPlaneServer
         const discovery = new DesktopDiscoveryEndpoint(discoveryBackend, DesktopDiscoveryEndpoint.NewThrottle())
         const internalSettings = InternalSettings.Of(process.env)
         const internalStart = internalSettings === undefined ? undefined
-            : new InternalHost(internalSettings, { Agent: agentBackend, Discovery: discoveryBackend, Sink: entitlements })
+            : new InternalHost(internalSettings, {
+                Agent: agentBackend, Discovery: discoveryBackend, Sink: entitlements, Customer: customerApi,
+                Verifier: internalSettings.Central === undefined ? undefined : CentralLoginVerifiers.Create(internalSettings.Central),
+            })
         // Installs a Local hive's tenant console through the same cluster access.
         const consoleInstaller = new TenantConsoleInstaller(directory, orchestrators, new TenantAdminBootstrap(deployments), fingerprintKeys,
             new DevCertificateAuthority(join(dataRoot, DevCertificateAuthority.DirName), sealed), new InHiveIdpAdmin(orchestrators, sealed),
@@ -357,6 +382,7 @@ export class ControlPlaneServer
             AgentInstaller: agentInstaller, AgentUninstaller: new HiveAgentUninstaller(orchestrators), Discovery: discovery, ConsoleInstaller: consoleInstaller,
             Adverts: adverts, Approvals: approvals, EmailDomains: emailDomains, Releases: releases?.Refresher, PlatformImages: platformImages,
             OperatorSignIn: staffSignIn?.SignIn, StaffOperators: staffSignIn?.Directory,
+            Entitlements: new OperatorEntitlementGate(entitlements, usage, clientLock),
         })
         const port = ControlPlaneServer.ResolvePort(process.env[ControlPlaneServer.PortEnvVar])
         // Resolve (and validate) the tenant port + bind BEFORE binding the operator listener, so a misconfigured

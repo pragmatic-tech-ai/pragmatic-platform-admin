@@ -4,7 +4,7 @@ import { CreateFailedError, DockerUnavailableError, EnvironmentExistsError, Envi
 import { InvalidTenantIdError } from './idp-service.js'
 import { IdpUnreachableError, OwnerAccountMissingError, OwnerIdpRefusedError, OwnerNotRecordedError, OwnerResetInProgressError, TenantIdpMissingError } from './tenant-provisioning-service.js'
 import { LastOperatorError, OperatorExistsError, OperatorNotFoundError, OperatorProtectedError, OperatorSelfLockoutError } from './operator-identity.js'
-import { ClientHasTenantsError, HiveHasEnvironmentsError, InHiveConsoleTakenError, RecordExistsError, TenantClientMismatchError, TenantHasHivesError, UnknownClientError, UnknownTenantError } from './platform-directory.js'
+import { HiveHasEnvironmentsError, InHiveConsoleTakenError, RecordExistsError, TenantClientMismatchError, TenantHasHivesError, UnknownClientError, UnknownTenantError } from './platform-directory.js'
 import { EmailDomainApprovalRefusedError } from './platform-email-domains.js'
 import { InvalidHiveConsoleError } from './hive-console-spec.js'
 import { AgentInstallInProgressError, AgentInstallUnavailableError } from './hive-agent-installer.js'
@@ -66,7 +66,6 @@ export class ControlPlaneProblems extends ProblemMapper
             .Register(TenantClientMismatchError, P.CodeBadRequest)
             .Register(UnknownClientError, P.CodeNotFound)
             .Register(UnknownTenantError, P.CodeNotFound)
-            .Register(ClientHasTenantsError, P.CodeConflict)
             .Register(TenantHasHivesError, P.CodeConflict)
             .Register(HiveHasEnvironmentsError, P.CodeConflict)
             .Register(HivePlacementError, P.CodeConflict)

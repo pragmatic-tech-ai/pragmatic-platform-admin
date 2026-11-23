@@ -68,7 +68,7 @@ class Fixture
     public static readonly StatePath = '/api/environments'
     /** An existing mutation route: Ruling (pipeline behaviour changes) answers another method on a known path 405 before
      *  authentication, so the Origin-then-401 cases post to a route that takes POST. */
-    public static readonly MutationPath = '/api/clients'
+    public static readonly MutationPath = '/api/tenants'
     public static readonly Post = 'POST'
     public static readonly Get = 'GET'
     public static readonly JsonType = 'application/json'

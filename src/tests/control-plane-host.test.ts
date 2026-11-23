@@ -1,3 +1,4 @@
+import { TestEntitlements } from './test-entitlements.js'
 import { type ILogProcess, type GraphDto, type IEnvironmentService, type IGraphService, type PromotionResultDto, HiveOrchestratorFactory, CreateFailedError, DockerUnavailableError, EnvironmentExistsError, EnvironmentNotFoundError, ImageMissingError, PortUnavailableError, InvalidEnvironmentNameError, AdminProxyError, AdminProxyErrorKind, type AdminSnapshot, EnvironmentChangeKind, EnvStatus, EnvType, Template, type EnvironmentChange, type EnvironmentRecord, HiveBackend, InfraMode, EnvironmentNotDevelopmentError, EnvironmentNotRuntimeError, GraphExistsError, GraphNotFoundError } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
@@ -497,7 +498,7 @@ describe('ControlPlaneHost', () =>
         const directory = new PlatformDirectory(new ClientRegistry(join(parent, 'clients.json')), new TenantRegistry(join(parent, 'tenants.json')), new HiveRegistry(join(parent, 'hives.json')), { List: () => [] })
         const factory = new HiveOrchestratorFactory()
         sessions = await HostSessions.With(FakeOperator.Token, FakeOperator.Principal())
-        host = new ControlPlaneHost({ Service: fake, Graphs: fakeGraph, PortalRoot: root, Operator: operator, Sessions: sessions.Sessions, Directory: directory,
+        host = new ControlPlaneHost({ Service: fake, Graphs: fakeGraph, PortalRoot: root, Operator: operator, Sessions: sessions.Sessions, Directory: directory, Entitlements: TestEntitlements.Gate(directory),
             Deployments: await RolloutFixture.Create(parent, directory, factory), Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent) })
         await host.Listen(0, '127.0.0.1')
     })
@@ -970,7 +971,7 @@ describe('ControlPlaneHost operator socket lifecycle', () =>
         service = new FakeService()
         sessions = await HostSessions.With(FakeOperator.Token, FakeOperator.Principal(), false, { Tickets: { TtlMs: TicketTtlMs, Now: () => clock.T } })
         await sessions.Seed(OtherToken, FakeOperator.Principal(OtherPrincipal))
-        host = new ControlPlaneHost({ Service: service, Graphs: new FakeGraphService(), PortalRoot: root, Operator: operator, Sessions: sessions.Sessions, Directory: directory,
+        host = new ControlPlaneHost({ Service: service, Graphs: new FakeGraphService(), PortalRoot: root, Operator: operator, Sessions: sessions.Sessions, Directory: directory, Entitlements: TestEntitlements.Gate(directory),
             Deployments: await RolloutFixture.Create(parent, directory, factory), Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent),
             Sockets: registry, RevalidateIntervalMs: SweepMs })
         await host.Listen(0, '127.0.0.1')
@@ -1078,7 +1079,7 @@ describe('ControlPlaneHost GET /api/fleet', () =>
         mkdirSync(root)
         hives = new HiveRegistry(join(parent, 'hives.json'))
         const directory = new PlatformDirectory(new ClientRegistry(join(parent, 'clients.json')), new TenantRegistry(join(parent, 'tenants.json')), hives, { List: () => [] })
-        await directory.CreateClient({ id: 'c1', displayName: 'Client One' })
+        await directory.RecordClient({ id: 'c1', displayName: 'Client One' })
         await directory.CreateTenant({ id: 't1', clientId: 'c1', displayName: 'Tenant One' })
         const cluster = { backend: HiveBackend.Aks, mode: InfraMode.Attach, configRef: 'secret-config-ref' }
         const registry = { mode: InfraMode.Attach, endpoint: 'reg.example', credentialRef: 'secret-cred-ref' }
@@ -1089,7 +1090,7 @@ describe('ControlPlaneHost GET /api/fleet', () =>
         await observations.RecordSnapshot('h-seen', [{ environmentName: 'prod', ready: true, runningImage: 'img:1', detail: 'ok' }])
         const factory = new HiveOrchestratorFactory()
         const sessions = await HostSessions.With(FakeOperator.Token, FakeOperator.Principal())
-        host = new ControlPlaneHost({ Service: new FakeService(), Graphs: new FakeGraphService(), PortalRoot: root, Operator: new FakeOperator(), Sessions: sessions.Sessions, Directory: directory,
+        host = new ControlPlaneHost({ Service: new FakeService(), Graphs: new FakeGraphService(), PortalRoot: root, Operator: new FakeOperator(), Sessions: sessions.Sessions, Directory: directory, Entitlements: TestEntitlements.Gate(directory),
             Deployments: await RolloutFixture.Create(parent, directory, factory), Provisioning: new FakeProvisioning(directory).AsService(), Observations: observations })
         await host.Listen(0, '127.0.0.1')
     })

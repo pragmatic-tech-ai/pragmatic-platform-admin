@@ -7,7 +7,7 @@ import { ClientRegistry } from '../client-registry.js'
 import { TenantRegistry } from '../tenant-registry.js'
 import { HiveRegistry } from '../hive-registry.js'
 import { HiveBackend, InfraMode, InvalidRecordIdError, type ClusterSpec, type RegistrySpec, EnvStatus, EnvType, Template, type EnvironmentRecord, IngressTlsSource, type HiveConsoleSpec, HivePlacementError, InvalidEmailDomainError } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
-import { PlatformDirectory, RecordExistsError, UnknownClientError, UnknownTenantError, ClientHasTenantsError, TenantHasHivesError, HiveHasEnvironmentsError, InHiveConsoleTakenError, type IEnvironmentLookup } from '../platform-directory.js'
+import { PlatformDirectory, RecordExistsError, UnknownClientError, UnknownTenantError, TenantHasHivesError, HiveHasEnvironmentsError, InHiveConsoleTakenError, type IEnvironmentLookup } from '../platform-directory.js'
 import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { InvalidHiveConsoleError } from '../hive-console-spec.js'
 
@@ -72,7 +72,7 @@ class DirectoryFixture
 
     public async Seed(): Promise<void>
     {
-        await this.directory.CreateClient({ id: 'c1', displayName: 'C1' })
+        await this.directory.RecordClient({ id: 'c1', displayName: 'C1' })
         await this.directory.CreateTenant({ id: 't1', clientId: 'c1', displayName: 'T1' })
         await this.directory.CreateHive({ id: 'h1', tenantId: 't1', displayName: 'H1', cluster: DirectoryFixture.Cluster(), registry: DirectoryFixture.Registry() })
     }
@@ -89,7 +89,7 @@ test('CreateClient then CreateTenant then CreateHive persists the chain', async 
     try
     {
         await f.Seed()
-        await f.directory.CreateClient({ id: 'c2', displayName: 'C2' })
+        await f.directory.RecordClient({ id: 'c2', displayName: 'C2' })
         await f.directory.CreateTenant({ id: 't2', clientId: 'c2', displayName: 'T2' })
         assert.equal(f.directory.GetClient('c1')?.createdAt, DirectoryFixture.Now)
         assert.equal(f.directory.GetTenant('t1')?.clientId, 'c1')
@@ -106,13 +106,16 @@ test('CreateClient then CreateTenant then CreateHive persists the chain', async 
     }
 })
 
-test('CreateClient with an existing id throws RecordExistsError', async () =>
+test('RecordClient upserts the derived record and keeps its creation time', async () =>
 {
     const f = await DirectoryFixture.Create()
     try
     {
-        await f.directory.CreateClient({ id: 'c1', displayName: 'C1' })
-        await assert.rejects(f.directory.CreateClient({ id: 'c1', displayName: 'again' }), RecordExistsError)
+        const first = await f.directory.RecordClient({ id: 'c1', displayName: 'C1' })
+        const again = await f.directory.RecordClient({ id: 'c1', displayName: 'again', entitlementVersion: 2 })
+        assert.equal(again.createdAt, first.createdAt)
+        assert.deepEqual(f.directory.GetClient('c1'), { id: 'c1', displayName: 'again', createdAt: first.createdAt, entitlementVersion: 2 })
+        await assert.rejects(f.directory.RecordClient({ id: '../x', displayName: 'bad' }), InvalidRecordIdError)
     }
     finally
     {
@@ -138,7 +141,7 @@ test('CreateHive refuses an id that is not a lowercase RFC 1123 label (=b, "b ")
     const f = await DirectoryFixture.Create()
     try
     {
-        await f.directory.CreateClient({ id: 'c1', displayName: 'C' })
+        await f.directory.RecordClient({ id: 'c1', displayName: 'C' })
         await f.directory.CreateTenant({ id: 't1', clientId: 'c1', displayName: 'T' })
         for (const id of ['=b', 'b ', 'B'])
         {
@@ -169,21 +172,6 @@ test('CreateHive for a missing tenant throws UnknownTenantError', async () =>
     }
 })
 
-test('DeleteClient with a tenant throws ClientHasTenantsError', async () =>
-{
-    const f = await DirectoryFixture.Create()
-    try
-    {
-        await f.Seed()
-        await assert.rejects(f.directory.DeleteClient('c1'), ClientHasTenantsError)
-        assert.ok(f.directory.GetClient('c1'))
-    }
-    finally
-    {
-        await f.Dispose()
-    }
-})
-
 test('DeleteTenant with a hive throws TenantHasHivesError', async () =>
 {
     const f = await DirectoryFixture.Create()
@@ -193,8 +181,8 @@ test('DeleteTenant with a hive throws TenantHasHivesError', async () =>
         await assert.rejects(f.directory.DeleteTenant('t1'), TenantHasHivesError)
         await f.directory.DeleteHive('h1')
         await f.directory.DeleteTenant('t1')
-        await f.directory.DeleteClient('c1')
-        assert.equal(f.directory.ListClients().length, 0)
+        assert.equal(f.directory.ListTenants().length, 0)
+        assert.ok(f.directory.GetClient('c1'), 'a client is never deleted with its tenants')
     }
     finally
     {
@@ -239,7 +227,7 @@ test('CreateHive validates id and stores only ref names (no secret values)', asy
     const f = await DirectoryFixture.Create()
     try
     {
-        await f.directory.CreateClient({ id: 'c1', displayName: 'C1' })
+        await f.directory.RecordClient({ id: 'c1', displayName: 'C1' })
         await f.directory.CreateTenant({ id: 't1', clientId: 'c1', displayName: 'T1' })
         await assert.rejects(
             f.directory.CreateHive({ id: '../x', tenantId: 't1', displayName: 'H', cluster: DirectoryFixture.Cluster(), registry: DirectoryFixture.Registry() }))
@@ -372,7 +360,7 @@ test('SetHiveConsole refuses a tenant whose effective console host is not a vali
     {
         for (const tenantId of ['Acme_1', 'a'.repeat(64)])
         {
-            await f.directory.CreateClient({ id: 'c' + tenantId.length, displayName: 'C' })
+            await f.directory.RecordClient({ id: 'c' + tenantId.length, displayName: 'C' })
             await f.directory.CreateTenant({ id: tenantId, clientId: 'c' + tenantId.length, displayName: 'T' })
             await f.directory.CreateHive({ id: 'hx' + tenantId.length, tenantId, displayName: 'H', cluster: DirectoryFixture.Cluster(), registry: DirectoryFixture.Registry() })
             await assert.rejects(() => f.directory.SetHiveConsole('hx' + tenantId.length, ConsoleFixture.Spec), InvalidHiveConsoleError)

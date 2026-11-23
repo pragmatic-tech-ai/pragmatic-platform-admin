@@ -48,11 +48,14 @@ import { ReleaseRefresher } from './release/release-refresher.js'
 import type { ReleaseRefreshResult } from './release/release-catalog.js'
 import { ControlPlaneProblems } from './control-plane-problems.js'
 import type { ClientRecord } from './platform-records.js'
+import { EntitledOperation } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
+import { OperatorEntitlementGate, type ClientEntitlementSummary } from './entitlements/operator-entitlement-gate.js'
 
 export type { EnvironmentDto }
 
 /** Platform record DTOs mirror the stored records 1:1. */
-export type ClientDto = ClientRecord
+/** A client as operators read it: the derived record and its statement's summary (absent until a statement arrives). */
+export type ClientDto = ClientRecord & { entitlement?: ClientEntitlementSummary }
 /** The tenant shape exposed over HTTP: public coordinates only. The record's internal IdP refs
  *  (idpBaseUrl, idpCaRef — a host filesystem path — and idpAdminTokenRef) are deliberately omitted. */
 export type TenantDto =
@@ -192,6 +195,9 @@ export interface ControlPlaneHostOptions
     /** The operators who signed in through the realm (the operators view; disabling one ends their sessions). Required
      *  with OperatorSignIn; without it staff sessions never authenticate and the staff roster is empty. */
     StaffOperators?: OperatorDirectory
+    /** The clients' entitlement statements and the decision an operator's tenant or hive create passes (shared with the
+     *  customer API); without it every such create is refused `not-entitled` (deny by default) and clients show none. */
+    Entitlements?: OperatorEntitlementGate
 }
 
 /**
@@ -358,6 +364,7 @@ export class ControlPlaneHost
     private static readonly ClientIdRequiredMessage = 'clientId (non-empty string) is required'
     private static readonly TenantIdRequiredMessage = 'tenantId (non-empty string) is required'
     private static readonly OptionalStringMessage = 'optional reference fields must be strings'
+    private static readonly ExistingClientMessage = 'client must reference an existing client ({ existing: true, id }); the clients ledger owns clients'
     private static readonly ExistingFlagMessage = 'existing must be a boolean when given'
     private static readonly ClusterInvalidMessage = 'cluster must be { backend, mode } with valid values; backend one of: '
     private static readonly RegistryInvalidMessage = 'registry must be { mode, endpoint?, credentialRef? } with a valid mode; mode one of: '
@@ -389,6 +396,7 @@ export class ControlPlaneHost
     private readonly revalidateIntervalMs: number
     private readonly platformImages: IPlatformImages
     private readonly orchestrator: ProvisioningOrchestrator
+    private readonly entitlements: OperatorEntitlementGate
     private changeSubscription: (() => void) | undefined
     private revalidating = false
     private revalidateTimer: ReturnType<typeof setInterval> | undefined
@@ -419,7 +427,8 @@ export class ControlPlaneHost
         this.registry = options.Sockets ?? new OperatorSocketRegistry<WebSocket>()
         this.revalidateIntervalMs = options.RevalidateIntervalMs ?? ControlPlaneHost.RevalidateIntervalMs
         this.platformImages = options.PlatformImages ?? new DevPlatformImages()
-        this.orchestrator = new ProvisioningOrchestrator(options.Directory, options.Provisioning, options.Deployments)
+        this.entitlements = options.Entitlements ?? OperatorEntitlementGate.DenyAll()
+        this.orchestrator = new ProvisioningOrchestrator(options.Directory, options.Provisioning, options.Deployments, this.entitlements)
     }
 
     public async Listen(port: number, host: string): Promise<void>
@@ -535,13 +544,17 @@ export class ControlPlaneHost
         read(C.FleetPath, ctx => ctx.WriteJson(C.StatusOk, this.BuildFleet()))
         write(HttpMethod.Post, C.ProvisionPath, ctx => this.HandleProvision(ctx))
         // Platform records.
+        // Clients are read-only: the clients ledger owns them (operators never type commercial facts into the console).
         for (const resource of Object.values(PlatformResource))
         {
             const collection = C.ResourcePrefix + resource
-            read(collection, ctx => ctx.WriteJson(C.StatusOk, this.ListPlatform(resource)))
-            write(HttpMethod.Post, collection, ctx => this.HandleCreatePlatform(resource, ctx))
+            read(collection, async ctx => ctx.WriteJson(C.StatusOk, await this.ListPlatform(resource)))
             read(collection + C.ItemSuffix, ctx => this.HandleGetPlatform(resource, ctx))
-            write(HttpMethod.Delete, collection + C.ItemSuffix, ctx => this.HandleDeletePlatform(resource, ctx))
+            if (resource !== PlatformResource.Clients)
+            {
+                write(HttpMethod.Post, collection, ctx => this.HandleCreatePlatform(resource, ctx))
+                write(HttpMethod.Delete, collection + C.ItemSuffix, ctx => this.HandleDeletePlatform(resource, ctx))
+            }
         }
         // Tenant rollout, policy, owner and email domains.
         read(C.TenantManifestsPath, ctx => ctx.WriteJson(C.StatusOk, [...this.options.Deployments.AdoptableForTenant(ctx.Param(C.IdParam))]))
@@ -1620,13 +1633,13 @@ export class ControlPlaneHost
 
     // ---- Platform records -----------------------------------------------------------------------------------------------
 
-    private ListPlatform(resource: PlatformResource): readonly (ClientDto | TenantDto | HiveDto)[]
+    private async ListPlatform(resource: PlatformResource): Promise<readonly (ClientDto | TenantDto | HiveDto)[]>
     {
         const directory = this.options.Directory
         switch (resource)
         {
             case PlatformResource.Clients:
-                return directory.ListClients()
+                return await Promise.all(directory.ListClients().map(client => this.ClientDtoOf(client)))
             case PlatformResource.Tenants:
                 return directory.ListTenants().map(t => ControlPlaneHost.ToTenantDto(t))
             default:
@@ -1640,9 +1653,16 @@ export class ControlPlaneHost
         return { id: record.id, clientId: record.clientId, displayName: record.displayName, createdAt: record.createdAt, ownerEmail: record.ownerEmail, ownerPrincipalId: record.ownerPrincipalId }
     }
 
-    private HandleGetPlatform(resource: PlatformResource, ctx: RequestContext): void
+    /** The client record with its statement's summary. */
+    private async ClientDtoOf(client: ClientRecord): Promise<ClientDto>
     {
-        const record = this.GetPlatform(resource, ctx.Param(ControlPlaneHost.IdParam))
+        const summary = await this.entitlements.Summary(client.id)
+        return summary === undefined ? client : { ...client, entitlement: summary }
+    }
+
+    private async HandleGetPlatform(resource: PlatformResource, ctx: RequestContext): Promise<void>
+    {
+        const record = await this.GetPlatform(resource, ctx.Param(ControlPlaneHost.IdParam))
         if (record === undefined)
         {
             ctx.WriteJson(ControlPlaneHost.StatusNotFound, { error: ControlPlaneHost.NotFoundMessage })
@@ -1651,13 +1671,16 @@ export class ControlPlaneHost
         ctx.WriteJson(ControlPlaneHost.StatusOk, record)
     }
 
-    private GetPlatform(resource: PlatformResource, id: string): ClientDto | TenantDto | HiveDto | undefined
+    private async GetPlatform(resource: PlatformResource, id: string): Promise<ClientDto | TenantDto | HiveDto | undefined>
     {
         const directory = this.options.Directory
         switch (resource)
         {
             case PlatformResource.Clients:
-                return directory.GetClient(id)
+            {
+                const client = directory.GetClient(id)
+                return client === undefined ? undefined : await this.ClientDtoOf(client)
+            }
             case PlatformResource.Tenants:
             {
                 const tenant = directory.GetTenant(id)
@@ -1669,7 +1692,7 @@ export class ControlPlaneHost
     }
 
     /**
-     * DELETE /api/(clients|tenants|hives)/ID. A hive is deleted everywhere under the per-hive operation lock
+     * DELETE /api/(tenants|hives)/ID. A hive is deleted everywhere under the per-hive operation lock
      * (`?force=true` deletes anyway; the audit note says so, as the query itself is never audited) and answers what it kept.
      */
     private async HandleDeletePlatform(resource: PlatformResource, ctx: RequestContext): Promise<void>
@@ -1706,15 +1729,12 @@ export class ControlPlaneHost
         ctx.WriteJson(C.StatusOk, { ok: true, ...outcome })
     }
 
-    /** Deletes a client or a tenant. Hives are deleted by DeleteHiveEverywhere, under the per-hive operation lock. */
+    /** Deletes a tenant. Hives are deleted by DeleteHiveEverywhere, under the per-hive operation lock. */
     private async DeletePlatform(resource: PlatformResource, id: string): Promise<void>
     {
         const directory = this.options.Directory
         switch (resource)
         {
-            case PlatformResource.Clients:
-                await directory.DeleteClient(id)
-                break
             case PlatformResource.Tenants:
                 // Fail-closed: the hives guard runs first, then the per-tenant IdP is torn down BEFORE the record is removed,
                 // so a teardown failure leaves the tenant record for retry rather than stranding a live IdP.
@@ -1935,7 +1955,10 @@ export class ControlPlaneHost
         return outcome
     }
 
-    /** POST /api/(clients|tenants|hives): creates a client, provisions a tenant (its Owner password revealed once) or registers a hive. */
+    /**
+     * POST /api/(tenants|hives): provisions a tenant (its Owner password revealed once) or registers a hive, each only when
+     * the client's entitlement allows it (OperatorEntitlementGate: create-tenant, enrol-hive).
+     */
     private async HandleCreatePlatform(resource: PlatformResource, ctx: RequestContext): Promise<void>
     {
         const C = ControlPlaneHost
@@ -1957,17 +1980,8 @@ export class ControlPlaneHost
         const id = body.id as string
         const displayName = body.displayName
         const directory = this.options.Directory
-        let created: ClientDto | TenantDto | HiveDto
-        if (resource === PlatformResource.Clients)
-        {
-            if (!C.OptionalString(body.subscriptionRef))
-            {
-                ctx.WriteJson(C.StatusBadRequest, { error: C.OptionalStringMessage })
-                return
-            }
-            created = await directory.CreateClient({ id, displayName })
-        }
-        else if (resource === PlatformResource.Tenants)
+        let created: TenantDto | HiveDto
+        if (resource === PlatformResource.Tenants)
         {
             if (!C.NonEmpty(body.clientId))
             {
@@ -1984,7 +1998,9 @@ export class ControlPlaneHost
                 ctx.WriteJson(C.StatusBadRequest, { error: C.ReservedIdMessage })
                 return
             }
-            const { record, ownerPassword } = await this.options.Provisioning.Provision({ id, clientId: body.clientId as string, displayName, ownerEmail: body.ownerEmail as string })
+            const clientId = body.clientId as string
+            const { record, ownerPassword } = await this.entitlements.Run(clientId, [EntitledOperation.CreateTenant],
+                () => this.options.Provisioning.Provision({ id, clientId, displayName, ownerEmail: body.ownerEmail as string }))
             // The one-time Owner password is revealed exactly once here; never logged or stored.
             CacheControl.NoStore(ctx.Response)
             // In-hive sign-in seeds no password: the Owner signs in through the tenant's hive, so none is shown.
@@ -2018,14 +2034,11 @@ export class ControlPlaneHost
                 ctx.WriteJson(C.StatusBadRequest, { error: C.OptionalStringMessage })
                 return
             }
-            created = await directory.CreateHive({
-                id,
-                tenantId: body.tenantId as string,
-                displayName,
-                cluster,
-                registry,
-                trustRootRef: body.trustRootRef as string | undefined
-            })
+            const tenantId = body.tenantId as string
+            const create = (): Promise<HiveDto> => directory.CreateHive({ id, tenantId, displayName, cluster, registry, trustRootRef: body.trustRootRef as string | undefined })
+            const tenant = directory.GetTenant(tenantId)
+            // An unknown tenant is the directory's own refusal (404); a known one's client must be entitled to another hive.
+            created = tenant === undefined ? await create() : await this.entitlements.Run(tenant.clientId, [EntitledOperation.EnrolHive], create)
         }
         ctx.WriteJson(C.StatusCreated, created)
     }
@@ -2059,9 +2072,14 @@ export class ControlPlaneHost
             ctx.WriteJson(C.StatusBadRequest, { error: C.ExistingFlagMessage })
             return
         }
-        const existingClient = client.existing === true
+        // The clients ledger owns clients: provisioning takes an existing one only.
+        if (client.existing !== true)
+        {
+            ctx.WriteJson(C.StatusBadRequest, { error: C.ExistingClientMessage })
+            return
+        }
         const existingTenant = tenant.existing === true
-        if ((!existingClient && typeof client.displayName !== 'string') || (!existingTenant && typeof tenant.displayName !== 'string') || typeof hive.displayName !== 'string')
+        if ((!existingTenant && typeof tenant.displayName !== 'string') || typeof hive.displayName !== 'string')
         {
             ctx.WriteJson(C.StatusBadRequest, { error: C.DisplayNameRequiredMessage })
             return
@@ -2088,7 +2106,7 @@ export class ControlPlaneHost
             ctx.WriteJson(C.StatusBadRequest, { error: C.RegistryInvalidMessage + Object.values(InfraMode).join(C.ValueListSeparator) })
             return
         }
-        if (!C.OptionalString(client.subscriptionRef) || !C.OptionalString(hive.trustRootRef))
+        if (!C.OptionalString(hive.trustRootRef))
         {
             ctx.WriteJson(C.StatusBadRequest, { error: C.OptionalStringMessage })
             return
@@ -2096,9 +2114,7 @@ export class ControlPlaneHost
         try
         {
             const result = await this.orchestrator.Provision({
-                client: existingClient
-                    ? { existing: true, id: client.id as string }
-                    : { id: client.id as string, displayName: client.displayName as string },
+                client: { existing: true, id: client.id as string },
                 tenant: existingTenant
                     ? { existing: true, id: tenant.id as string }
                     : { id: tenant.id as string, displayName: tenant.displayName as string, ownerEmail: tenant.ownerEmail as string },

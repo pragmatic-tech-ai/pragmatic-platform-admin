@@ -1,3 +1,4 @@
+import { TestEntitlements } from './test-entitlements.js'
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
@@ -183,7 +184,7 @@ class HostFixture
             new HiveRegistry(join(parent, 'hives.json')),
             { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'acme', displayName: 'Acme' })
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         await directory.CreateTenant({ id: 't1', clientId: 'acme', displayName: 'T' })
         await directory.CreateHive({ id: 'local1', tenantId: 't1', displayName: 'L', cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Provision } })
         return new HostFixture(parent, root, directory, await RolloutFixture.Create(parent, directory, new HiveOrchestratorFactory()))
@@ -194,7 +195,7 @@ class HostFixture
     {
         const sessions = await HostSessions.With(FakeOperator.Token, FakeOperator.Principal)
         const h = new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: this.root, Operator: this.Operator, Sessions: sessions.Sessions,
-            Directory: this.directory, Deployments: this.Deployments, Provisioning: new FakeProvisioning(this.directory).AsService(), Observations: RolloutFixture.Observations(this.parent), Releases: releases })
+            Directory: this.directory, Entitlements: TestEntitlements.Gate(this.directory), Deployments: this.Deployments, Provisioning: new FakeProvisioning(this.directory).AsService(), Observations: RolloutFixture.Observations(this.parent), Releases: releases })
         await h.Listen(0, '127.0.0.1')
         this.host = h
         return h

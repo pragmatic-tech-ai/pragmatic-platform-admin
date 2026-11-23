@@ -1,14 +1,13 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { ApiError } from '../../../api-client.js'
 import { OperatorContext } from '../../../operator-context.js'
-import { PortalNameConfirmDialogViewModel } from '../../../shell/portal-name-confirm-dialog-view-model.js'
 import { PageState } from '../../../shell/portal-page-view-model.js'
 import { FakeControlPlane, PortalTestHost, Tick, type FakeDialogService } from '../../../shell/tests/portal-test-fixtures.js'
 import { ClientDetailPageViewModel } from '../client-detail-page-view-model.js'
 import { ClientsPageViewModel } from '../clients-page-view-model.js'
 import { ClientsSectionService } from '../clients-section-service.js'
-import { NewClientDialogViewModel } from '../new-client-dialog-view-model.js'
+import type { ClientEntitlementDto } from '../../../portal-types.js'
+import { ClientsViewModel } from '../../../clients-view-model.js'
 
 // A Clients section over a fake control plane and fake dialogs.
 class ClientsFixture
@@ -106,205 +105,42 @@ describe('Clients section', () =>
         assert.match(detail.ErrorText, /nobody/)
     })
 
-    it('New opens a NewClientDialogViewModel; confirm creates the client and refreshes the list', async () =>
+    it('ClientsViewModel shows Suspended for a suspended statement, its plan, limits and version, and No statement without one', async () =>
     {
-        const fx = ClientsFixture.Seeded()
+        const api = new FakeControlPlane()
+            .WithClient('acme', 'Acme', ClientsCases.Statement('suspended'))
+            .WithClient('globex', 'Globex', ClientsCases.Statement('active'))
+            .WithClient('initech', 'Initech')
+        const rows = new ClientsViewModel(await api.ListClients(), [], []).Rows
+        assert.deepEqual(rows.map(r => [r.id, r.planLabel, r.stateLabel, r.limitsLabel, r.versionLabel]), [
+            ['acme', 'starter', ClientsViewModel.SuspendedLabel, 'tenants 1, hives 2', 'v3'],
+            ['globex', 'starter', ClientsViewModel.ActiveLabel, 'tenants 1, hives 2', 'v3'],
+            ['initech', ClientsViewModel.NoneLabel, ClientsViewModel.NoStatementLabel, ClientsViewModel.NoneLabel, ClientsViewModel.NoneLabel],
+        ])
+    })
+
+    it('the list and the detail show the statement and offer no create, edit or delete', async () =>
+    {
+        const fx = new ClientsFixture(new FakeControlPlane().WithClient('acme', 'Acme', ClientsCases.Statement('suspended')))
         const list = await fx.List()
-        list.NewCommand.Execute()
-        await Tick.Settle()
-        assert.equal(fx.Dialogs.Shown.length, 1)
-        const dialog = fx.Dialogs.Last
-        assert.ok(dialog instanceof NewClientDialogViewModel)
-        assert.equal(dialog.ConfirmCommand.CanExecute(), false)
-        dialog.Id = 'initech'
-        assert.equal(dialog.ConfirmCommand.CanExecute(), false)
-        dialog.DisplayName = 'Initech'
-        assert.equal(dialog.ConfirmCommand.CanExecute(), true)
-        dialog.ConfirmCommand.Execute()
-        await Tick.Settle()
-        assert.deepEqual(fx.Api.CreatedClients, [['initech', 'Initech', undefined]])
-        assert.equal(fx.Dialogs.IsOpen, false)
-        assert.equal(list.Rows.Count, 3)
-        assert.equal(fx.Host.Host.Content, list)
-    })
-
-    it('a subscription reference is passed through, trimmed', async () =>
-    {
-        const fx = ClientsFixture.Seeded()
-        const list = await fx.List()
-        list.NewCommand.Execute()
-        await Tick.Settle()
-        const dialog = fx.Dialogs.Last as NewClientDialogViewModel
-        dialog.Id = ' initech '
-        dialog.DisplayName = 'Initech'
-        dialog.SubscriptionRef = ' sub-42 '
-        await dialog.Confirm()
-        assert.deepEqual(fx.Api.CreatedClients, [['initech', 'Initech', 'sub-42']])
-    })
-
-    it('a refused create stays in the dialog with the reason', async () =>
-    {
-        const fx = ClientsFixture.Seeded()
-        const list = await fx.List()
-        list.NewCommand.Execute()
-        await Tick.Settle()
-        const dialog = fx.Dialogs.Last as NewClientDialogViewModel
-        dialog.Id = 'acme'
-        dialog.DisplayName = 'Acme again'
-        fx.Api.Failure = new ApiError(409, 'client acme already exists')
-        await dialog.Confirm()
-        assert.equal(fx.Dialogs.IsOpen, true)
-        assert.equal(dialog.ErrorText, 'client acme already exists')
-        assert.equal(dialog.IsBusy, false)
-    })
-
-    it('a 401 from the create expires the session and closes the dialog', async () =>
-    {
-        const fx = ClientsFixture.Seeded()
-        const list = await fx.List()
-        list.NewCommand.Execute()
-        await Tick.Settle()
-        const dialog = fx.Dialogs.Last as NewClientDialogViewModel
-        dialog.Id = 'initech'
-        dialog.DisplayName = 'Initech'
-        fx.Api.Failure = new ApiError(ApiError.UnauthorizedStatus, 'expired')
-        await dialog.Confirm()
-        assert.equal(fx.Host.Reloader.Count, 1)
-        assert.equal(fx.Dialogs.IsOpen, false)
-    })
-
-    it('a create that settles after its dialog was dismissed does not close a newer dialog', async () =>
-    {
-        const fx = ClientsFixture.Seeded()
-        const list = await fx.List()
-        list.NewCommand.Execute()
-        await Tick.Settle()
-        const first = fx.Dialogs.Last as NewClientDialogViewModel
-        first.Id = 'initech'
-        first.DisplayName = 'Initech'
-        fx.Api.HoldCreates()
-        first.ConfirmCommand.Execute()
-        await Tick.Settle()
-        fx.Dialogs.Dismiss()
-        await Tick.Settle()
-        const page = fx.Host.Host.Content as ClientsPageViewModel
-        const second = new NewClientDialogViewModel(fx.Host.Session, fx.Dialogs)
-        void second.Open('Second')
-        fx.Api.Release()
-        await Tick.Settle()
-        assert.deepEqual(fx.Api.CreatedClients, [['initech', 'Initech', undefined]])
-        assert.equal(fx.Dialogs.IsOpen, true)
-        assert.equal(fx.Dialogs.Last, second)
-        assert.equal(page.Rows.Count, 3)
-    })
-
-    it('a create that fails after its dialog was dismissed reports on the page', async () =>
-    {
-        const fx = ClientsFixture.Seeded()
-        const list = await fx.List()
-        list.NewCommand.Execute()
-        await Tick.Settle()
-        const dialog = fx.Dialogs.Last as NewClientDialogViewModel
-        dialog.Id = 'acme'
-        dialog.DisplayName = 'Acme again'
-        fx.Api.HoldCreates()
-        dialog.ConfirmCommand.Execute()
-        await Tick.Settle()
-        fx.Dialogs.Dismiss()
-        fx.Api.Failure = new ApiError(409, 'client acme already exists')
-        fx.Api.Release()
-        await Tick.Settle()
-        assert.equal(list.CommandErrorText, 'client acme already exists')
-        assert.equal(dialog.IsBusy, false)
-    })
-
-    it('with no dialog service, New and Delete report why instead of doing nothing', async () =>
-    {
-        const api = new FakeControlPlane().WithClient('acme', 'Acme')
-        const host = new PortalTestHost(api.AsClient())
-        const section = new ClientsSectionService(host.Provider)
-        section.OnActivated()
-        await Tick.Settle()
-        const list = host.Host.Content as ClientsPageViewModel
-        list.NewCommand.Execute()
-        await Tick.Settle()
-        assert.notEqual(list.CommandErrorText, '')
-        section.OpenClient('acme')
-        await Tick.Settle()
-        const detail = host.Host.Content as ClientDetailPageViewModel
-        detail.DeleteCommand.Execute()
-        await Tick.Settle()
-        assert.notEqual(detail.CommandErrorText, '')
-        assert.deepEqual(api.Deleted, [])
-    })
-
-    it('Cancel closes the dialog without creating anything', async () =>
-    {
-        const fx = ClientsFixture.Seeded()
-        const list = await fx.List()
-        list.NewCommand.Execute()
-        await Tick.Settle()
-        const dialog = fx.Dialogs.Last as NewClientDialogViewModel
-        dialog.CancelCommand.Execute()
-        await Tick.Settle()
-        assert.equal(fx.Dialogs.IsOpen, false)
-        assert.deepEqual(fx.Api.CreatedClients, [])
-    })
-
-    it('Delete asks for the client id; a mismatch keeps confirm disabled; a match deletes and returns to the list', async () =>
-    {
-        const fx = ClientsFixture.Seeded()
-        const detail = await fx.Detail('globex')
-        detail.DeleteCommand.Execute()
-        await Tick.Settle()
-        const confirm = fx.Dialogs.Last
-        assert.ok(confirm instanceof PortalNameConfirmDialogViewModel)
-        assert.equal(confirm.Expected, 'globex')
-        confirm.Typed = 'globe'
-        assert.equal(confirm.IsMatch, false)
-        assert.equal(confirm.ConfirmCommand.CanExecute(), false)
-        confirm.ConfirmCommand.Execute()
-        await Tick.Settle()
-        assert.deepEqual(fx.Api.Deleted, [])
-        confirm.Typed = 'globex'
-        assert.equal(confirm.IsMatch, true)
-        assert.equal(confirm.ConfirmCommand.CanExecute(), true)
-        confirm.ConfirmCommand.Execute()
-        await Tick.Settle()
-        assert.deepEqual(fx.Api.Deleted, ['globex'])
-        const list = fx.Host.Host.Content
-        assert.ok(list instanceof ClientsPageViewModel)
-        assert.equal(fx.Section.Current, list)
-        assert.equal(list.Rows.Count, 1)
-    })
-
-    it('a refused delete stays in the confirm dialog and on the detail', async () =>
-    {
-        const fx = ClientsFixture.Seeded()
+        const row = list.Rows.Get(0)
+        assert.deepEqual([row?.PlanLabel, row?.StateLabel, row?.LimitsLabel, row?.VersionLabel], ['starter', ClientsViewModel.SuspendedLabel, 'tenants 1, hives 2', 'v3'])
+        assert.equal('NewCommand' in list, false)
         const detail = await fx.Detail('acme')
-        detail.DeleteCommand.Execute()
-        await Tick.Settle()
-        const confirm = fx.Dialogs.Last as PortalNameConfirmDialogViewModel
-        confirm.Typed = 'acme'
-        fx.Api.Failure = new ApiError(409, 'client acme still has tenants')
-        await confirm.Confirm()
-        assert.equal(confirm.ErrorText, 'client acme still has tenants')
-        assert.equal(fx.Dialogs.IsOpen, true)
-        assert.equal(fx.Section.Current, detail)
-    })
-
-    it('Observer: New and Delete are disabled, never open a dialog, and the reason is bindable', async () =>
-    {
-        const fx = ClientsFixture.Seeded(OperatorContext.ReadOnlyWireRole)
-        const list = await fx.List()
-        assert.equal(list.CanMutate, false)
-        assert.notEqual(list.DeniedReason, '')
-        assert.equal(list.NewCommand.CanExecute(), false)
-        list.NewCommand.Execute()
-        const detail = await fx.Detail('acme')
-        assert.equal(detail.DeleteCommand.CanExecute(), false)
-        detail.DeleteCommand.Execute()
-        await Tick.Settle()
-        assert.equal(fx.Dialogs.Shown.length, 0)
+        assert.deepEqual([detail.PlanLabel, detail.StateLabel, detail.LimitsLabel, detail.VersionLabel, detail.AdminsLabel],
+            ['starter', ClientsViewModel.SuspendedLabel, 'tenants 1, hives 2', 'v3', 'admin@acme.test'])
+        assert.equal('DeleteCommand' in detail, false)
     })
 })
+
+// Statements for the clients views.
+class ClientsCases
+{
+    public static Statement(state: string): ClientEntitlementDto
+    {
+        return {
+            planId: 'starter', state, limits: { 'tenants': 1, 'hives': 2 }, version: 3, issuedAt: '2026-11-20T10:00:00.000Z',
+            admins: [{ issuer: 'https://login.example.test/realms/central', subject: 'sub-1', email: 'admin@acme.test' }],
+        }
+    }
+}

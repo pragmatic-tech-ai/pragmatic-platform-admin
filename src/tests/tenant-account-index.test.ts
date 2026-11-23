@@ -30,7 +30,7 @@ class IndexFixture
             new HiveRegistry(join(dir, 'hives.json')),
             { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: IndexFixture.ClientId, displayName: 'C' })
+        await directory.RecordClient({ id: IndexFixture.ClientId, displayName: 'C' })
         return directory
     }
 }

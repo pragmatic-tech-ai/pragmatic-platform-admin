@@ -95,7 +95,7 @@ class RbacFixture
     public static readonly BadRequest = 400
     public static readonly TempPrefix = 'cp-rbac-'
     public static readonly Operators = '/api/operators'
-    public static readonly Clients = '/api/clients'
+    public static readonly Tenants = '/api/tenants'
     public static readonly Provision = '/api/provision'
     public static readonly Environments = '/api/environments'
     public static readonly Logout = '/api/logout'
@@ -174,7 +174,7 @@ describe('ControlPlaneHost operator RBAC', () =>
 
     it('403s a ReadOnly operator on mutating routes', async () =>
     {
-        for (const path of [RbacFixture.Clients, RbacFixture.Operators])
+        for (const path of [RbacFixture.Tenants, RbacFixture.Operators])
         {
             const r = await RbacFixture.Send(host, 'POST', path, RoleOperator.ReadToken, RbacFixture.NewBody)
             assert.equal(r.status, RbacFixture.Forbidden, path)

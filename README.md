@@ -36,6 +36,25 @@ Without a link's setting its routes answer 404. The customer API verifies the cu
 The statements land in `records_entitlements` (`entitlements/sql-entitlement-sink.ts`, newest version per client) and
 derive the client records (`entitlements/client-projection.ts`).
 
+The clients ledger owns the clients: operators read them (`GET /api/clients`, `GET /api/clients/<id>`, each with its
+statement's summary: plan, state, limits, version, customer admins; never a price) and can neither create, edit nor
+delete one (those methods answer 405); provisioning takes an existing client. Operators still create tenants and hives,
+and each create passes the same entitlement decision as a customer's (`entitlements/operator-entitlement-gate.ts`:
+`create-tenant`, `enrol-hive`; a client without a statement allows nothing; a refusal is 403 `not-entitled` with its
+`reason`).
+
+The customer API (`customer/platform-customer-api-service.ts`) checks the caller against the client's newest statement
+before every operation (one of its customer admins; a gated operation allowed at the current usage, decided and written
+in one per-client section shared with the operator side, `customer/client-lock.ts`): `create-tenant` and `list-tenants`;
+`start-enrolment` (Standalone: the public install command only; Enrolled and Delegated: the command and a one-time
+enrolment code, `pe1-` plus 26 base32 characters, stored as its SHA-256, valid 30 minutes, `enrolment/`; Hosted: a
+requested placement, `placement/`), `list-hives` (hives with their health from their last report, and open placements as
+pending) and `leave-hive` (the hive is marked gone, its console advert forgotten and its agent registration revoked);
+`start-domain-verification` and `check-domain-verification` (the TXT record
+`_pragmatic-verification.<domain>` = `pragmatic-domain-verification=<token>`; `domain-taken` when another tenant holds
+it). Usage (`customer/client-usage.ts`): tenants; hives not gone plus unexpired codes and open placements; domains
+pending or verified. The install command names the newest verified platform release the tenant's release policy admits.
+
 The co-hosted tenant plane serves its SPA from `PRAGMATIC_TENANT_PORTAL_DIR` when set, else from
 `<repository root>/tenant-portal/dist` (`server.ts`), a folder this repository does not hold (the tenant portal lives in
 `pragmatic-tenant-admin`). The image never shipped it either, so nothing changes there; pragmatic-e2e's dev and

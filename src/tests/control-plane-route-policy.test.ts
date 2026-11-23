@@ -23,7 +23,7 @@ class RoutePolicyFixture
         [HttpMethod.Get, '/api/operators'], [HttpMethod.Post, '/api/operators'], [HttpMethod.Post, '/api/operators/role'],
         [HttpMethod.Post, '/api/operators/password-reset'], [HttpMethod.Post, '/api/operators/disabled'], [HttpMethod.Post, '/api/operators/revoke-sessions'],
         [HttpMethod.Post, '/api/provision'], [HttpMethod.Post, '/api/releases/refresh'], [HttpMethod.Post, '/api/manifests/1.0.0/withdrawn'],
-        [HttpMethod.Delete, '/api/manifests/1.0.0/withdrawn'], [HttpMethod.Post, '/api/clients'], [HttpMethod.Delete, '/api/clients/c1'],
+        [HttpMethod.Delete, '/api/manifests/1.0.0/withdrawn'],
         [HttpMethod.Post, '/api/tenants'], [HttpMethod.Delete, '/api/tenants/t1'], [HttpMethod.Post, '/api/hives'], [HttpMethod.Delete, '/api/hives/h1'],
         [HttpMethod.Post, '/api/tenants/t1/gating'], [HttpMethod.Delete, '/api/tenants/t1/gating/1.0.0'], [HttpMethod.Post, '/api/tenants/t1/owner-password'],
         [HttpMethod.Put, '/api/tenants/t1/email-domains'], [HttpMethod.Post, '/api/tenants/t1/email-domains/approve'],

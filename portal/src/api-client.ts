@@ -118,21 +118,6 @@ export class ControlPlaneClient extends AppSessionClient
         return await this.Get<ClientDto[]>(ControlPlaneClient.ClientsRoute)
     }
 
-    public async CreateClient(id: string, displayName: string, subscriptionRef?: string): Promise<ClientDto>
-    {
-        const body: Record<string, unknown> = { id, displayName }
-        if (subscriptionRef !== undefined)
-        {
-            body.subscriptionRef = subscriptionRef
-        }
-        return await this.Post<ClientDto>(ControlPlaneClient.ClientsRoute, body)
-    }
-
-    public async DeleteClient(id: string): Promise<void>
-    {
-        await this.Delete<unknown>(this.ItemRoute(ControlPlaneClient.ClientsRoute, id))
-    }
-
     // No server-side parent filter exists; filters the full list by clientId when given.
     public async ListTenants(clientId?: string): Promise<TenantDto[]>
     {

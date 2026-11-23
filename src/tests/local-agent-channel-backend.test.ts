@@ -32,7 +32,7 @@ describe('LocalAgentChannelBackend', () =>
         const directory = new PlatformDirectory(new ClientRegistry(join(parent, 'clients.json')), new TenantRegistry(join(parent, 'tenants.json')),
             new HiveRegistry(join(parent, 'hives.json')), { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'acme', displayName: 'Acme' })
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         await directory.CreateTenant({ id: 't1', clientId: 'acme', displayName: 'T' })
         await directory.CreateHive({ id: BackendFixture.HiveId, tenantId: 't1', displayName: 'L', cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Provision } })
         deployments = await RolloutFixture.Create(parent, directory, new HiveOrchestratorFactory())

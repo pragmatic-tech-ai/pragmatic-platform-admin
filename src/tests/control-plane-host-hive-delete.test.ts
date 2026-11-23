@@ -1,3 +1,4 @@
+import { TestEntitlements } from './test-entitlements.js'
 import { strict as assert } from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { request } from 'node:http'
@@ -199,7 +200,7 @@ describe('ControlPlaneHost hive delete uninstalls the agent', () =>
 
     const Make = (uninstaller: HiveAgentUninstaller | undefined): ControlPlaneHost =>
         new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: sessions.Sessions,
-            Directory: directory, Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent),
+            Directory: directory, Entitlements: TestEntitlements.Gate(directory), Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: RolloutFixture.Observations(parent),
             Audit: audit, AgentChannelUrl: 'http://host.docker.internal:7001', AgentUninstaller: uninstaller })
 
     beforeEach(async () =>
@@ -214,7 +215,7 @@ describe('ControlPlaneHost hive delete uninstalls the agent', () =>
             new HiveRegistry(join(parent, 'hives.json')),
             { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'acme', displayName: 'Acme' })
+        await directory.RecordClient({ id: 'acme', displayName: 'Acme' })
         const hives: Array<[string, HiveBackend, InfraMode]> = [
             ['local1', HiveBackend.Local, InfraMode.Attach], ['kind1', HiveBackend.Local, InfraMode.Provision], ['aks1', HiveBackend.Aks, InfraMode.Attach],
         ]

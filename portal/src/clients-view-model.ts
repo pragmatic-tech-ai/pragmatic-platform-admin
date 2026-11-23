@@ -1,22 +1,35 @@
 import { Observable } from '@pragmatic-tech-ai/todl-runtime'
-import type { ClientDto, FleetHiveDto, TenantDto } from './portal-types.js'
+import type { ClientDto, ClientEntitlementDto, FleetHiveDto, TenantDto } from './portal-types.js'
 import { FleetConnection, FleetViewModel } from './fleet-view-model.js'
 
 export interface ClientListRow
 {
     id: string
     displayName: string
-    subscriptionRef: string | undefined
+    planLabel: string
+    stateLabel: string
+    limitsLabel: string
+    versionLabel: string
     createdAt: string
     tenantCount: number
     hiveCount: number
     connectionSummary: string
 }
 
-// Client-list roll-up: per-client tenant/hive counts and a connection summary.
+// Client-list roll-up: what the clients ledger's statement says (plan, state, limits, version; never a price), and
+// per-client tenant/hive counts and a connection summary.
 export class ClientsViewModel extends Observable
 {
     public static readonly RowsProperty = 'Rows'
+    public static readonly NoneLabel = '-'
+    public static readonly NoStatementLabel = 'No statement'
+    public static readonly ActiveLabel = 'Active'
+    public static readonly SuspendedLabel = 'Suspended'
+    private static readonly ActiveState = 'active'
+    private static readonly SuspendedState = 'suspended'
+    private static readonly LimitSeparator = ', '
+    private static readonly LimitNameSeparator = ' '
+    private static readonly VersionPrefix = 'v'
 
     private static readonly NoHivesLabel = 'No hives'
     private static readonly SummarySeparator = ', '
@@ -72,12 +85,38 @@ export class ClientsViewModel extends Observable
         return {
             id: c.id,
             displayName: c.displayName,
-            subscriptionRef: c.subscriptionRef,
+            planLabel: c.entitlement?.planId ?? ClientsViewModel.NoneLabel,
+            stateLabel: ClientsViewModel.StateLabel(c.entitlement),
+            limitsLabel: ClientsViewModel.LimitsLabel(c.entitlement),
+            versionLabel: c.entitlement === undefined ? ClientsViewModel.NoneLabel : ClientsViewModel.VersionPrefix + String(c.entitlement.version),
             createdAt: c.createdAt,
             tenantCount: tenants.filter(t => t.clientId === c.id).length,
             hiveCount: hives.length,
             connectionSummary: ClientsViewModel.Summarize(hives.map(h => connections.get(h.id))),
         }
+    }
+
+    /** Active or Suspended; a client the console holds no statement for allows nothing. */
+    public static StateLabel(entitlement: ClientEntitlementDto | undefined): string
+    {
+        const C = ClientsViewModel
+        if (entitlement === undefined)
+        {
+            return C.NoStatementLabel
+        }
+        if (entitlement.state === C.ActiveState)
+        {
+            return C.ActiveLabel
+        }
+        return entitlement.state === C.SuspendedState ? C.SuspendedLabel : entitlement.state
+    }
+
+    /** `tenants 1, hives 3`: the plan's named limits (an absent limit allows nothing). */
+    public static LimitsLabel(entitlement: ClientEntitlementDto | undefined): string
+    {
+        const C = ClientsViewModel
+        const entries = Object.entries(entitlement?.limits ?? {})
+        return entries.length === 0 ? C.NoneLabel : entries.map(([name, value]) => name + C.LimitNameSeparator + String(value)).join(C.LimitSeparator)
     }
 
     private static Summarize(states: (FleetConnection | undefined)[]): string

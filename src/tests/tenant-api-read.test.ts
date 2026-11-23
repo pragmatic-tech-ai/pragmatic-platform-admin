@@ -139,8 +139,8 @@ describe('TenantApiEndpoint read routes', () =>
             hives,
             { List: () => [] })
         await directory.Load()
-        await directory.CreateClient({ id: 'acme-a', displayName: 'Acme A' })
-        await directory.CreateClient({ id: 'acme-b', displayName: 'Acme B' })
+        await directory.RecordClient({ id: 'acme-a', displayName: 'Acme A' })
+        await directory.RecordClient({ id: 'acme-b', displayName: 'Acme B' })
         await directory.CreateTenant({ id: TenantA, clientId: 'acme-a', displayName: 'Tenant A' })
         await directory.CreateTenant({ id: TenantB, clientId: 'acme-b', displayName: 'Tenant B' })
         await directory.CreateHive({ id: 'hive-a', tenantId: TenantA, displayName: 'Hive A', cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach, configRef: 'ctx-a' }, registry: { mode: InfraMode.Attach, endpoint: 'registry.example.com', credentialRef: 'cred-ref-a' }, trustRootRef: 'trust-ref-a' })
