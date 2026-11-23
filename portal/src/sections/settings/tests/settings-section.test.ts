@@ -113,6 +113,25 @@ describe('Settings section', () =>
         assert.equal(row.ToggleCommand.CanExecute(), false)
     })
 
+    it('a staff toggle is refused while another mutation runs, and its button follows the page lock', async () =>
+    {
+        const fx = new SettingsFixture()
+        fx.Api.StaffOperators = [{ principal: SettingsFixture.StaffPrincipal, email: 's@example.test', method: 'staff', role: 'operator.full', firstSignInAt: '2026-11-23T10:00:00.000Z', lastSignInAt: '2026-11-23T10:00:00.000Z', disabled: false }]
+        const page = await fx.Page()
+        const row = page.StaffOperators.ToArray()[0]!
+        let changes = 0
+        row.ToggleCommand.AddCanExecuteChangedListener(() => { changes++ })
+        fx.Api.HoldStaffToggle = true
+        row.ToggleCommand.Execute()
+        await Tick.Settle()
+        assert.equal(row.ToggleCommand.CanExecute(), false, 'greyed while its own toggle runs')
+        assert.ok(changes > 0)
+        row.ToggleCommand.Execute()
+        fx.Api.ReleaseStaffToggle()
+        await Tick.Settle()
+        assert.equal(fx.Api.OperatorCalls.filter(c => c.startsWith('SetStaffOperatorDisabled')).length, 1)
+    })
+
     it('Observer: the staff toggle is disabled', async () =>
     {
         const fx = new SettingsFixture(OperatorContext.ReadOnlyWireRole)

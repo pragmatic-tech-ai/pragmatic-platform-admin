@@ -269,7 +269,7 @@ export class OperatorSessions
     public readonly LoginThrottle: LoginThrottle
     /** The host's denial limiter over the same (persistent) throttle repository. */
     public readonly Denials: RateLimiter
-    /** Limits staff sign-in begins per client address, over the same repository. */
+    /** Limits staff sign-in begins per client address (callbacks are not counted), over the same repository. */
     public readonly StaffBegins: RateLimiter
     /** Whether the console's cookies are Secure (the session cookie and the staff sign-in's flow binding). */
     public readonly SecureCookie: boolean

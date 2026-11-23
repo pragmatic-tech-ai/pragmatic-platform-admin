@@ -226,29 +226,14 @@ export abstract class PortalPageViewModel extends Observable
     // after Escape keeps every mutating command of the page disabled until it
     // settles, so a second action can never overtake (and drop) the first's
     // one-time result.
-    protected MutatingCommand(run: () => Promise<void>, enabled?: () => boolean): RelayCommand
+    protected MutatingCommand(run: (parameter?: unknown) => Promise<void>, enabled?: () => boolean): RelayCommand
     {
         const can = (): boolean => this.Session.CanMutate && !this.mutating && (enabled === undefined || enabled())
-        const command = new RelayCommand(() =>
+        const command = new RelayCommand(parameter =>
         {
             if (can())
             {
-                void this.RunMutating(run)
-            }
-        }, can)
-        this.mutatingCommands.push(command)
-        return command
-    }
-
-    // A mutating command whose body takes the command parameter (a table row's command forwards itself): the same
-    // lock, Guard and enablement as MutatingCommand.
-    protected MutatingRowCommand(run: (row: unknown) => Promise<void>): RelayCommand
-    {
-        const can = (): boolean => this.Session.CanMutate && !this.mutating
-        const command = new RelayCommand(row => {
-            if (can())
-            {
-                void this.RunMutating(() => run(row))
+                void this.RunMutating(() => run(parameter))
             }
         }, can)
         this.mutatingCommands.push(command)

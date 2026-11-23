@@ -64,7 +64,8 @@ export class SettingsPageViewModel extends PortalPageViewModel
         super(session)
         this.inviteCommand = this.MutatingCommand(() => this.Invite())
         this.openCommand = new RelayCommand(row => this.Open(row))
-        this.toggleStaffCommand = this.MutatingRowCommand(row => this.ToggleStaff(row))
+        // A row's command forwards itself as the parameter.
+        this.toggleStaffCommand = this.MutatingCommand(row => this.ToggleStaff(row))
     }
 
     // The operators who signed in through the Pragmatic staff realm (their roles come from the realm; Disable here
@@ -145,6 +146,10 @@ export class SettingsPageViewModel extends PortalPageViewModel
             this.operators.Add(new OperatorRowViewModel(row, this.openCommand))
         }
         const hadStaff = this.HasStaffOperators
+        for (const row of this.staffOperators.ToArray())
+        {
+            row.dispose()
+        }
         this.staffOperators.Clear()
         for (const record of staff)
         {

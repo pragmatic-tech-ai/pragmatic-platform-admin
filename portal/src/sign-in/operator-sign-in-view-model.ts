@@ -19,6 +19,7 @@ export interface IStaffSignInClient
 export enum SignInMarker
 {
     Forbidden = 'forbidden',
+    Throttled = 'throttled',
 }
 
 /**
@@ -44,6 +45,7 @@ export class OperatorSignInViewModel extends Observable
     /** The 403 page's text: it names the missing operator role and nothing the realm said. */
     public static readonly ForbiddenText = 'Signed in, but your account has no operator role for this console.'
     public static readonly FailedText = "Staff sign-in didn't complete."
+    public static readonly ThrottledText = 'Too many sign-in attempts from here. Wait a minute, then sign in again.'
     private static readonly NoText = ''
 
     private staffSignInOffered = false
@@ -157,9 +159,14 @@ export class OperatorSignInViewModel extends Observable
             this.ShowSignInFailed()
             return
         }
-        if (new URLSearchParams(search).get(AppShellConfig.SignInFailedParam) === SignInMarker.Forbidden)
+        switch (new URLSearchParams(search).get(AppShellConfig.SignInFailedParam))
         {
-            this.SetNotice(OperatorSignInViewModel.ForbiddenText)
+            case SignInMarker.Forbidden:
+                this.SetNotice(OperatorSignInViewModel.ForbiddenText)
+                return
+            case SignInMarker.Throttled:
+                this.SetNotice(OperatorSignInViewModel.ThrottledText)
+                return
         }
     }
 

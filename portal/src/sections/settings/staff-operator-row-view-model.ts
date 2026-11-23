@@ -16,11 +16,21 @@ export class StaffOperatorRowViewModel extends Observable
     private static readonly EnableText = 'Enable'
 
     private readonly toggleCommand: RelayCommand
+    private readonly forwardCanExecute: () => void
 
-    public constructor(public readonly Record: StaffOperatorDto, toggle: RelayCommand, private readonly isSelf: boolean)
+    public constructor(public readonly Record: StaffOperatorDto, private readonly toggle: RelayCommand, private readonly isSelf: boolean)
     {
         super()
         this.toggleCommand = new RelayCommand(() => toggle.Execute(this), () => !isSelf && toggle.CanExecute(this))
+        // The page's lock (another mutation running) greys the row's button too.
+        this.forwardCanExecute = () => this.toggleCommand.RaiseCanExecuteChanged()
+        toggle.AddCanExecuteChangedListener(this.forwardCanExecute)
+    }
+
+    // Stops following the page command (the page drops its rows on every reload).
+    public dispose(): void
+    {
+        this.toggle.RemoveCanExecuteChangedListener(this.forwardCanExecute)
     }
 
     // The signed-in operator's own row: no Disable.

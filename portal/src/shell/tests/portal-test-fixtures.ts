@@ -226,6 +226,9 @@ export class FakeControlPlane
     public Activity: ActivityDto[] = []
     public Operators: OperatorSummaryDto[] = []
     public StaffOperators: StaffOperatorDto[] = []
+    // Holds SetStaffOperatorDisabled until ReleaseStaffToggle (a mutation still in flight).
+    public HoldStaffToggle = false
+    private releaseStaffToggle: (() => void) | undefined
     public Selections: SelectionDto[] = []
     /** Undefined: the control plane runs no tenant IdP (in-hive sign-in), so a create returns no Owner password. */
     public OwnerPassword: string | undefined = 'fixture-owner-password'
@@ -518,9 +521,18 @@ export class FakeControlPlane
         return this.StaffOperators.map(o => ({ ...o }))
     }
 
+    public ReleaseStaffToggle(): void
+    {
+        this.releaseStaffToggle?.()
+    }
+
     public async SetStaffOperatorDisabled(principal: string, disabled: boolean): Promise<void>
     {
         this.OperatorCalls.push('SetStaffOperatorDisabled ' + principal + ' ' + String(disabled))
+        if (this.HoldStaffToggle)
+        {
+            await new Promise<void>(resolve => { this.releaseStaffToggle = resolve })
+        }
         const record = this.StaffOperators.find(o => o.principal === principal)
         if (record !== undefined)
         {

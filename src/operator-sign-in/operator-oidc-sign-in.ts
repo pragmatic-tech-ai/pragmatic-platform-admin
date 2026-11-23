@@ -51,7 +51,7 @@ export class OperatorSignInBegun
  * The platform admin console as an OIDC relying party of its operators' realm (the Pragmatic tenant's staff realm):
  * `GET /auth/oidc/begin` sends the browser to the realm (authorization code flow with state, nonce and PKCE, the flow
  * state in the console's database, the state's digest in a browser-binding cookie; begins are rate-limited per client
- * address), `GET /auth/oidc/callback` completes it. The realm issues this application's roles (`app_roles` for
+ * address, over the limit to `/?sign_in=throttled`), `GET /auth/oidc/callback` completes it. The realm issues this application's roles (`app_roles` for
  * `pragmatic-platform-admin`); only `operator.full` and `operator.read-only` count, other applications' roles are
  * dropped by the relying party. With an operator role (and not disabled in the operator directory) the operator gets a
  * session in the console's session store, as principal `oidc:<issuer>#<sub>` with the realm's email and the one
@@ -68,6 +68,7 @@ export class OperatorOidcSignIn
     public static readonly SignInParam = 'sign_in'
     public static readonly FailedMarker = 'failed'
     public static readonly ForbiddenMarker = 'forbidden'
+    public static readonly ThrottledMarker = 'throttled'
     private static readonly AfterSignInPath = '/'
     private static readonly SignInPagePath = '/?'
     private static readonly CodeParam = 'code'
@@ -169,7 +170,7 @@ export class OperatorOidcSignIn
                 return OperatorSignInResult.Refused(OperatorSignInOutcome.Disabled)
             }
             await this.directory.RecordSignIn(principal, email, role, this.now())
-            // Audited first: a failed audit write leaves no session behind.
+            // The trail never throws (a failed write is logged by class), so the entry cannot cost the session.
             await this.Audit(email, O.StatusOk, OperatorSignInMethod.Staff)
             const issued = await this.sessions.Store.Issue(principal, OperatorRoleClaims.OfStaff(email, role))
             return OperatorSignInResult.SignedIn(issued.Token, issued.Session.ExpiresAt)
@@ -208,10 +209,6 @@ export class OperatorOidcSignIn
     {
         const O = OperatorOidcSignIn
         CacheControl.NoStore(ctx.Response)
-        if (!(await this.Admitted(ctx)))
-        {
-            return
-        }
         const code = ctx.Query.get(O.CodeParam) ?? O.NoText
         const state = ctx.Query.get(O.StateParam) ?? O.NoText
         const bound = state.length > 0 && this.binding.Matches(ctx.Request, state)
@@ -236,8 +233,9 @@ export class OperatorOidcSignIn
         this.Redirect(ctx, location)
     }
 
-    /** Both routes count against the per-address limit; over it the browser lands on the failed sign-in page (a
-     *  navigation, so no bare JSON), with Retry-After. */
+    /** Begins count against the per-address limit (each writes a flow state); over it the browser lands on the sign-in
+     *  page's throttled state (a navigation, so no bare JSON). The callback is not counted: a bound one paid at its
+     *  begin, an unbound one fails before any work. */
     private async Admitted(ctx: RequestContext): Promise<boolean>
     {
         const O = OperatorOidcSignIn
@@ -247,7 +245,7 @@ export class OperatorOidcSignIn
             return true
         }
         ctx.Response.setHeader(O.RetryAfterHeader, String(Math.ceil(decision.RetryAfterMs / O.MsPerSecond)))
-        this.Redirect(ctx, O.SignInPageWith(O.FailedMarker))
+        this.Redirect(ctx, O.SignInPageWith(O.ThrottledMarker))
         return false
     }
 

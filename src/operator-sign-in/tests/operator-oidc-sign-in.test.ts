@@ -118,6 +118,7 @@ class StaffSignInFixture
     public static readonly SignedInLocation = '/'
     public static readonly ForbiddenLocation = '/?sign_in=forbidden'
     public static readonly FailedLocation = '/?sign_in=failed'
+    public static readonly ThrottledLocation = '/?sign_in=throttled'
     public static readonly SessionCookie = 'cp_session='
     public static readonly FlowCookie = 'cp_oidc_flow='
     public static readonly UnknownDiscovery = 'https://unreachable.realm.test/.well-known/openid-configuration'
@@ -474,7 +475,7 @@ describe('operator staff sign-in (OIDC) against the realm', () =>
         assert.equal(fixture.Logged[0]?.includes(F.Code), false)
     })
 
-    it('begins and callbacks are rate-limited per client address; over the limit the browser lands on the failed page', async () =>
+    it('begins are rate-limited per client address (over the limit: the throttled page); callbacks are not', async () =>
     {
         // 20 a minute: the 21st is refused.
         for (let i = 0; i < 20; i++)
@@ -483,9 +484,25 @@ describe('operator staff sign-in (OIDC) against the realm', () =>
         }
         const refused = await fixture.Send(F.Get, F.Begin)
         assert.equal(refused.status, 302)
-        assert.equal(refused.location, F.FailedLocation)
+        assert.equal(refused.location, F.ThrottledLocation)
         assert.equal(F.CookieValue(refused, F.FlowCookie), undefined)
-        assert.equal((await fixture.Callback('any', 'any')).location, F.FailedLocation)
+        // A flow begun before the limit still completes: the callback is never throttled.
+        const fresh = await StaffSignInFixture.Start(RealmMode.On)
+        try
+        {
+            const begun = await fresh.Send(F.Get, F.Begin)
+            for (let i = 0; i < 20; i++)
+            {
+                await fresh.Send(F.Get, F.Begin)
+            }
+            const authorize = new URL(begun.location as string)
+            await fresh.Answer(authorize.searchParams.get('nonce') as string, F.AppRoles(app, OperatorRoleClaims.Full))
+            assert.equal((await fresh.Callback(authorize.searchParams.get('state') as string, F.CookieValue(begun, F.FlowCookie))).location, F.SignedInLocation)
+        }
+        finally
+        {
+            await fresh.Stop()
+        }
     })
 
     it('a role the realm took away and gave back never revives the old session', async () =>
@@ -515,6 +532,8 @@ describe('operator staff sign-in (OIDC) against the realm', () =>
             assert.equal(reply.status, 403, path)
             assert.match(reply.text, /break-glass/)
         }
+        const create = await fixture.Send(F.Post, F.Operators, staff, JSON.stringify({ email: 'new@pragmatic.test', password: 'a-long-password-1', role: 'full' }))
+        assert.equal(create.status, 403, 'a valid create body')
         const glass = F.TokenOf(await fixture.BreakGlass())
         assert.equal((await fixture.Send(F.Post, F.Operators + '/revoke-sessions', glass, JSON.stringify({ email: 'someone@pragmatic.test' }))).status, 200)
     })

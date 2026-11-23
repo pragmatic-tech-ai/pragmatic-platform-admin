@@ -154,6 +154,13 @@ describe('OperatorSignInViewModel', () =>
         assert.equal(f.Page.ShowsNoticeAbovePassword, false, 'with staff sign-in the notice sits in the staff card')
     })
 
+    it('a throttled staff sign-in says to wait', async () =>
+    {
+        const f = new SignInFixture(true)
+        f.Page.ApplyMarker('?sign_in=throttled')
+        assert.equal(f.Page.NoticeText, OperatorSignInViewModel.ThrottledText)
+    })
+
     it('a failed staff sign-in says so, and signing in again clears the notice', async () =>
     {
         const f = new SignInFixture(true)
@@ -188,6 +195,19 @@ describe('SessionMethodsClient', () =>
         assert.equal(calls[0]?.url, SessionMethodsClient.MethodsPath)
         assert.equal(calls[0]?.init.method, 'GET')
         assert.equal(calls[0]?.init.credentials, 'same-origin')
+    })
+
+    it('gives up after its timeout (the request carries an abort signal)', async () =>
+    {
+        let signal: AbortSignal | undefined
+        const client = new SessionMethodsClient(async (_url, init) => {
+            signal = init.signal ?? undefined
+            return await new Promise<Response>((_resolve, reject) => { init.signal?.addEventListener('abort', () => reject(new Error('aborted'))) })
+        })
+        const pending = client.StaffSignInOffered()
+        assert.ok(signal !== undefined)
+        await assert.rejects(pending)
+        assert.equal(signal.aborted, true)
     })
 
     it('reads anything but staff true as no staff sign-in, and rejects on an HTTP error', async () =>

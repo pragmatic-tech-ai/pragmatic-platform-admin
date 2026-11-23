@@ -1,6 +1,8 @@
+import type { IDisposable } from '@pragmatic-tech-ai/todl-runtime'
+
 // Calls `resume` whenever the browser shows the page again (`pageshow`, including a return through the back/forward
 // cache) until disposed.
-export class PageShowListener
+export class PageShowListener implements IDisposable
 {
     private static readonly PageShowEvent = 'pageshow'
 
