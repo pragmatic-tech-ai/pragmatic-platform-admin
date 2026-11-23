@@ -10,8 +10,11 @@ import { Components } from '../src/release-components.js'
 class DescriptorGoldenFixture
 {
     public static readonly RepoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-    /** pragmatic-server's pin (src/component and admin/control-plane/descriptors/digests.json at the seed commit). */
-    public static readonly Digest = 'sha256:bc19deb009e41d7d5dc0b19547410345dc451d11e800499f74ae9f507461898f'
+    /**
+     * pragmatic-server's pin (src/component and admin/control-plane/descriptors/digests.json at the seed commit,
+     * `sha256:bc19deb0…`), re-pinned at 0.1.1, where only the version field changed. Every release re-pins it.
+     */
+    public static readonly Digest = 'sha256:0a71493f54c0f31867ab4dc7079fea4bca3b3d4b415819a9e65bf71385fa20a0'
     public static readonly Golden = join(DescriptorGoldenFixture.RepoRoot, 'src', 'tests', 'fixtures', 'pragmatic-platform-admin.component.json')
     public static readonly PackageJson = join(DescriptorGoldenFixture.RepoRoot, 'package.json')
     public static readonly Utf8 = 'utf8'
@@ -19,7 +22,7 @@ class DescriptorGoldenFixture
 
 describe('descriptor golden', () =>
 {
-    it('the descriptor this repository emits has exactly the pragmatic-server golden digest', () =>
+    it('the descriptor this repository emits has exactly the golden digest (the pragmatic-server pin, re-pinned per version)', () =>
     {
         const F = DescriptorGoldenFixture
         const descriptor = Components.Of(ReleaseApp.PlatformAdmin)

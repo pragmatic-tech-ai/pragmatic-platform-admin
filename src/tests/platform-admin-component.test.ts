@@ -11,7 +11,8 @@ class PlatformAdminComponentFixture
 {
     public static readonly Here = dirname(fileURLToPath(import.meta.url))
     public static readonly Golden = join(PlatformAdminComponentFixture.Here, 'fixtures', 'pragmatic-platform-admin.component.json')
-    public static readonly Digest = 'sha256:bc19deb009e41d7d5dc0b19547410345dc451d11e800499f74ae9f507461898f'
+    /** The golden descriptor digest at 0.1.1 (the pragmatic-server pin `sha256:bc19deb0…` with only the version changed). */
+    public static readonly Digest = 'sha256:0a71493f54c0f31867ab4dc7079fea4bca3b3d4b415819a9e65bf71385fa20a0'
     public static readonly Readers = [['..', 'server.ts'], ['..', 'key-stores.ts'], ['..', 'infra-target-mode.ts'], ['..', 'hosted-kubeconfig.ts'], ['..', 'release', 'release-catalog-config.ts'], ['..', 'platform-admin-database.ts']].map(path => join(PlatformAdminComponentFixture.Here, ...path))
         .concat([join(dirname(fileURLToPath(import.meta.resolve('@pragmatic-tech-ai/pragmatic-platform-link'))), 'internal-api-link.js')])
     /**
