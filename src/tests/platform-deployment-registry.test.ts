@@ -1176,3 +1176,21 @@ test('hive policy: the tenant offered list ignores hive policies', async () =>
         assert.deepEqual(EnforceFx.Ids(reg.AdoptableForTenant(Fx.TenantA)), [Fx.V1, Fx.V2])
     })
 })
+
+test('InstallReleaseFor: the newest verified release the tenant policy admits, gating not asked', async () =>
+{
+    await Fx.Run(async reg =>
+    {
+        assert.equal(reg.InstallReleaseFor(Fx.TenantA), undefined)
+        await reg.Publish(Fx.V3, Fx.Image(Fx.V3))
+        await reg.ImportRelease(ReleaseFx.Rejected('9.0.0'))
+        await reg.ImportRelease(ReleaseFx.Verified(Fx.V1))
+        await reg.ImportRelease(ReleaseFx.Verified(Fx.V2))
+        assert.equal(reg.InstallReleaseFor(Fx.TenantA), Fx.V2)
+        await reg.SetWithdrawn(Fx.V2, true, ReleaseFx.WithdrawReason, ReleaseFx.Actor)
+        assert.equal(reg.InstallReleaseFor(Fx.TenantA), Fx.V1)
+        await reg.SetHold(Fx.TenantA, ReleaseFx.WithdrawReason, ReleaseFx.Actor)
+        assert.equal(reg.InstallReleaseFor(Fx.TenantA), undefined)
+        assert.equal(reg.InstallReleaseFor(Fx.TenantB), Fx.V1)
+    })
+})

@@ -330,6 +330,27 @@ export class PlatformDeploymentRegistry
         {
             return 'not-gated'
         }
+        return this.PolicyBlockFor(tenantId, hiveId, manifest)
+    }
+
+    /**
+     * The platform release a customer installs the engine at for the tenant: the newest verified release of the catalogue
+     * that the tenant's release policy admits (not withdrawn, no hold, an allowed channel, at or above the floor). Gating is
+     * not asked: it governs what the platform rolls a hive to, while this only names the chart version the customer starts
+     * from. Undefined while the catalogue holds no such release.
+     */
+    public InstallReleaseFor(tenantId: string): string | undefined
+    {
+        const admitted = this.manifests.List()
+            .filter(m => m.release?.state === ReleaseState.Verified && this.PolicyBlockFor(tenantId, undefined, m) === undefined)
+            .map(m => m.id)
+            .sort((a, b) => VersionOrder.Compare(a, b))
+        return admitted.at(-1)
+    }
+
+    /** The release-policy rules alone (withdrawn, hold, channels, floor), in that order. */
+    private PolicyBlockFor(tenantId: string, hiveId: string | undefined, manifest: ManifestRecord): PolicyBlock | undefined
+    {
         if (manifest.withdrawn === true)
         {
             return 'withdrawn'

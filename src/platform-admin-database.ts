@@ -32,6 +32,8 @@ export enum PlatformAdminRegistry
     Signatures = 'signatures',
     /** The operators who signed in through the realm (OperatorDirectory): never imported, the JSON data root had none. */
     OperatorDirectory = 'operator_directory',
+    EnrolmentCodes = 'enrolment_codes',
+    Placements = 'placements',
     /** The ledger's entitlement statements: SqlEntitlementSink's own rows (an EntitlementRecord per client, written
      *  version-conditionally through SqlRecordStore, not the record-map row form); listed here so the importer refuses a
      *  database that already holds statements. */

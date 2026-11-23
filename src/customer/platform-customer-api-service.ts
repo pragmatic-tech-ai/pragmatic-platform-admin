@@ -1,13 +1,44 @@
 import { EntitledOperation } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import type { CentralLoginSubject, EntitlementStatement } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
-import { CustomerApiError, CustomerApiGate, CustomerErrorCode, TenantView } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
-import type { CreateTenantRequest, DomainVerification, DomainVerificationRequest, EnrolmentStart, HiveView, ICustomerApiService, LeaveHiveRequest, ListHivesRequest, ListTenantsRequest, StartEnrolmentRequest } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import { CustomerApiError, CustomerApiGate, CustomerErrorCode, EnrolmentStart, HiveLevel, TenantView } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import type { CreateTenantRequest, DomainVerification, DomainVerificationRequest, HiveView, ICustomerApiService, LeaveHiveRequest, ListHivesRequest, ListTenantsRequest, StartEnrolmentRequest } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
 import { DomainNotClaimedError, DomainVerificationUnavailableError, DomainVerifyThrottledError, EmailDomainsNotEditableError, InvalidEmailDomainError, InvalidRecordIdError, type TenantRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import type { IClientStatements } from '../entitlements/client-statements.js'
 import { RecordExistsError, UnknownClientError, UnknownTenantError, type PlatformDirectory } from '../platform-directory.js'
 import { DomainTakenError, type PlatformEmailDomains } from '../platform-email-domains.js'
 import type { ClientLock } from './client-lock.js'
 import type { ClientUsage } from './client-usage.js'
+import { HiveViews } from './hive-views.js'
+import { EngineInstallCommand } from '../enrolment/engine-install-command.js'
+import { EnrolmentAgentKind } from '../enrolment/enrolment-code-record.js'
+import type { EnrolmentCodeIssuer } from '../enrolment/enrolment-code-issuer.js'
+import type { PlacementRegistry } from '../placement/placement-registry.js'
+import type { HiveObservationRecord } from '../hive-observation-record.js'
+import type { PlatformHiveRecord } from '../platform-records.js'
+
+/** The platform release a tenant's install command names (PlatformDeploymentRegistry.InstallReleaseFor). */
+export interface IInstallReleases
+{
+    InstallReleaseFor(tenantId: string): string | undefined
+}
+
+/** A hive's agent registration (PlatformDeploymentRegistry): leaving revokes it, so a forgotten agent stops dialling home. */
+export interface IHiveRegistrations
+{
+    DeregisterHive(hiveId: string): Promise<void>
+}
+
+/** A hive's last report (HiveObservationRegistry). */
+export interface IHiveReports
+{
+    LatestRecord(hiveId: string): HiveObservationRecord | undefined
+}
+
+/** The console adverts (ConsoleAdvertRegistry): leaving a hive forgets its advert, so its domain claims stop counting. */
+export interface IHiveAdverts
+{
+    ForgetHive(hiveId: string): Promise<void>
+}
 
 /** What the customer API service works over. */
 export interface CustomerApiServiceParts
@@ -18,6 +49,13 @@ export interface CustomerApiServiceParts
     Usage: ClientUsage
     /** Shared with the operator side, so an operator's create and a customer's are decided one at a time per client. */
     Lock: ClientLock
+    Codes: EnrolmentCodeIssuer
+    Placements: PlacementRegistry
+    Releases: IInstallReleases
+    Registrations: IHiveRegistrations
+    Reports: IHiveReports
+    Adverts: IHiveAdverts
+    Now?: () => Date
 }
 
 /**
@@ -92,19 +130,65 @@ export class PlatformCustomerApiService implements ICustomerApiService
         }
     }
 
-    public StartEnrolment(_customer: CentralLoginSubject, _request: StartEnrolmentRequest): Promise<EnrolmentStart>
+    /**
+     * Standalone: the install command only (admin of the client; nothing recorded or counted). Enrolled and Delegated:
+     * gated `enrol-hive`; the install command plus a one-time enrolment code for an engine hive. Hosted: gated
+     * `enrol-hive`; a requested placement. The command names the newest release the tenant admits (none: unavailable).
+     */
+    public async StartEnrolment(customer: CentralLoginSubject, request: StartEnrolmentRequest): Promise<EnrolmentStart>
     {
-        return Promise.reject(new CustomerApiError(CustomerErrorCode.Unavailable))
+        if (request.Level === HiveLevel.Standalone)
+        {
+            await this.RequireAdmin(customer, request.ClientId)
+            this.TenantOf(request.ClientId, request.TenantId)
+            return EnrolmentStart.Standalone(this.InstallCommandFor(request.TenantId, request.Level))
+        }
+        return await this.parts.Lock.Run(request.ClientId, async () =>
+        {
+            const statement = await this.RequireAdmin(customer, request.ClientId)
+            this.TenantOf(request.ClientId, request.TenantId)
+            CustomerApiGate.RequireEntitled(request.ClientId, statement, customer, EntitledOperation.EnrolHive, await this.parts.Usage.Of(request.ClientId, EntitledOperation.EnrolHive))
+            if (request.Level === HiveLevel.Hosted)
+            {
+                return EnrolmentStart.Hosted((await this.parts.Placements.Request(request.ClientId, request.TenantId, customer.Key)).id)
+            }
+            const command = this.InstallCommandFor(request.TenantId, request.Level)
+            const code = await this.parts.Codes.Issue({ ClientId: request.ClientId, TenantId: request.TenantId, Level: request.Level, AgentKind: EnrolmentAgentKind.Hive, IssuedBy: customer.Key })
+            return EnrolmentStart.Connected(request.Level as HiveLevel.Enrolled | HiveLevel.Delegated, command, code.Code, code.ExpiresAt)
+        })
     }
 
-    public ListHives(_customer: CentralLoginSubject, _request: ListHivesRequest): Promise<readonly HiveView[]>
+    /** The client's hives (of one tenant or all) and its open placements (pending). */
+    public async ListHives(customer: CentralLoginSubject, request: ListHivesRequest): Promise<readonly HiveView[]>
     {
-        return Promise.reject(new CustomerApiError(CustomerErrorCode.Unavailable))
+        await this.RequireAdmin(customer, request.ClientId)
+        const tenants = request.TenantId === null ? this.parts.Directory.ListTenants(request.ClientId) : [this.TenantOf(request.ClientId, request.TenantId)]
+        const now = this.Now()
+        const hives = tenants.flatMap(tenant => this.parts.Directory.ListHives(tenant.id) as readonly PlatformHiveRecord[])
+            .map(hive => HiveViews.Of(hive, this.parts.Reports.LatestRecord(hive.id), now))
+        const placements = this.parts.Placements.OpenFor(request.ClientId, request.TenantId ?? undefined).map(placement => HiveViews.OfPlacement(placement))
+        return [...hives, ...placements]
     }
 
-    public LeaveHive(_customer: CentralLoginSubject, _request: LeaveHiveRequest): Promise<HiveView>
+    /**
+     * The customer uninstalled: the hive is marked gone (kept, never deleted), its console advert forgotten (its domain
+     * claims released) and its agent registration revoked. Never gated: a suspended client may leave. Leaving again
+     * answers the gone hive.
+     */
+    public async LeaveHive(customer: CentralLoginSubject, request: LeaveHiveRequest): Promise<HiveView>
     {
-        return Promise.reject(new CustomerApiError(CustomerErrorCode.Unavailable))
+        await this.RequireAdmin(customer, request.ClientId)
+        const directory = this.parts.Directory
+        const hive = directory.GetHive(request.HiveId)
+        const tenant = hive === undefined ? undefined : directory.GetTenant(hive.tenantId)
+        if (hive === undefined || tenant === undefined || tenant.clientId !== request.ClientId)
+        {
+            throw new CustomerApiError(CustomerErrorCode.UnknownHive)
+        }
+        await this.parts.Adverts.ForgetHive(hive.id)
+        await this.parts.Registrations.DeregisterHive(hive.id)
+        const left = await directory.MarkHiveLeft(hive.id)
+        return HiveViews.Of(left, this.parts.Reports.LatestRecord(hive.id), this.Now())
     }
 
     /** The statement, when the customer administers the client. */
@@ -118,6 +202,21 @@ export class PlatformCustomerApiService implements ICustomerApiService
     {
         const statement = await this.RequireAdmin(customer, clientId)
         return CustomerApiGate.RequireEntitled(clientId, statement, customer, operation, await this.parts.Usage.Of(clientId, operation))
+    }
+
+    private InstallCommandFor(tenantId: string, level: HiveLevel): string
+    {
+        const release = this.parts.Releases.InstallReleaseFor(tenantId)
+        if (release === undefined)
+        {
+            throw new CustomerApiError(CustomerErrorCode.Unavailable)
+        }
+        return EngineInstallCommand.For(level, release)
+    }
+
+    private Now(): Date
+    {
+        return this.parts.Now?.() ?? new Date()
     }
 
     /** The client's tenant; one that does not exist or belongs to another client is `unknown-tenant` alike. */

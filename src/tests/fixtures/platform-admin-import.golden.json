@@ -203,6 +203,8 @@
       }
     },
     "operator_directory": {},
+    "enrolment_codes": {},
+    "placements": {},
     "entitlements": {}
   },
   "audit": [
