@@ -8,6 +8,6 @@ import { fileURLToPath } from 'node:url'
 export class PlatformAdminGolden
 {
     public static readonly Fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'pragmatic-platform-admin.component.json')
-    /** At 0.1.1: pragmatic-server's pin (`sha256:bc19deb0…`, the seed commit) with only the version field changed. */
-    public static readonly Digest = 'sha256:0a71493f54c0f31867ab4dc7079fea4bca3b3d4b415819a9e65bf71385fa20a0'
+    /** At 0.1.2: the operatorSignIn option (operator sign-in through the staff realm, 2.6) and the version. */
+    public static readonly Digest = 'sha256:17e053cf9109e135eb6e7760b9ef603a839f4815ba07e5b9c91a1eabb47f5d61'
 }
