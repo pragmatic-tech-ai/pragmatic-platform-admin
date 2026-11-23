@@ -47,7 +47,7 @@ import type { PlatformDeploymentRegistry } from './platform-deployment-registry.
 import { ReleaseRefresher } from './release/release-refresher.js'
 import type { ReleaseRefreshResult } from './release/release-catalog.js'
 import { ControlPlaneProblems } from './control-plane-problems.js'
-import type { ClientRecord } from './platform-records.js'
+import { ClientRecords, type ClientRecord } from './platform-records.js'
 import { EntitledOperation } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import { OperatorEntitlementGate, type ClientEntitlementSummary } from './entitlements/operator-entitlement-gate.js'
 
@@ -219,6 +219,8 @@ export class ControlPlaneHost
     /** Request bodies are small JSON objects: 4 KiB unless a route declares more. */
     private static readonly MaxBodyBytes = 4096
     public static readonly MaxAuditTargetLength = 256
+    private static readonly EmailClaim = 'email'
+    private static readonly OperatorKeyPrefix = 'operator:'
     private static readonly RevalidateIntervalMs = 30_000
     private static readonly ActivityLimitMax = 200
     private static readonly ActivityLimitParam = 'limit'
@@ -1647,6 +1649,14 @@ export class ControlPlaneHost
         }
     }
 
+    /** Who an operator's create names (PlatformTenantRecord.createdBy): `operator:<email>`, the subject when the session
+     *  carries no email. */
+    private static OperatorKeyOf(ctx: RequestContext): string | undefined
+    {
+        const session = ctx.Session
+        return session === null ? undefined : ControlPlaneHost.OperatorKeyPrefix + (session.Claims.First(ControlPlaneHost.EmailClaim) ?? session.Subject)
+    }
+
     /** Projects a stored tenant to its HTTP shape, dropping the internal IdP refs (base URL, CA path, admin-token ref). */
     private static ToTenantDto(record: TenantRecord): TenantDto
     {
@@ -1656,8 +1666,9 @@ export class ControlPlaneHost
     /** The client record with its statement's summary. */
     private async ClientDtoOf(client: ClientRecord): Promise<ClientDto>
     {
+        const record = ClientRecords.Of(client)
         const summary = await this.entitlements.Summary(client.id)
-        return summary === undefined ? client : { ...client, entitlement: summary }
+        return summary === undefined ? record : { ...record, entitlement: summary }
     }
 
     private async HandleGetPlatform(resource: PlatformResource, ctx: RequestContext): Promise<void>
@@ -2000,7 +2011,7 @@ export class ControlPlaneHost
             }
             const clientId = body.clientId as string
             const { record, ownerPassword } = await this.entitlements.Run(clientId, [EntitledOperation.CreateTenant],
-                () => this.options.Provisioning.Provision({ id, clientId, displayName, ownerEmail: body.ownerEmail as string }))
+                () => this.options.Provisioning.Provision({ id, clientId, displayName, ownerEmail: body.ownerEmail as string, createdBy: ControlPlaneHost.OperatorKeyOf(ctx) }))
             // The one-time Owner password is revealed exactly once here; never logged or stored.
             CacheControl.NoStore(ctx.Response)
             // In-hive sign-in seeds no password: the Owner signs in through the tenant's hive, so none is shown.
@@ -2118,7 +2129,8 @@ export class ControlPlaneHost
                 tenant: existingTenant
                     ? { existing: true, id: tenant.id as string }
                     : { id: tenant.id as string, displayName: tenant.displayName as string, ownerEmail: tenant.ownerEmail as string },
-                hive: { id: hive.id as string, displayName: hive.displayName, cluster, registry, trustRootRef: hive.trustRootRef as string | undefined }
+                hive: { id: hive.id as string, displayName: hive.displayName, cluster, registry, trustRootRef: hive.trustRootRef as string | undefined },
+                createdBy: ControlPlaneHost.OperatorKeyOf(ctx),
             })
             // The one-time secrets (the Owner password only for a new tenant) are revealed exactly once here; never logged or stored.
             CacheControl.NoStore(ctx.Response)

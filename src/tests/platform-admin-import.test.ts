@@ -21,6 +21,7 @@ class ImportFixture
     public static readonly Here = dirname(fileURLToPath(import.meta.url))
     public static readonly DataRoot = join(ImportFixture.Here, 'fixtures', 'platform-admin-data-root')
     public static readonly Golden = join(ImportFixture.Here, 'fixtures', 'platform-admin-import.golden.json')
+    public static readonly LegacyCommercialField = 'subscriptionRef'
     public static readonly MasterKeyFile = 'master.key'
     public static readonly AdminEmail = 'ops@pragmatic.test'
     public static readonly AdminPassword = 'fixture-admin-password-1'
@@ -125,7 +126,9 @@ describe('PlatformAdminImport', () =>
                 assert.equal(report.Counts.get('records_clients'), 2)
                 assert.equal(report.Counts.get('app_host_audit'), 3)
                 assert.equal(report.Counts.get('identity.accounts'), 4)
-                F.CheckGolden(await F.Dump(session, database))
+                const dump = await F.Dump(session, database)
+                F.CheckGolden(dump)
+                assert.equal(JSON.stringify(dump).includes(F.LegacyCommercialField), false, 'a legacy client row keeps no provider reference')
             }
             finally
             {

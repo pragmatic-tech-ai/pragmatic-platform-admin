@@ -26,6 +26,19 @@ export interface IWorkloadPlacement
 
 export type RolloutTarget = { version: string; image: string }
 
+/** The hive's customer left it (leave-hive): it is kept as a record but never registered again. */
+export class HiveLeftError extends Error
+{
+    private static readonly ErrorName = 'HiveLeftError'
+    private static readonly MessagePrefix = 'The customer left this hive; it cannot be registered again: '
+
+    public constructor(hiveId: string)
+    {
+        super(HiveLeftError.MessagePrefix + hiveId)
+        this.name = HiveLeftError.ErrorName
+    }
+}
+
 export class PlatformDeploymentRegistry
 {
     private static readonly TokenBytes = 32
@@ -573,9 +586,15 @@ export class PlatformDeploymentRegistry
         return randomBytes(PlatformDeploymentRegistry.TokenBytes).toString(PlatformDeploymentRegistry.TokenEncoding)
     }
 
-    /** Makes the token the hive's only valid one (stores its hash; the previous token stops verifying). */
+    /** Makes the token the hive's only valid one (stores its hash; the previous token stops verifying). A hive its
+     *  customer left (D4) is never registered again: HiveLeftError. */
     public async CommitAgentToken(hiveId: string, token: string): Promise<void>
     {
+        const hive = this.hives.GetHive(hiveId) as { leftAt?: string } | undefined
+        if (hive?.leftAt !== undefined)
+        {
+            throw new HiveLeftError(hiveId)
+        }
         await this.registrations.Put({ id: hiveId, hiveId, agentTokenHash: this.HashToken(token), registeredAt: new Date().toISOString() })
     }
 

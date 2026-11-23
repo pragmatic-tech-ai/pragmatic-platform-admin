@@ -1,6 +1,6 @@
 import { EnvironmentReport, HiveHealth, HiveLevel, HiveView } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
 import type { HiveObservationRecord } from '../hive-observation-record.js'
-import type { PlacementRecord } from '../placement/placement-record.js'
+import { PlacementState, type PlacementRecord } from '../placement/placement-record.js'
 import { PlatformHiveRecords, type PlatformHiveRecord } from '../platform-records.js'
 
 /**
@@ -22,10 +22,11 @@ export class HiveViews
         return new HiveView(hive.id, hive.tenantId, PlatformHiveRecords.LevelOf(hive), hive.console !== undefined, HiveViews.HealthOf(hive, reportedAt, environments, now), reportedAt, environments)
     }
 
-    /** An open placement: a Hosted hive the platform has not placed yet. */
+    /** An open placement: a Hosted hive the platform has not placed yet (pending); a cancelled one is gone. */
     public static OfPlacement(placement: PlacementRecord): HiveView
     {
-        return new HiveView(placement.id, placement.tenantId, HiveLevel.Hosted, false, HiveHealth.Pending, null, [])
+        const health = placement.state === PlacementState.Cancelled ? HiveHealth.Gone : HiveHealth.Pending
+        return new HiveView(placement.id, placement.tenantId, HiveLevel.Hosted, false, health, null, [])
     }
 
     private static HealthOf(hive: PlatformHiveRecord, reportedAt: Date | null, environments: readonly EnvironmentReport[], now: Date): HiveHealth

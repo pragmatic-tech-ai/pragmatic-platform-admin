@@ -4,6 +4,7 @@ import type { HiveRegistry } from './hive-registry.js'
 import { type EnvironmentRecord, HivePlacementError, RecordId, type TenantRecord, type HiveRecord, type ClusterSpec, type RegistrySpec, K8sManifestBuilder, EmailDomainPolicy, type HiveConsoleSpec, type ITenantRecordSource } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { HiveConsoleSpecs } from './hive-console-spec.js'
+import { HiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
 import type { ClientRecord, PlatformHiveRecord, PlatformTenantRecord } from './platform-records.js'
 
 export interface IEnvironmentLookup
@@ -228,10 +229,10 @@ export class PlatformDirectory implements ITenantRecordSource
         return record
     }
 
-    public async CreateProvisionedTenant(input: { id: string; clientId: string; displayName: string; ownerEmail: string; ownerPrincipalId: string; idpBaseUrl: string; idpCaRef?: string; idpAdminTokenRef?: string }): Promise<TenantRecord>
+    public async CreateProvisionedTenant(input: { id: string; clientId: string; displayName: string; ownerEmail: string; ownerPrincipalId: string; idpBaseUrl: string; idpCaRef?: string; idpAdminTokenRef?: string; createdBy?: string }): Promise<PlatformTenantRecord>
     {
         this.AssertCanCreateTenant(input.id, input.clientId)
-        const record: TenantRecord = {
+        const record: PlatformTenantRecord = {
             id: input.id,
             clientId: input.clientId,
             displayName: input.displayName,
@@ -241,6 +242,10 @@ export class PlatformDirectory implements ITenantRecordSource
             idpBaseUrl: input.idpBaseUrl,
             idpCaRef: input.idpCaRef,
             idpAdminTokenRef: input.idpAdminTokenRef
+        }
+        if (input.createdBy !== undefined)
+        {
+            record.createdBy = input.createdBy
         }
         await this.tenants.Put(record)
         return record
@@ -297,7 +302,9 @@ export class PlatformDirectory implements ITenantRecordSource
         return this.hives.Get(id)
     }
 
-    public async CreateHive(input: { id: string; tenantId: string; displayName: string; cluster: ClusterSpec; registry: RegistrySpec; trustRootRef?: string }): Promise<HiveRecord>
+    /** Records a hive at its management level: an operator-created hive is Hosted (the default), the level of every hive
+     *  the platform manages fully; customers bring their own hives at the other levels through enrolment (C3.3). */
+    public async CreateHive(input: { id: string; tenantId: string; displayName: string; cluster: ClusterSpec; registry: RegistrySpec; trustRootRef?: string; level?: HiveLevel }): Promise<PlatformHiveRecord>
     {
         // The id becomes Kubernetes names and the pragmatic/hive label value: it must be a valid one.
         K8sManifestBuilder.AssertValidHiveId(input.id)
@@ -306,14 +313,15 @@ export class PlatformDirectory implements ITenantRecordSource
         {
             throw new UnknownTenantError(input.tenantId)
         }
-        const record: HiveRecord = {
+        const record: PlatformHiveRecord = {
             id: input.id,
             tenantId: input.tenantId,
             displayName: input.displayName,
             cluster: input.cluster,
             registry: input.registry,
             trustRootRef: input.trustRootRef === undefined || input.trustRootRef === '' ? this.defaultTrustRootRef : input.trustRootRef,
-            createdAt: this.Stamp()
+            createdAt: this.Stamp(),
+            level: input.level ?? HiveLevel.Hosted,
         }
         await this.hives.Put(record)
         return record

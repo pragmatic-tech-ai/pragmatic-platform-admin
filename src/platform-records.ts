@@ -16,6 +16,25 @@ export type ClientRecord = {
     entitlementVersion?: number
 }
 
+/** Building a client record from its named fields only, so nothing else a stored row carries (the `subscriptionRef` a
+ *  pre-D4 record held, any commercial field) is kept or shown. */
+export class ClientRecords
+{
+    public static Of(raw: ClientRecord): ClientRecord
+    {
+        const record: ClientRecord = { id: raw.id, displayName: raw.displayName, createdAt: raw.createdAt }
+        if (raw.kind !== undefined)
+        {
+            record.kind = raw.kind
+        }
+        if (raw.entitlementVersion !== undefined)
+        {
+            record.entitlementVersion = raw.entitlementVersion
+        }
+        return record
+    }
+}
+
 /** A tenant record as the console keeps it: the tenant plane's record plus who created it (a central-login subject's key
  *  for a customer admin, `operator:<email>` for an operator; absent on records created before D4). */
 export type PlatformTenantRecord = TenantRecord & {

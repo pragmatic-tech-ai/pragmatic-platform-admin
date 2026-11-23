@@ -6,7 +6,7 @@ import { FakeControlPlane, PortalTestHost, Tick, type FakeDialogService } from '
 import { ClientDetailPageViewModel } from '../client-detail-page-view-model.js'
 import { ClientsPageViewModel } from '../clients-page-view-model.js'
 import { ClientsSectionService } from '../clients-section-service.js'
-import type { ClientEntitlementDto } from '../../../portal-types.js'
+import { ClientEntitlementState, type ClientEntitlementDto } from '../../../portal-types.js'
 import { ClientsViewModel } from '../../../clients-view-model.js'
 
 // A Clients section over a fake control plane and fake dialogs.
@@ -108,8 +108,8 @@ describe('Clients section', () =>
     it('ClientsViewModel shows Suspended for a suspended statement, its plan, limits and version, and No statement without one', async () =>
     {
         const api = new FakeControlPlane()
-            .WithClient('acme', 'Acme', ClientsCases.Statement('suspended'))
-            .WithClient('globex', 'Globex', ClientsCases.Statement('active'))
+            .WithClient('acme', 'Acme', ClientsCases.Statement(ClientEntitlementState.Suspended))
+            .WithClient('globex', 'Globex', ClientsCases.Statement(ClientEntitlementState.Active))
             .WithClient('initech', 'Initech')
         const rows = new ClientsViewModel(await api.ListClients(), [], []).Rows
         assert.deepEqual(rows.map(r => [r.id, r.planLabel, r.stateLabel, r.limitsLabel, r.versionLabel]), [
@@ -121,7 +121,7 @@ describe('Clients section', () =>
 
     it('the list and the detail show the statement and offer no create, edit or delete', async () =>
     {
-        const fx = new ClientsFixture(new FakeControlPlane().WithClient('acme', 'Acme', ClientsCases.Statement('suspended')))
+        const fx = new ClientsFixture(new FakeControlPlane().WithClient('acme', 'Acme', ClientsCases.Statement(ClientEntitlementState.Suspended)))
         const list = await fx.List()
         const row = list.Rows.Get(0)
         assert.deepEqual([row?.PlanLabel, row?.StateLabel, row?.LimitsLabel, row?.VersionLabel], ['starter', ClientsViewModel.SuspendedLabel, 'tenants 1, hives 2', 'v3'])
@@ -136,7 +136,7 @@ describe('Clients section', () =>
 // Statements for the clients views.
 class ClientsCases
 {
-    public static Statement(state: string): ClientEntitlementDto
+    public static Statement(state: ClientEntitlementState): ClientEntitlementDto
     {
         return {
             planId: 'starter', state, limits: { 'tenants': 1, 'hives': 2 }, version: 3, issuedAt: '2026-11-20T10:00:00.000Z',

@@ -2,6 +2,19 @@ import { randomBytes } from 'node:crypto'
 import type { IHiveReservations } from '../customer/client-usage.js'
 import { PlacementState, type PlacementRecord, type PlacementStore } from './placement-record.js'
 
+/** The placement is not an open one (unknown, placed or already cancelled). */
+export class PlacementNotOpenError extends Error
+{
+    private static readonly ErrorName = 'PlacementNotOpenError'
+    private static readonly MessagePrefix = 'No open placement: '
+
+    public constructor(id: string)
+    {
+        super(PlacementNotOpenError.MessagePrefix + id)
+        this.name = PlacementNotOpenError.ErrorName
+    }
+}
+
 /**
  * The placements customers request for Hosted hives. Request records one in state `requested` (C5.1 moves it on); an
  * open (requested) placement reserves one of the client's hives (IHiveReservations). Ids are `pl-` plus 16 random
@@ -23,6 +36,26 @@ export class PlacementRegistry implements IHiveReservations
         const record: PlacementRecord = { id: PlacementRegistry.NewId(), clientId, tenantId, state: PlacementState.Requested, requestedBy, requestedAt: this.now().toISOString() }
         await this.store.Put(record)
         return record
+    }
+
+    /** The client's open (requested) placement `id`, or undefined. */
+    public OpenOf(clientId: string, id: string): PlacementRecord | undefined
+    {
+        const record = this.store.Get(id)
+        return record !== undefined && record.clientId === clientId && record.state === PlacementState.Requested ? record : undefined
+    }
+
+    /** Withdraws an open placement (state cancelled): it stops counting against the client's hives and leaves the list. */
+    public async Cancel(id: string): Promise<PlacementRecord>
+    {
+        const record = this.store.Get(id)
+        if (record === undefined || record.state !== PlacementState.Requested)
+        {
+            throw new PlacementNotOpenError(id)
+        }
+        const cancelled: PlacementRecord = { ...record, state: PlacementState.Cancelled, cancelledAt: this.now().toISOString() }
+        await this.store.Put(cancelled)
+        return cancelled
     }
 
     /** The client's open (requested) placements, of one tenant or of all. */

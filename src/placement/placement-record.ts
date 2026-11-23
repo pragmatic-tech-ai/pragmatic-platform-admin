@@ -5,6 +5,8 @@ export enum PlacementState
 {
     Requested = 'requested',
     Placed = 'placed',
+    /** The customer withdrew it before it was placed (leave-hive on the placement): it no longer counts. */
+    Cancelled = 'cancelled',
 }
 
 /** A customer's request for a Hosted hive of a tenant. */
@@ -16,6 +18,8 @@ export type PlacementRecord = {
     /** The subject key of the customer admin who asked. */
     requestedBy: string
     requestedAt: string
+    /** When the customer withdrew it (state cancelled). */
+    cancelledAt?: string
 }
 
 export class PlacementStore extends JsonRecordStore<PlacementRecord>

@@ -46,6 +46,7 @@ export class PlatformAdminComponent
                 settings: [
                     { name: 'port', type: SettingType.Integer, source: 'PRAGMATIC_ADMIN_INTERNAL_PORT', required: true, description: 'Port of the internal API listener.' },
                     { name: 'bind', type: SettingType.String, source: 'PRAGMATIC_ADMIN_INTERNAL_BIND', default: '127.0.0.1', description: 'Address of the internal API listener (an IP address or localhost).' },
+                    { name: 'allowedHosts', type: SettingType.String, source: 'PRAGMATIC_ADMIN_INTERNAL_ALLOWED_HOSTS', description: 'Host names the internal listener answers besides the loopback names and a non-wildcard bind address (comma-separated, e.g. a mesh name).' },
                     { name: 'secret', type: SettingType.String, source: 'PRAGMATIC_INTERNAL_API_SECRET_FILE', required: true, secret: true, description: 'The shared secret the edge authenticates with (a mounted secret file).' },
                 ],
             },

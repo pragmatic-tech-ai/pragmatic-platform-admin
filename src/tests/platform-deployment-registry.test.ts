@@ -3,7 +3,12 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PlatformDeploymentRegistry } from '../platform-deployment-registry.js'
+import { HiveLeftError, PlatformDeploymentRegistry } from '../platform-deployment-registry.js'
+import { PlatformDirectory as PlatformDirectoryClass } from '../platform-directory.js'
+import { ClientRegistry } from '../client-registry.js'
+import { TenantRegistry } from '../tenant-registry.js'
+import { HiveRegistry } from '../hive-registry.js'
+import { HiveOrchestratorFactory as HiveOrchestratorFactoryClass } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { ManifestRegistry, ReleaseState, type ManifestRecord, HiveBackend, InfraMode, type HiveRecord, UnsupportedBackendError, type IHiveOrchestrator, type HiveOrchestratorFactory, type EnvironmentRecord, type EnvironmentWorkload, type HiveHealthDto, AdoptionLedgerRegistry } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { ReleaseNotRejectedError, ReleaseNotRunnableYetError, ReleaseRejectedError, AgentUnauthorizedError, HiveNotRegisteredError, ManifestExistsError, ManifestNotGatedError, PolicyStoreUnavailableError, UnknownHiveError, UnknownManifestError, ManifestWithdrawnError, TenantOnHoldError, ChannelNotSubscribedError, VersionBelowFloorError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { GatingRegistry } from '../gating-record.js'
@@ -45,6 +50,10 @@ class Fx
     public static readonly Operator = 'op@x'
     public static readonly LegacyAt = '2026-01-01T00:00:00.000Z'
     public static readonly RollBoom = 'roll failed'
+    public static readonly ClientId = 'acme'
+    public static readonly ClientsFile = 'clients.json'
+    public static readonly TenantsFile = 'tenants.json'
+    public static readonly HivesFile = 'hives.json'
 
     public static Signer(digest: string | undefined, signed: boolean): IManifestSigner
     {
@@ -108,6 +117,28 @@ class Fx
         }
     }
 }
+
+test('a hive its customer left is never registered again', async () =>
+{
+    const dir = await mkdtemp(join(tmpdir(), Fx.Prefix))
+    try
+    {
+        const directory = new PlatformDirectoryClass(new ClientRegistry(join(dir, Fx.ClientsFile)), new TenantRegistry(join(dir, Fx.TenantsFile)), new HiveRegistry(join(dir, Fx.HivesFile)), { List: () => [] })
+        await directory.Load()
+        await directory.RecordClient({ id: Fx.ClientId, displayName: Fx.ClientId })
+        await directory.CreateTenant({ id: Fx.TenantA, clientId: Fx.ClientId, displayName: Fx.TenantA })
+        await directory.CreateHive({ id: Fx.HiveA, tenantId: Fx.TenantA, displayName: Fx.HiveA, cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Attach } })
+        const registry = await RolloutFixture.Create(dir, directory, new HiveOrchestratorFactoryClass())
+        await registry.RegisterHive(Fx.HiveA)
+        await directory.MarkHiveLeft(Fx.HiveA)
+        await assert.rejects(registry.RegisterHive(Fx.HiveA), HiveLeftError)
+        await assert.rejects(registry.CommitAgentToken(Fx.HiveA, registry.NewAgentToken()), HiveLeftError)
+    }
+    finally
+    {
+        await rm(dir, { recursive: true, force: true })
+    }
+})
 
 test('Publish then ManifestsFor only after Gate; Ungate removes; duplicate rejected', async () =>
 {

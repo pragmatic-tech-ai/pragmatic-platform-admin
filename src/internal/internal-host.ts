@@ -6,10 +6,10 @@ import { CustomerCallAuthenticator, EntitlementReceiver } from '@pragmatic-tech-
 import type { ICentralLoginVerifier, IEntitlementSink } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import { CustomerApiRoutes } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
 import type { ICustomerApiService } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
-import type { InternalSettings } from './internal-settings.js'
+import { InternalSettings } from './internal-settings.js'
 
-/** What the internal listener answers with. The entitlements and customer parts are optional: a link is mounted only
- *  when its setting is on and its part is given. */
+/** What the internal listener answers with. The entitlements and customer parts are needed only for their links: a
+ *  link whose setting is on without its part refuses the start (InternalLinkPartMissingError), naming the setting. */
 export interface InternalHostParts
 {
     Agent: IAgentChannelBackend
@@ -17,6 +17,19 @@ export interface InternalHostParts
     Sink?: IEntitlementSink
     Customer?: ICustomerApiService
     Verifier?: ICentralLoginVerifier
+}
+
+/** A link's setting is on but the composition gave the host no part to answer it with. */
+export class InternalLinkPartMissingError extends Error
+{
+    private static readonly ErrorName = 'InternalLinkPartMissingError'
+    private static readonly Suffix = ' is set, but the internal listener was composed without the part that answers its link'
+
+    public constructor(setting: string)
+    {
+        super(setting + InternalLinkPartMissingError.Suffix)
+        this.name = InternalLinkPartMissingError.ErrorName
+    }
 }
 
 /** The links an internal listener carries (for its start log). */
@@ -66,20 +79,28 @@ export class InternalHost
         const links: InternalLink[] = [InternalLink.InternalApi]
         this.MountInternalApi(routes, new InternalApiGuard(settings.InternalCredential()))
         const entitlements = settings.EntitlementsCredential()
-        if (entitlements !== undefined && parts.Sink !== undefined)
+        if (entitlements !== undefined)
         {
+            if (parts.Sink === undefined)
+            {
+                throw new InternalLinkPartMissingError(InternalSettings.EntitlementsSecretEnvVar)
+            }
             new EntitlementReceiver(entitlements, parts.Sink).MountOn(routes)
             links.push(InternalLink.Entitlements)
         }
         const customer = settings.CustomerApiCredential()
-        if (customer !== undefined && parts.Customer !== undefined && parts.Verifier !== undefined)
+        if (customer !== undefined)
         {
+            if (parts.Customer === undefined || parts.Verifier === undefined)
+            {
+                throw new InternalLinkPartMissingError(InternalSettings.CustomerApiSecretEnvVar)
+            }
             new CustomerApiRoutes(parts.Customer, new CustomerCallAuthenticator(customer, parts.Verifier)).MountOn(routes)
             links.push(InternalLink.CustomerApi)
         }
         this.Links = links
         const problems = new ProblemMapper(err => console.error(InternalHost.LogPrefix, err instanceof Error ? err.name : InternalHost.FallbackErrorName))
-        this.app = new AppHost(new AppHostConfig({ ApiPrefix: InternalHost.ApiPrefix }), { Routes: routes, Problems: problems })
+        this.app = new AppHost(new AppHostConfig({ ApiPrefix: InternalHost.ApiPrefix, AllowedHosts: settings.HostNames }), { Routes: routes, Problems: problems })
     }
 
     public Listen(): Promise<void>

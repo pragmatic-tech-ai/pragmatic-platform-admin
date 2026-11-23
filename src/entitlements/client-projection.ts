@@ -14,6 +14,12 @@ export class ClientProjection
     {
     }
 
+    /** The statement version the client's record was last derived from, or undefined. */
+    public VersionOf(clientId: string): number | undefined
+    {
+        return this.clients.Get(clientId)?.entitlementVersion
+    }
+
     public async Project(statement: EntitlementStatement): Promise<void>
     {
         const existing = this.clients.Get(statement.ClientId)

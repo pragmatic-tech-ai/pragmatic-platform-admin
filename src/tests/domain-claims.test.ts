@@ -120,3 +120,15 @@ test('a domain stops being contested once the other tenant drops it', () =>
     assert.deepEqual([...claims.ContestedFor('acme')], [])
     assert.deepEqual(claims.OthersClaiming('acme', 'acme.test'), [])
 })
+
+test('with a standing source only a claim with standing contests: approved or verified, not revoked', () =>
+{
+    const directory = new FakeDirectory().AddTenant('acme', ['acme.test']).AddTenant('zeta', ['acme.test'])
+    const standings = new Map<string, { approved: string[], revoked: string[], verified: string[] }>([['zeta', { approved: [], revoked: [], verified: [] }]])
+    const source = { StandingOf: (tenantId: string) => standings.get(tenantId) ?? { approved: [], revoked: [], verified: [] } }
+    assert.deepEqual([...DomainClaims.Collect(directory, undefined, source).ContestedFor('acme')], [], 'a bare claim contests nothing')
+    standings.set('zeta', { approved: [], revoked: [], verified: ['acme.test'] })
+    assert.deepEqual(DomainClaims.Collect(directory, undefined, source).Contesting('acme', 'ACME.test'), ['zeta'])
+    standings.set('zeta', { approved: ['acme.test'], revoked: ['acme.test'], verified: [] })
+    assert.deepEqual([...DomainClaims.Collect(directory, undefined, source).ContestedFor('acme')], [], 'a revoked standing contests nothing')
+})

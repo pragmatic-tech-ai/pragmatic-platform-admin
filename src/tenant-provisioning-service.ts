@@ -3,7 +3,8 @@ import { IdpAdminError, IdpAdminTransportError, type IdpAdminClient, type IIdpSe
 import type { IdpConnection } from './idp-service.js';
 import { UnknownTenantError, type PlatformDirectory } from './platform-directory.js';
 
-export type TenantProvisionInput = { id: string; clientId: string; displayName: string; ownerEmail: string };
+/** `createdBy`: who asked (`operator:<email>` for an operator; recorded on the tenant). */
+export type TenantProvisionInput = { id: string; clientId: string; displayName: string; ownerEmail: string; createdBy?: string };
 
 /** The created tenant, and the Owner's one-time password when the platform seeded one (Central mode only). */
 export type TenantProvisionResult = { record: TenantRecord; ownerPassword?: string };
@@ -170,7 +171,8 @@ export class TenantProvisioningService
             ownerPrincipalId: TenantProvisioningService.OwnerPrincipalId,
             idpBaseUrl: conn.baseUrl,
             idpCaRef: conn.caDir,
-            idpAdminTokenRef: conn.adminTokenRef
+            idpAdminTokenRef: conn.adminTokenRef,
+            createdBy: input.createdBy
         });
         await this.IndexOwner(record);
         return { record, ownerPassword };
@@ -185,6 +187,7 @@ export class TenantProvisioningService
             displayName: input.displayName,
             ownerEmail: input.ownerEmail,
             ownerPrincipalId: TenantProvisioningService.OwnerPrincipalId,
+            createdBy: input.createdBy,
         });
         await this.IndexOwner(record);
         return record;

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { SqlTestSessions } from '@pragmatic-tech-ai/pragmatic-realm-adapters/testing'
 import { EntitlementState } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
+import type { EntitlementStatement } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import { SqlEntitlementSink } from '../sql-entitlement-sink.js'
 import { ClientProjection } from '../client-projection.js'
 import { EntitlementSamples } from './entitlement-samples.js'
@@ -14,6 +15,24 @@ class SinkFixture
     public static readonly OtherClient = 'globex'
     public static readonly Orders: ReadonlyArray<readonly [number, number]> = [[7, 8], [8, 7]]
     public static readonly NamePrefix = 'v'
+}
+
+/** A projection whose first Project throws (a crash between the SQL write and the projection). */
+class FailingOnceProjection extends ClientProjection
+{
+    public static readonly Failure = /projection down/
+    private static readonly FailureText = 'projection down'
+    private failed = false
+
+    public override async Project(statement: EntitlementStatement): Promise<void>
+    {
+        if (!this.failed)
+        {
+            this.failed = true
+            throw new Error(FailingOnceProjection.FailureText)
+        }
+        await super.Project(statement)
+    }
 }
 
 describe('SqlEntitlementSink', () =>
@@ -47,20 +66,32 @@ describe('SqlEntitlementSink', () =>
             assert.equal(Clients.Get(S.ClientId)?.displayName, F.Five)
         })
 
-        it(`${backend}: racing Apply of 7 and 8 from two writers leaves 8, whatever the order`, async () =>
+        it(`${backend}: racing Apply of 7 and 8 leaves 8, whatever the order`, async () =>
         {
             for (const [first, second] of F.Orders)
             {
-                const session = await makeSession()
-                const one = await S.Open(session)
-                const two = await S.Open(session)
-                // Two sinks over one database: two writers, no shared in-process serialisation.
-                const a = await SqlEntitlementSink.Open(one.Database, new ClientProjection(one.Clients))
-                const b = await SqlEntitlementSink.Open(two.Database, new ClientProjection(two.Clients))
-                await Promise.all([a.Apply(S.Statement(first, { ClientName: F.NamePrefix + first })), b.Apply(S.Statement(second, { ClientName: F.NamePrefix + second }))])
-                assert.equal(await a.CurrentVersion(S.ClientId), 8)
-                assert.equal((await b.Current(S.ClientId))?.ClientName, F.NamePrefix + 8)
+                const { Database, Clients } = await S.Open(await makeSession())
+                // Two concurrent Apply calls race on one row with no receiver in front (which would serialise them per
+                // client): only the SQL version condition orders them, even within one process.
+                const sink = await SqlEntitlementSink.Open(Database, new ClientProjection(Clients))
+                await Promise.all([sink.Apply(S.Statement(first, { ClientName: F.NamePrefix + first })), sink.Apply(S.Statement(second, { ClientName: F.NamePrefix + second }))])
+                assert.equal(await sink.CurrentVersion(S.ClientId), 8)
+                assert.equal((await sink.Current(S.ClientId))?.ClientName, F.NamePrefix + 8)
+                assert.equal(Clients.Get(S.ClientId)?.displayName, F.NamePrefix + 8)
             }
+        })
+
+        it(`${backend}: a projection that failed after its statement was stored heals on the ledger's retry`, async () =>
+        {
+            const { Database, Clients } = await S.Open(await makeSession())
+            const projection = new FailingOnceProjection(Clients)
+            const sink = await SqlEntitlementSink.Open(Database, projection)
+            await assert.rejects(sink.Apply(S.Statement(3, { ClientName: F.Three })), FailingOnceProjection.Failure)
+            assert.equal(Clients.Get(S.ClientId), undefined)
+            assert.equal(await sink.CurrentVersion(S.ClientId), undefined, 'the retry is not answered as a duplicate')
+            await sink.Apply(S.Statement(3, { ClientName: F.Three }))
+            assert.equal(Clients.Get(S.ClientId)?.displayName, F.Three)
+            assert.equal(await sink.CurrentVersion(S.ClientId), 3)
         })
 
         it(`${backend}: opening the sink re-projects the stored statements`, async () =>

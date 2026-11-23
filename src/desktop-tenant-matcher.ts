@@ -71,7 +71,7 @@ export class DesktopTenantMatcher
         const domain = EmailDomainPolicy.DomainOf(email)
         const found = new Map<string, DiscoveredTenant>()
         const placements = new Map<string, TenantPlacement>()
-        const claims = DomainClaims.Collect(this.directory, this.adverts)
+        const claims = DomainClaims.Collect(this.directory, this.adverts, this.approvals)
         await this.MatchAdverts(email, domain, claims, found, placements)
         this.MatchIndex(email, tenantPlaneUrl, found, placements)
         if (domain !== undefined)

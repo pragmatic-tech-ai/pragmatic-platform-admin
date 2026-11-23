@@ -18,9 +18,12 @@ export type ClientEntitlementSummary = {
 /**
  * The operator side's entitlement check: an operator creating a tenant or a hive for a client passes the same decision
  * as the client's own admins (the client's newest statement at its current usage, in the client's ClientLock section,
- * shared with the customer API). A client the console holds no statement for allows nothing (deny by default,
- * `not-in-plan`). A refusal is the 403 `not-entitled` problem with its reason. Without statements or usage (a console
- * composed without them) every gated operation is refused.
+ * shared with the customer API). The decision and a usage reservation are taken inside the section; the operator's work
+ * (an IdP set-up, a provisioning: slow) runs after it, outside the lock, and the reservation is released when the work
+ * ends, so the customer API never waits on an operator's provisioning and a concurrent decision still counts it. A
+ * client the console holds no statement for allows nothing (deny by default, `not-in-plan`). A refusal is the 403
+ * `not-entitled` problem with its reason. Without statements or usage (a console composed without them) every gated
+ * operation is refused.
  */
 export class OperatorEntitlementGate
 {
@@ -37,10 +40,11 @@ export class OperatorEntitlementGate
         return new OperatorEntitlementGate(undefined, undefined)
     }
 
-    /** Runs `work` once every operation is allowed for the client, all decided and done in one section of its lock. */
-    public Run<T>(clientId: string, operations: readonly EntitledOperation[], work: () => Promise<T>): Promise<T>
+    /** Runs `work` once every operation is allowed for the client: decided and reserved in one section of its lock, the
+     *  work itself after the section, the reservation released when it ends. */
+    public async Run<T>(clientId: string, operations: readonly EntitledOperation[], work: () => Promise<T>): Promise<T>
     {
-        return this.lock.Run(clientId, async () =>
+        const reservation = await this.lock.Run(clientId, async () =>
         {
             const statement = await this.statements?.Current(clientId)
             for (const operation of operations)
@@ -53,8 +57,16 @@ export class OperatorEntitlementGate
                     throw new CustomerApiError(CustomerErrorCode.NotEntitled, CustomerErrorCodes.ReasonOf(decision))
                 }
             }
-            return await work()
+            return (this.usage as ClientUsage).Reserve(clientId, operations)
         })
+        try
+        {
+            return await work()
+        }
+        finally
+        {
+            reservation.Release()
+        }
     }
 
     /** The client's statement summary for the operator, or undefined when the console holds none. */

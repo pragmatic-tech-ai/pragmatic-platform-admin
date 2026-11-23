@@ -6,15 +6,15 @@ import { DomainNotClaimedError, DomainVerificationUnavailableError, DomainVerify
 import type { IClientStatements } from '../entitlements/client-statements.js'
 import { RecordExistsError, UnknownClientError, UnknownTenantError, type PlatformDirectory } from '../platform-directory.js'
 import { DomainTakenError, type PlatformEmailDomains } from '../platform-email-domains.js'
-import type { ClientLock } from './client-lock.js'
+import { ClientLockTimeoutError, type ClientLock } from './client-lock.js'
 import type { ClientUsage } from './client-usage.js'
 import { HiveViews } from './hive-views.js'
-import { EngineInstallCommand } from '../enrolment/engine-install-command.js'
+import { EngineInstallCommand, InvalidInstallReleaseError } from '../enrolment/engine-install-command.js'
 import { EnrolmentAgentKind } from '../enrolment/enrolment-code-record.js'
 import type { EnrolmentCodeIssuer } from '../enrolment/enrolment-code-issuer.js'
 import type { PlacementRegistry } from '../placement/placement-registry.js'
 import type { HiveObservationRecord } from '../hive-observation-record.js'
-import type { PlatformHiveRecord } from '../platform-records.js'
+import { PlatformHiveRecords, type PlatformHiveRecord } from '../platform-records.js'
 
 /** The platform release a tenant's install command names (PlatformDeploymentRegistry.InstallReleaseFor). */
 export interface IInstallReleases
@@ -40,6 +40,12 @@ export interface IHiveAdverts
     ForgetHive(hiveId: string): Promise<void>
 }
 
+/** The operator activity log (the console's AuditTrail): what operators must follow up is recorded there. */
+export interface IOperatorActivity
+{
+    Record(actor: string, action: string, target: string, status: number, note?: string): Promise<void>
+}
+
 /** What the customer API service works over. */
 export interface CustomerApiServiceParts
 {
@@ -55,6 +61,8 @@ export interface CustomerApiServiceParts
     Registrations: IHiveRegistrations
     Reports: IHiveReports
     Adverts: IHiveAdverts
+    /** Without it nothing is recorded for operators (tests). */
+    Activity?: IOperatorActivity
     Now?: () => Date
 }
 
@@ -67,15 +75,29 @@ export interface CustomerApiServiceParts
  */
 export class PlatformCustomerApiService implements ICustomerApiService
 {
+    /** Tenant ids a customer may not take: names of the platform's own services and hosts, and words that would read as
+     *  ours in a host name. Operators are not bound by it. */
+    public static readonly ReservedTenantIds: ReadonlySet<string> = new Set(['admin', 'agent', 'api', 'auth', 'cabinet', 'console', 'docs', 'help', 'hooks', 'idp',
+        'ledger', 'login', 'mail', 'mesh', 'platform', 'pragmatic', 'root', 'staff', 'status', 'support', 'system', 'test', 'www'])
+    public static readonly LeaveAction = 'POST'
+    public static readonly LeaveTarget = '/internal/customer/v1/leave-hive'
+    private static readonly HostedLeftPrefix = 'customer left hosted hive '
+    private static readonly HostedLeftSuffix = ': cluster still placed, remove it (C5.1 automates this)'
+    private static readonly StatusOk = 200
+
     public constructor(protected readonly parts: CustomerApiServiceParts)
     {
     }
 
     public CreateTenant(customer: CentralLoginSubject, request: CreateTenantRequest): Promise<TenantView>
     {
-        return this.parts.Lock.Run(request.ClientId, async () =>
+        return this.Locked(request.ClientId, async () =>
         {
             await this.RequireEntitled(customer, request.ClientId, EntitledOperation.CreateTenant)
+            if (PlatformCustomerApiService.ReservedTenantIds.has(request.TenantId))
+            {
+                throw new CustomerApiError(CustomerErrorCode.InvalidRequest)
+            }
             try
             {
                 const record = await this.parts.Directory.CreateTenant({ id: request.TenantId, clientId: request.ClientId, displayName: request.DisplayName, createdBy: customer.Key })
@@ -96,7 +118,7 @@ export class PlatformCustomerApiService implements ICustomerApiService
 
     public StartDomainVerification(customer: CentralLoginSubject, request: DomainVerificationRequest): Promise<DomainVerification>
     {
-        return this.parts.Lock.Run(request.ClientId, async () =>
+        return this.Locked(request.ClientId, async () =>
         {
             const statement = await this.RequireAdmin(customer, request.ClientId)
             this.TenantOf(request.ClientId, request.TenantId)
@@ -143,7 +165,7 @@ export class PlatformCustomerApiService implements ICustomerApiService
             this.TenantOf(request.ClientId, request.TenantId)
             return EnrolmentStart.Standalone(this.InstallCommandFor(request.TenantId, request.Level))
         }
-        return await this.parts.Lock.Run(request.ClientId, async () =>
+        return await this.Locked(request.ClientId, async () =>
         {
             const statement = await this.RequireAdmin(customer, request.ClientId)
             this.TenantOf(request.ClientId, request.TenantId)
@@ -171,23 +193,36 @@ export class PlatformCustomerApiService implements ICustomerApiService
     }
 
     /**
-     * The customer uninstalled: the hive is marked gone (kept, never deleted), its console advert forgotten (its domain
-     * claims released) and its agent registration revoked. Never gated: a suspended client may leave. Leaving again
-     * answers the gone hive.
+     * The customer uninstalled: the hive is marked gone first (kept, never deleted; from then on the deployment registry
+     * refuses to register it again, so an install or registration racing the leave cannot bring its agent back), then its
+     * agent registration is revoked and its console advert forgotten (its domain claims released). Leaving a Hosted hive
+     * records an operator activity entry: its cluster is still placed on our machines. An open placement of the client is
+     * withdrawn (cancelled) instead. Never gated: a suspended client may leave. Leaving again answers the gone hive.
      */
     public async LeaveHive(customer: CentralLoginSubject, request: LeaveHiveRequest): Promise<HiveView>
     {
         await this.RequireAdmin(customer, request.ClientId)
+        const placement = this.parts.Placements.OpenOf(request.ClientId, request.HiveId)
+        if (placement !== undefined)
+        {
+            return HiveViews.OfPlacement(await this.parts.Placements.Cancel(placement.id))
+        }
         const directory = this.parts.Directory
-        const hive = directory.GetHive(request.HiveId)
+        const hive = directory.GetHive(request.HiveId) as PlatformHiveRecord | undefined
         const tenant = hive === undefined ? undefined : directory.GetTenant(hive.tenantId)
         if (hive === undefined || tenant === undefined || tenant.clientId !== request.ClientId)
         {
             throw new CustomerApiError(CustomerErrorCode.UnknownHive)
         }
-        await this.parts.Adverts.ForgetHive(hive.id)
-        await this.parts.Registrations.DeregisterHive(hive.id)
+        const leaving = !PlatformHiveRecords.HasLeft(hive)
         const left = await directory.MarkHiveLeft(hive.id)
+        await this.parts.Registrations.DeregisterHive(hive.id)
+        await this.parts.Adverts.ForgetHive(hive.id)
+        if (leaving && PlatformHiveRecords.LevelOf(left) === HiveLevel.Hosted)
+        {
+            const S = PlatformCustomerApiService
+            await this.parts.Activity?.Record(customer.Email, S.LeaveAction, S.LeaveTarget, S.StatusOk, S.HostedLeftPrefix + hive.id + S.HostedLeftSuffix)
+        }
         return HiveViews.Of(left, this.parts.Reports.LatestRecord(hive.id), this.Now())
     }
 
@@ -211,7 +246,27 @@ export class PlatformCustomerApiService implements ICustomerApiService
         {
             throw new CustomerApiError(CustomerErrorCode.Unavailable)
         }
-        return EngineInstallCommand.For(level, release)
+        try
+        {
+            return EngineInstallCommand.For(level, release)
+        }
+        catch (err)
+        {
+            throw PlatformCustomerApiService.Refusal(err)
+        }
+    }
+
+    /** The client's lock section; a section that could not start in time is `unavailable`. */
+    private async Locked<T>(clientId: string, work: () => Promise<T>): Promise<T>
+    {
+        try
+        {
+            return await this.parts.Lock.Run(clientId, work)
+        }
+        catch (err)
+        {
+            throw PlatformCustomerApiService.Refusal(err)
+        }
     }
 
     private Now(): Date
@@ -262,7 +317,11 @@ export class PlatformCustomerApiService implements ICustomerApiService
         {
             return new CustomerApiError(CustomerErrorCode.UnknownTenant)
         }
-        if (err instanceof UnknownClientError || err instanceof DomainVerificationUnavailableError || err instanceof DomainVerifyThrottledError)
+        if (err instanceof DomainVerifyThrottledError)
+        {
+            return new CustomerApiError(CustomerErrorCode.RateLimited)
+        }
+        if (err instanceof UnknownClientError || err instanceof DomainVerificationUnavailableError || err instanceof InvalidInstallReleaseError || err instanceof ClientLockTimeoutError)
         {
             return new CustomerApiError(CustomerErrorCode.Unavailable)
         }

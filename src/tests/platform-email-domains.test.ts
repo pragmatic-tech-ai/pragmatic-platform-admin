@@ -419,11 +419,13 @@ describe('PlatformEmailDomains', () =>
         assert.equal(f.approvals.VerificationOf('acme', 'acme.test')?.verified, true)
     })
 
-    it('a verified domain another tenant claims reads VerifiedContested and stays pending; once the other tenant drops it, it reads Verified', async () =>
+    it('a verified domain another tenant holds with standing reads VerifiedContested and stays pending; once the other tenant drops it, it reads Verified', async () =>
     {
         await f.domains.Set('beta', ['shared.test'])
         await f.Advertise(['shared.test', 'acme.test'])
         await f.PublishOurs('beta', 'shared.test')
+        assert.equal((await f.domains.VerifyDomain('beta', 'shared.test')).state, DomainApprovalState.Verified, 'a bare claim contests nothing')
+        await f.domains.Approve('acme', 'shared.test')
         assert.equal((await f.domains.VerifyDomain('beta', 'shared.test')).state, DomainApprovalState.VerifiedContested)
         assert.deepEqual((await f.domains.Report('beta'))?.approvals?.map(a => [a.state, a.sharedWith]), [[DomainApprovalState.VerifiedContested, ['acme']]])
         assert.deepEqual((await f.domains.For('beta')).pending, ['shared.test'])
@@ -554,6 +556,8 @@ describe('PlatformEmailDomains', () =>
         assert.ok(answers.every(a => DomainVerificationRecord.IsToken(a.token)))
         await f.PublishOurs('acme', 'shared.test')
         await f.domains.VerifyDomain('acme', 'shared.test')
+        assert.equal((await f.domains.AnswersFor('acme', ['shared.test']))[0]?.state, DomainApprovalState.Verified, 'a bare record claim of beta contests nothing')
+        await f.domains.Approve('beta', 'shared.test')
         assert.equal((await f.domains.AnswersFor('acme', ['shared.test']))[0]?.state, DomainApprovalState.VerifiedContested)
     })
 

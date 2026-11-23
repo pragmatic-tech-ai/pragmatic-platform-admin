@@ -1,5 +1,5 @@
 import { Observable } from '@pragmatic-tech-ai/todl-runtime'
-import type { ClientDto, ClientEntitlementDto, FleetHiveDto, TenantDto } from './portal-types.js'
+import { ClientEntitlementState, type ClientDto, type ClientEntitlementDto, type FleetHiveDto, type TenantDto } from './portal-types.js'
 import { FleetConnection, FleetViewModel } from './fleet-view-model.js'
 
 export interface ClientListRow
@@ -25,8 +25,6 @@ export class ClientsViewModel extends Observable
     public static readonly NoStatementLabel = 'No statement'
     public static readonly ActiveLabel = 'Active'
     public static readonly SuspendedLabel = 'Suspended'
-    private static readonly ActiveState = 'active'
-    private static readonly SuspendedState = 'suspended'
     private static readonly LimitSeparator = ', '
     private static readonly LimitNameSeparator = ' '
     private static readonly VersionPrefix = 'v'
@@ -104,11 +102,11 @@ export class ClientsViewModel extends Observable
         {
             return C.NoStatementLabel
         }
-        if (entitlement.state === C.ActiveState)
+        if (entitlement.state === ClientEntitlementState.Active)
         {
             return C.ActiveLabel
         }
-        return entitlement.state === C.SuspendedState ? C.SuspendedLabel : entitlement.state
+        return entitlement.state === ClientEntitlementState.Suspended ? C.SuspendedLabel : entitlement.state
     }
 
     /** `tenants 1, hives 3`: the plan's named limits (an absent limit allows nothing). */

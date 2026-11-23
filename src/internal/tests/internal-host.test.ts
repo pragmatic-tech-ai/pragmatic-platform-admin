@@ -125,9 +125,16 @@ class InternalFixture
         return 'http://' + addr.address + ':' + String(addr.port)
     }
 
-    public static Send(host: InternalHost, method: string, path: string, bearer: string | undefined, body?: unknown): Promise<Reply>
+    public static readonly MeshHost = 'padmin.mesh.example'
+    public static readonly OtherHost = 'evil.example'
+
+    public static Send(host: InternalHost, method: string, path: string, bearer: string | undefined, body?: unknown, hostHeader?: string): Promise<Reply>
     {
         const headers: Record<string, string> = { 'content-type': 'application/json' }
+        if (hostHeader !== undefined)
+        {
+            headers.host = hostHeader
+        }
         if (bearer !== undefined)
         {
             headers.authorization = 'Bearer ' + bearer
@@ -305,6 +312,22 @@ describe('InternalHost', () =>
         assert.equal((await F.Send(host, 'GET', InternalApiRoutes.Healthz, undefined)).status, 200)
     })
 
+    it('answers loopback Host names always, an allowed host when configured, and refuses any other Host', async () =>
+    {
+        assert.equal((await F.Send(host, 'GET', InternalApiRoutes.Healthz, undefined, undefined, F.OtherHost)).status, 403)
+        assert.equal((await F.Send(host, 'POST', InternalApiRoutes.Discover, credential.Bearer(), { email: 'a@b.c' }, F.MeshHost)).status, 403)
+        await host.Close()
+        host = await Start(new InternalSettings(0, F.Loopback, files.Internal, undefined, undefined, undefined, [F.MeshHost]))
+        assert.equal((await F.Send(host, 'POST', InternalApiRoutes.Discover, credential.Bearer(), { email: 'a@b.c' }, F.MeshHost + ':7001')).status, 200)
+        assert.equal((await F.Send(host, 'POST', InternalApiRoutes.Discover, credential.Bearer(), { email: 'a@b.c' }, F.OtherHost)).status, 403)
+    })
+
+    it('a link whose setting is on without its part refuses the start, naming the setting', () =>
+    {
+        assert.throws(() => new InternalHost(Settings({ Entitlements: true }), { Agent: agent, Discovery: discovery }), /PRAGMATIC_ADMIN_ENTITLEMENTS_SECRET_FILE/)
+        assert.throws(() => new InternalHost(Settings({ Customer: true }), { Agent: agent, Discovery: discovery, Customer: service }), /PRAGMATIC_ADMIN_CUSTOMER_API_SECRET_FILE/)
+    })
+
     it('a missing or short secret file named in the settings refuses the start naming the variable', () =>
     {
         writeFileSync(join(parent, 'short'), F.ShortSecret)
@@ -312,6 +335,8 @@ describe('InternalHost', () =>
         assert.throws(() => new InternalHost(new InternalSettings(0, F.Loopback, files.Internal, join(parent, 'missing')), parts), /PRAGMATIC_ADMIN_ENTITLEMENTS_SECRET_FILE/)
         assert.throws(() => new InternalHost(new InternalSettings(0, F.Loopback, files.Internal, undefined, join(parent, 'short'), CentralLoginSettings.Of({})), parts), (err: Error) => /PRAGMATIC_ADMIN_CUSTOMER_API_SECRET_FILE/.test(err.message) && !err.message.includes(F.ShortSecret))
         assert.throws(() => new InternalHost(new InternalSettings(0, F.Loopback, join(parent, 'missing')), parts), /PRAGMATIC_INTERNAL_API_SECRET_FILE/)
+        writeFileSync(join(parent, 'short-internal'), F.ShortSecret)
+        assert.throws(() => new InternalHost(new InternalSettings(0, F.Loopback, join(parent, 'short-internal')), parts), (err: Error) => /PRAGMATIC_INTERNAL_API_SECRET_FILE/.test(err.message) && !err.message.includes(F.ShortSecret))
     })
 })
 
@@ -329,6 +354,14 @@ describe('InternalSettings', () =>
         const settings = InternalSettings.Of({ PRAGMATIC_ADMIN_INTERNAL_PORT: '7001', PRAGMATIC_INTERNAL_API_SECRET_FILE: '/run/secrets/edge' })
         assert.deepEqual([settings?.Port, settings?.Bind, settings?.SecretFile, settings?.EntitlementsSecretFile, settings?.CustomerApiSecretFile, settings?.Central], [7001, '127.0.0.1', '/run/secrets/edge', undefined, undefined, undefined])
         assert.equal(InternalSettings.Of({ PRAGMATIC_ADMIN_INTERNAL_PORT: '7001', PRAGMATIC_ADMIN_INTERNAL_BIND: '0.0.0.0', PRAGMATIC_INTERNAL_API_SECRET_FILE: '/s' })?.Bind, '0.0.0.0')
+    })
+
+    it('answers the bind address unless it is a wildcard, plus the allowed hosts setting', () =>
+    {
+        const base = { PRAGMATIC_ADMIN_INTERNAL_PORT: '7001', PRAGMATIC_INTERNAL_API_SECRET_FILE: '/s' }
+        assert.deepEqual(InternalSettings.Of({ ...base, PRAGMATIC_ADMIN_INTERNAL_BIND: '100.64.0.1' })?.HostNames, ['100.64.0.1'])
+        assert.deepEqual(InternalSettings.Of({ ...base, PRAGMATIC_ADMIN_INTERNAL_BIND: '0.0.0.0' })?.HostNames, [])
+        assert.deepEqual(InternalSettings.Of({ ...base, PRAGMATIC_ADMIN_INTERNAL_BIND: '::', PRAGMATIC_ADMIN_INTERNAL_ALLOWED_HOSTS: ' a.mesh , b.mesh,' })?.HostNames, ['a.mesh', 'b.mesh'])
     })
 
     it('reads the entitlements and customer links, the customer link with its central login', () =>

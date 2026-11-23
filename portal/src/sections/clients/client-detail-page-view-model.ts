@@ -158,10 +158,11 @@ export class ClientDetailPageViewModel extends PortalPageViewModel
     {
         const D = ClientDetailPageViewModel
         const oldName = this.DisplayName
-        const oldLabels: Array<[string, string]> = [
-            [D.PlanLabelProperty, this.PlanLabel], [D.StateLabelProperty, this.StateLabel], [D.LimitsLabelProperty, this.LimitsLabel],
-            [D.VersionLabelProperty, this.VersionLabel], [D.AdminsLabelProperty, this.AdminsLabel],
-        ]
+        const oldPlan = this.PlanLabel
+        const oldState = this.StateLabel
+        const oldLimits = this.LimitsLabel
+        const oldVersion = this.VersionLabel
+        const oldAdmins = this.AdminsLabel
         const oldSince = this.ClientSinceLabel
         const hadTenants = this.HasTenants
         const old = this.client
@@ -179,10 +180,11 @@ export class ClientDetailPageViewModel extends PortalPageViewModel
         }
         this.RaisePropertyChanged(ClientDetailPageViewModel.ClientProperty, old, client)
         this.RaisePropertyChanged(ClientDetailPageViewModel.DisplayNameProperty, oldName, this.DisplayName)
-        for (const [property, before] of oldLabels)
-        {
-            this.RaisePropertyChanged(property, before, this[property as keyof this] as unknown as string)
-        }
+        this.RaisePropertyChanged(D.PlanLabelProperty, oldPlan, this.PlanLabel)
+        this.RaisePropertyChanged(D.StateLabelProperty, oldState, this.StateLabel)
+        this.RaisePropertyChanged(D.LimitsLabelProperty, oldLimits, this.LimitsLabel)
+        this.RaisePropertyChanged(D.VersionLabelProperty, oldVersion, this.VersionLabel)
+        this.RaisePropertyChanged(D.AdminsLabelProperty, oldAdmins, this.AdminsLabel)
         this.RaisePropertyChanged(ClientDetailPageViewModel.ClientSinceLabelProperty, oldSince, this.ClientSinceLabel)
         this.RaisePropertyChanged(ClientDetailPageViewModel.HasTenantsProperty, hadTenants, this.HasTenants)
         this.RaisePropertyChanged(ClientDetailPageViewModel.HasNoTenantsProperty, !hadTenants, this.HasNoTenants)

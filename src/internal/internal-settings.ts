@@ -24,6 +24,11 @@ export class InternalLinkSecretError extends Error
  * PRAGMATIC_ADMIN_ENTITLEMENTS_SECRET_FILE is set) and the customer API the edge relays (when
  * PRAGMATIC_ADMIN_CUSTOMER_API_SECRET_FILE is set, with the central login it verifies customers at). One secret file
  * per link; each is read when the listener is composed, and a refusal names its setting.
+ *
+ * The listener answers only the Host names it is reached by: the loopback names always, the bind address when it is
+ * not a wildcard, and PRAGMATIC_ADMIN_INTERNAL_ALLOWED_HOSTS (comma-separated, e.g. a mesh name). A wildcard bind is
+ * accepted on purpose: frontdoor's pod binds 0.0.0.0 inside its own network namespace, which publishes the port on the
+ * host's loopback only; the listener is never reachable from a public interface by that construction, not by the bind.
  */
 export class InternalSettings
 {
@@ -31,6 +36,9 @@ export class InternalSettings
     public static readonly BindEnvVar = 'PRAGMATIC_ADMIN_INTERNAL_BIND'
     public static readonly EntitlementsSecretEnvVar = 'PRAGMATIC_ADMIN_ENTITLEMENTS_SECRET_FILE'
     public static readonly CustomerApiSecretEnvVar = 'PRAGMATIC_ADMIN_CUSTOMER_API_SECRET_FILE'
+    public static readonly AllowedHostsEnvVar = 'PRAGMATIC_ADMIN_INTERNAL_ALLOWED_HOSTS'
+    private static readonly HostSeparator = ','
+    private static readonly WildcardBinds: ReadonlySet<string> = new Set(['0.0.0.0', '::'])
     public static readonly DefaultBind = '127.0.0.1'
     private static readonly DisabledPortText = '0'
     private static readonly MaxPort = 65535
@@ -46,8 +54,17 @@ export class InternalSettings
         public readonly SecretFile: string,
         public readonly EntitlementsSecretFile: string | undefined = undefined,
         public readonly CustomerApiSecretFile: string | undefined = undefined,
-        public readonly Central: CentralLoginSettings | undefined = undefined)
+        public readonly Central: CentralLoginSettings | undefined = undefined,
+        public readonly AllowedHosts: readonly string[] = [])
     {
+    }
+
+    /** The Host names the listener answers besides the loopback names: the bind address unless it is a wildcard, and
+     *  the allowed hosts setting. */
+    public get HostNames(): readonly string[]
+    {
+        const names = InternalSettings.WildcardBinds.has(this.Bind) ? [] : [this.Bind]
+        return [...names, ...this.AllowedHosts]
     }
 
     /** Undefined when the internal listener is off (PRAGMATIC_ADMIN_INTERNAL_PORT blank or 0); a link setting without
@@ -83,10 +100,11 @@ export class InternalSettings
         {
             throw new Error(S.SecretRequired)
         }
-        return new InternalSettings(port, bind, secretFile, entitlements, customer, customer === undefined ? undefined : CentralLoginSettings.Of(env))
+        const hosts = (S.Read(env, S.AllowedHostsEnvVar) ?? '').split(S.HostSeparator).map(host => host.trim()).filter(host => host.length > 0)
+        return new InternalSettings(port, bind, secretFile, entitlements, customer, customer === undefined ? undefined : CentralLoginSettings.Of(env), hosts)
     }
 
-    /** The edge's internal API credential (the default link label). */
+    /** The edge's internal API credential (the default link label); InternalApiLink's refusal names its setting. */
     public InternalCredential(): InternalApiCredential
     {
         return InternalApiLink.Credential(this.SecretFile)

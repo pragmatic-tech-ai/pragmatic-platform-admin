@@ -3,10 +3,33 @@ import assert from 'node:assert/strict'
 import { SqlTestSessions } from '@pragmatic-tech-ai/pragmatic-realm-adapters/testing'
 import { EntitlementState } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import { CreateTenantRequest, CustomerApiError, CustomerErrorCode, DomainVerificationRequest, DomainVerificationState, ListTenantsRequest, NotEntitledReason } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
-import { DomainVerificationRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { DomainVerificationRecord, DomainVerifyThrottledError } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { TxtLookupStatus } from '../../txt-resolver.js'
 import { EntitlementSamples } from '../../entitlements/tests/entitlement-samples.js'
 import { CustomerFixture } from './customer-fixture.js'
+import { ClientLock } from '../client-lock.js'
+import { PlatformCustomerApiService } from '../platform-customer-api-service.js'
+import type { PlatformEmailDomains } from '../../platform-email-domains.js'
+
+/** A domain service whose check is throttled (more lookups than the tenant's window allows). */
+class ThrottledDomains
+{
+    private static readonly Message = 'Too many verification attempts'
+
+    public constructor(private readonly inner: PlatformEmailDomains)
+    {
+    }
+
+    public Holds(tenantId: string, domain: string): boolean
+    {
+        return this.inner.Holds(tenantId, domain)
+    }
+
+    public async CheckForCustomer(): Promise<never>
+    {
+        throw new DomainVerifyThrottledError(ThrottledDomains.Message)
+    }
+}
 
 class ServiceCases
 {
@@ -17,7 +40,9 @@ class ServiceCases
     public static readonly OtherDomain = 'acme-two.test'
     public static readonly OtherClient = 'globex'
     public static readonly OtherClientTenant = 'globex-main'
-    public static readonly BadTenantId = 'Not_A_Tenant'
+    public static readonly Reserved: readonly string[] = ['admin', 'api', 'pragmatic', 'www']
+    public static readonly ShortWaitMs = 20
+    public static readonly BlockMs = 80
     public static readonly Concurrent = 4
     public static readonly TwoTenants = { 'tenants': 2, 'hives': 1, 'verified-domains': 1 }
     public static readonly NoDomains = { 'tenants': 1, 'hives': 1 }
@@ -135,9 +160,37 @@ describe('PlatformCustomerApiService: tenants and domains', () =>
             assert.equal((await C.Refusal(f.Service().CreateTenant(S.Admin(), C.Create(C.OtherClientTenant)))).code, CustomerErrorCode.TenantTaken)
         })
 
-        it(`${backend}: an invalid tenant id is invalid-request`, async () =>
+        it(`${backend}: a reserved tenant id is invalid-request and nothing is recorded (a malformed one: the e2e test, through the routes)`, async () =>
         {
-            assert.throws(() => CreateTenantRequest.Parse({ ClientId: S.ClientId, TenantId: C.BadTenantId, DisplayName: C.DisplayName }), (err: Error & { Code?: string }) => err.message.length > 0)
+            const f = await CustomerFixture.Open(await makeSession())
+            await f.State(S.Statement(1))
+            for (const reserved of C.Reserved)
+            {
+                assert.equal((await C.Refusal(f.Service().CreateTenant(S.Admin(), C.Create(reserved)))).code, CustomerErrorCode.InvalidRequest)
+            }
+            assert.deepEqual(f.Directory.ListTenants(S.ClientId), [])
+        })
+
+        it(`${backend}: a throttled verification check is rate-limited, not unavailable`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await f.State(S.Statement(1))
+            await f.Service().CreateTenant(S.Admin(), C.Create())
+            await f.Service().StartDomainVerification(S.Admin(), C.Domains())
+            const throttled = new PlatformCustomerApiService({ ...f.Parts, Domains: new ThrottledDomains(f.Domains) as unknown as PlatformEmailDomains })
+            assert.equal((await C.Refusal(throttled.CheckDomainVerification(S.Admin(), C.Domains()))).code, CustomerErrorCode.RateLimited)
+        })
+
+        it(`${backend}: a section that cannot start within the lock's wait limit is unavailable`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await f.State(S.Statement(1))
+            const lock = new ClientLock(C.ShortWaitMs)
+            const service = new PlatformCustomerApiService({ ...f.Parts, Lock: lock })
+            const blocker = lock.Run(S.ClientId, () => new Promise<void>(resolve => setTimeout(resolve, C.BlockMs)))
+            assert.equal((await C.Refusal(service.CreateTenant(S.Admin(), C.Create()))).code, CustomerErrorCode.Unavailable)
+            await blocker
+            assert.deepEqual(f.Directory.ListTenants(S.ClientId), [])
         })
 
         it(`${backend}: a tenant of another client is unknown-tenant`, async () =>
@@ -161,6 +214,20 @@ describe('PlatformCustomerApiService: tenants and domains', () =>
             f.Txt.Answer = { status: TxtLookupStatus.Found, records: [[other.RecordValue]] }
             assert.equal((await f.Service().CheckDomainVerification(S.Admin(), new DomainVerificationRequest(C.OtherClient, C.OtherClientTenant, C.Domain))).State, DomainVerificationState.Verified)
             assert.equal((await C.Refusal(f.Service().StartDomainVerification(S.Admin(), C.Domains()))).code, CustomerErrorCode.DomainTaken)
+        })
+
+        it(`${backend}: another tenant's unproven claim never blocks the owner who proves the domain`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await f.State(S.Statement(1))
+            await f.State(S.Statement(1, { ClientId: C.OtherClient }))
+            await f.Service().CreateTenant(S.Admin(), C.Create())
+            await f.Service().CreateTenant(S.Admin(), C.Create(C.OtherClientTenant, C.OtherClient))
+            await f.Service().StartDomainVerification(S.Admin(), new DomainVerificationRequest(C.OtherClient, C.OtherClientTenant, C.Domain))
+            const owner = await f.Service().StartDomainVerification(S.Admin(), C.Domains())
+            f.Txt.Answer = { status: TxtLookupStatus.Found, records: [[owner.RecordValue]] }
+            assert.equal((await f.Service().CheckDomainVerification(S.Admin(), C.Domains())).State, DomainVerificationState.Verified)
+            assert.equal((await C.Refusal(f.Service().StartDomainVerification(S.Admin(), new DomainVerificationRequest(C.OtherClient, C.OtherClientTenant, C.Domain)))).code, CustomerErrorCode.DomainTaken)
         })
 
         it(`${backend}: check answers verified once the TXT record resolves`, async () =>

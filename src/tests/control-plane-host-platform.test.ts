@@ -1,3 +1,4 @@
+import { HiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
 import { TestEntitlements } from './test-entitlements.js'
 import { EntitlementState } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import { EntitlementSamples } from '../entitlements/tests/entitlement-samples.js'
@@ -162,6 +163,23 @@ class FakeIdpService implements IIdpService
     }
 }
 
+/** The read-only clients routes' requests. */
+class ReadOnlyClients
+{
+    public static readonly Post = 'POST'
+    public static readonly Put = 'PUT'
+    public static readonly Delete = 'DELETE'
+    public static readonly Get = 'GET'
+    public static readonly Clients = '/api/clients'
+    public static readonly Acme = '/api/clients/acme'
+    public static readonly AcmeId = 'acme'
+    public static readonly AcmeName = 'Acme'
+    public static readonly Globex = 'globex'
+    public static readonly GlobexName = 'Globex'
+    public static readonly Renamed = 'Renamed'
+    public static readonly MethodNotAllowed = 405
+}
+
 describe('ControlPlaneHost platform routes', () =>
 {
     let host: ControlPlaneHost
@@ -207,11 +225,12 @@ describe('ControlPlaneHost platform routes', () =>
 
     it('operators cannot create, edit or delete clients (405: the client routes are read-only)', async () =>
     {
-        assert.equal((await Harness.Send(host, 'POST', '/api/clients', { id: 'globex', displayName: 'Globex' })).status, 405)
-        assert.equal((await Harness.Send(host, 'PUT', '/api/clients/acme', { id: 'acme', displayName: 'Renamed' })).status, 405)
-        assert.equal((await Harness.Send(host, 'DELETE', '/api/clients/acme')).status, 405)
-        const list = JSON.parse((await Harness.Send(host, 'GET', '/api/clients')).body)
-        assert.deepEqual(list.map((c: { id: string, displayName: string }) => [c.id, c.displayName]), [['acme', 'Acme']])
+        const R = ReadOnlyClients
+        assert.equal((await Harness.Send(host, R.Post, R.Clients, { id: R.Globex, displayName: R.GlobexName })).status, R.MethodNotAllowed)
+        assert.equal((await Harness.Send(host, R.Put, R.Acme, { id: R.AcmeId, displayName: R.Renamed })).status, R.MethodNotAllowed)
+        assert.equal((await Harness.Send(host, R.Delete, R.Acme)).status, R.MethodNotAllowed)
+        const list = JSON.parse((await Harness.Send(host, R.Get, R.Clients)).body)
+        assert.deepEqual(list.map((c: { id: string, displayName: string }) => [c.id, c.displayName]), [[R.AcmeId, R.AcmeName]])
     })
 
     it('the client view shows plan, state, limits and version, never a price', async () =>
@@ -242,6 +261,14 @@ describe('ControlPlaneHost platform routes', () =>
         assert.equal(JSON.parse((await Harness.Send(host, 'GET', '/api/hives')).body).length, 0)
         statements.State('acme', { State: EntitlementState.Suspended, Limits: { 'tenants': 5 } })
         assert.equal(JSON.parse((await Harness.Send(host, 'POST', '/api/tenants', { id: 't3', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })).body).reason, 'suspended')
+    })
+
+    it('an operator-created tenant names its operator as createdBy; an operator-created hive is Hosted', async () =>
+    {
+        assert.equal((await Harness.Send(host, 'POST', '/api/tenants', { id: 't1', clientId: 'acme', displayName: 'T', ownerEmail: 'o@x.test' })).status, 201)
+        assert.match(fake.Calls[0]?.createdBy ?? '', /^operator:.+@/)
+        assert.equal((await Harness.Send(host, 'POST', '/api/hives', { id: 'h1', tenantId: 't1', displayName: 'H', cluster: { backend: 'local', mode: 'attach' }, registry: { mode: 'attach' } })).status, 201)
+        assert.equal(JSON.parse((await Harness.Send(host, 'GET', '/api/hives/h1')).body).level, HiveLevel.Hosted)
     })
 
     it('provisions a tenant and reveals the one-time Owner password with no-store', async () =>

@@ -15,7 +15,7 @@ import { TenantRegistry } from '../../tenant-registry.js'
 import { DomainTxtVerifier, TxtLookupStatus, type ITxtResolver, type TxtLookup } from '../../txt-resolver.js'
 import { ClientLock } from '../client-lock.js'
 import { ClientUsage, type IHiveReservations } from '../client-usage.js'
-import { PlatformCustomerApiService, type CustomerApiServiceParts, type IHiveRegistrations, type IInstallReleases } from '../platform-customer-api-service.js'
+import { PlatformCustomerApiService, type CustomerApiServiceParts, type IHiveRegistrations, type IInstallReleases, type IOperatorActivity } from '../platform-customer-api-service.js'
 import { EnrolmentCodeIssuer } from '../../enrolment/enrolment-code-issuer.js'
 import { EnrolmentCodeRegistry } from '../../enrolment/enrolment-code-record.js'
 import { PlacementRegistry } from '../../placement/placement-registry.js'
@@ -37,6 +37,17 @@ export class FakeDeployments implements IInstallReleases, IHiveRegistrations
     public async DeregisterHive(hiveId: string): Promise<void>
     {
         this.Deregistered.push(hiveId)
+    }
+}
+
+/** The operator activity entries the service records. */
+export class FakeActivity implements IOperatorActivity
+{
+    public readonly Entries: Array<{ actor: string, action: string, target: string, status: number, note: string | undefined }> = []
+
+    public async Record(actor: string, action: string, target: string, status: number, note?: string): Promise<void>
+    {
+        this.Entries.push({ actor, action, target, status, note })
     }
 }
 
@@ -86,6 +97,7 @@ export class CustomerFixture
         public readonly Observations: HiveObservationRegistry,
         public readonly Deployments: FakeDeployments,
         public readonly Clock: TestClock,
+        public readonly Activity: FakeActivity,
         public readonly Parts: CustomerApiServiceParts)
     {
     }
@@ -114,11 +126,12 @@ export class CustomerFixture
         const usage = new ClientUsage(directory, domains, [codes, placements, ...reservations], now)
         const lock = new ClientLock()
         const deployments = new FakeDeployments()
+        const activity = new FakeActivity()
         const parts: CustomerApiServiceParts = {
             Statements: sink, Directory: directory, Domains: domains, Usage: usage, Lock: lock, Codes: codes, Placements: placements,
-            Releases: deployments, Registrations: deployments, Reports: observations, Adverts: adverts, Now: now,
+            Releases: deployments, Registrations: deployments, Reports: observations, Adverts: adverts, Activity: activity, Now: now,
         }
-        return new CustomerFixture(sink, directory, domains, adverts, txt, usage, lock, codes, placements, observations, deployments, clock, parts)
+        return new CustomerFixture(sink, directory, domains, adverts, txt, usage, lock, codes, placements, observations, deployments, clock, activity, parts)
     }
 
     public Service(): PlatformCustomerApiService

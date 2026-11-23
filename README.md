@@ -21,7 +21,8 @@ channel) are refused at start. Local stacks run the console and the edge as two 
 ## The internal listener
 
 `PRAGMATIC_ADMIN_INTERNAL_PORT` (with `PRAGMATIC_ADMIN_INTERNAL_BIND`, default `127.0.0.1`) turns on the internal
-listener (`internal/internal-host.ts`, an AppHost answering the loopback host names only). It carries one link per
+listener (`internal/internal-host.ts`, an AppHost answering only the loopback host names, a non-wildcard bind address
+and `PRAGMATIC_ADMIN_INTERNAL_ALLOWED_HOSTS`, comma-separated). It carries one link per
 caller, each with its own secret file (at least 32 bytes; a refusal names the setting, never the content):
 
 | Link | Setting | Routes |

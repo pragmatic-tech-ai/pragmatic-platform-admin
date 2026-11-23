@@ -18,11 +18,19 @@ export type EnvironmentDto =
     wsUrl: string
 }
 
+// Whether a client may act, as its statement says (the entitlements contract's EntitlementState on the wire; the portal
+// runs in the browser and takes no server package). Another value (a newer ledger) is shown as it is.
+export enum ClientEntitlementState
+{
+    Active = 'active',
+    Suspended = 'suspended',
+}
+
 // What the clients ledger's newest statement says of a client (never a price).
 export type ClientEntitlementDto =
 {
     planId: string
-    state: string
+    state: ClientEntitlementState | string
     limits: Record<string, number>
     version: number
     issuedAt: string

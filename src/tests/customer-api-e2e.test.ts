@@ -7,7 +7,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FakeOidcHttpClient, FakeOidcIdp } from '@pragmatic-tech-ai/pragmatic-identity-source-oidc/testing'
 import { SqlTestSessions } from '@pragmatic-tech-ai/pragmatic-realm-adapters/testing'
-import { PgSession } from '@pragmatic-tech-ai/pragmatic-realm-adapters'
 import { CentralLoginSubject, EntitlementState } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import { CreateTenantRequest, CustomerApiClient, CustomerApiError, CustomerApiLink, CustomerApiRelay, CustomerErrorCode, DomainVerificationRequest, DomainVerificationState, HiveHealth, HiveLevel, LeaveHiveRequest, ListHivesRequest, ListTenantsRequest, NotEntitledReason, StartEnrolmentRequest } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
 import type { IAgentChannelBackend, IDesktopDiscoveryBackend } from '@pragmatic-tech-ai/pragmatic-platform-link'
@@ -21,8 +20,11 @@ import { InternalSettings } from '../internal/internal-settings.js'
 import { TxtLookupStatus } from '../txt-resolver.js'
 
 /**
- * The edge's part, in process: a public POST under the customer prefix relayed by the contract's CustomerApiRelay (the
- * wire the platform edge reproduces) to the console's internal listener. Nothing else.
+ * A relay on the contract's CustomerApiRelay, in process: a public POST under the customer prefix carried to the
+ * console's internal listener. It is not the platform edge (a separate application repository, not a package the
+ * console can depend on): the edge's own relay, limits and logging are proven by its repository's tests (including a
+ * round trip with this contract's CustomerApiClient and CustomerApiRoutes) and by the live probe on frontdoor; this test
+ * proves the console's side of the wire end to end.
  */
 class TestEdge
 {
@@ -42,8 +44,8 @@ class TestEdge
 
     public async Listen(): Promise<string>
     {
-        await new Promise<void>(resolve => this.server.listen(0, '127.0.0.1', () => resolve()))
-        return 'http://127.0.0.1:' + String((this.server.address() as AddressInfo).port)
+        await new Promise<void>(resolve => this.server.listen(0, E2e.Loopback, () => resolve()))
+        return E2e.LoopbackUrl + String((this.server.address() as AddressInfo).port)
     }
 
     public Close(): Promise<void>
@@ -83,6 +85,22 @@ class E2e
     public static readonly OperatorHive = 'acme-hive'
     public static readonly Secret = 's'.repeat(40)
     public static readonly Limits = { 'tenants': 2, 'hives': 5, 'verified-domains': 2 }
+    public static readonly OtherAudience = 'pragmatic-ledger'
+    public static readonly DirPrefix = 'customer-e2e-'
+    public static readonly InternalFile = 'internal'
+    public static readonly CustomerFile = 'customer'
+    public static readonly InternalSuffix = 'i'
+    public static readonly CustomerSuffix = 'c'
+    public static readonly Loopback = '127.0.0.1'
+    public static readonly LoopbackUrl = 'http://127.0.0.1:'
+    public static readonly OtherClient = 'globex'
+    public static readonly SecondTenant = 'acme-second'
+    public static readonly SecondName = 'Second'
+    public static readonly BadTenantId = 'Not_A_Tenant'
+    public static readonly ReservedTenantId = 'admin'
+    public static readonly BadDisplayName = 'x'
+    public static readonly GarbageToken = 'not-a-token'
+    public static readonly Label = 'customer API end to end: CustomerApiClient -> a CustomerApiRelay relay -> InternalHost -> PlatformCustomerApiService'
 
     public static Admin(): CentralLoginSubject
     {
@@ -104,7 +122,7 @@ class E2e
     }
 }
 
-describe('customer API end to end: CustomerApiClient -> edge relay -> InternalHost -> PlatformCustomerApiService', () =>
+SqlTestSessions.Describe(E2e.Label, (makeSession, backend) => describe(backend, () =>
 {
     const C = E2e
     const S = EntitlementSamples
@@ -118,25 +136,25 @@ describe('customer API end to end: CustomerApiClient -> edge relay -> InternalHo
 
     before(async () =>
     {
-        dir = mkdtempSync(join(tmpdir(), 'customer-e2e-'))
-        const internalFile = join(dir, 'internal')
-        const customerFile = join(dir, 'customer')
-        writeFileSync(internalFile, C.Secret + 'i')
-        writeFileSync(customerFile, C.Secret + 'c')
+        dir = mkdtempSync(join(tmpdir(), C.DirPrefix))
+        const internalFile = join(dir, C.InternalFile)
+        const customerFile = join(dir, C.CustomerFile)
+        writeFileSync(internalFile, C.Secret + C.InternalSuffix)
+        writeFileSync(customerFile, C.Secret + C.CustomerSuffix)
         const idp = await FakeOidcIdp.Create(C.Issuer)
         token = await idp.MintIdToken({ sub: C.Subject, aud: C.Audience, email: C.Email, email_verified: true })
-        otherAudience = await idp.MintIdToken({ sub: C.Subject, aud: 'pragmatic-ledger', email: C.Email, email_verified: true })
-        f = await CustomerFixture.Open(new PgSession(SqlTestSessions.MemPool()))
+        otherAudience = await idp.MintIdToken({ sub: C.Subject, aud: C.OtherAudience, email: C.Email, email_verified: true })
+        f = await CustomerFixture.Open(await makeSession())
         await f.State(S.Statement(1, { Admins: [C.Admin()], Limits: C.Limits }))
         const central = new CentralLoginSettings(C.Issuer, C.Audience, undefined)
-        const settings = new InternalSettings(0, '127.0.0.1', internalFile, undefined, customerFile, central)
+        const settings = new InternalSettings(0, C.Loopback, internalFile, undefined, customerFile, central)
         host = new InternalHost(settings, {
             Agent: {} as IAgentChannelBackend, Discovery: {} as IDesktopDiscoveryBackend,
             Customer: f.Service(), Verifier: CentralLoginVerifiers.Create(central, new FakeOidcHttpClient(idp)),
         })
         await host.Listen()
         const address = host.Address()
-        edge = new TestEdge(new CustomerApiRelay('http://127.0.0.1:' + String(address.port), CustomerApiLink.CredentialFromFile(customerFile)))
+        edge = new TestEdge(new CustomerApiRelay(C.LoopbackUrl + String(address.port), CustomerApiLink.CredentialFromFile(customerFile)))
         client = new CustomerApiClient(await edge.Listen())
     })
 
@@ -188,20 +206,20 @@ describe('customer API end to end: CustomerApiClient -> edge relay -> InternalHo
 
     it('a missing, garbage or other-audience token is not-signed-in; an unknown client is not-admin-of-client', async () =>
     {
-        assert.deepEqual(await C.Refusal(client.ListTenants('not-a-token', new ListTenantsRequest(S.ClientId))), [CustomerErrorCode.NotSignedIn, undefined])
+        assert.deepEqual(await C.Refusal(client.ListTenants(C.GarbageToken, new ListTenantsRequest(S.ClientId))), [CustomerErrorCode.NotSignedIn, undefined])
         assert.deepEqual(await C.Refusal(client.ListTenants(otherAudience, new ListTenantsRequest(S.ClientId))), [CustomerErrorCode.NotSignedIn, undefined])
-        assert.deepEqual(await C.Refusal(client.ListTenants(token, new ListTenantsRequest('globex'))), [CustomerErrorCode.NotAdminOfClient, undefined])
+        assert.deepEqual(await C.Refusal(client.ListTenants(token, new ListTenantsRequest(C.OtherClient))), [CustomerErrorCode.NotAdminOfClient, undefined])
     })
 
     it('a suspended client still lists but cannot create', async () =>
     {
         await f.State(S.Statement(2, { Admins: [C.Admin()], Limits: C.Limits, State: EntitlementState.Suspended }))
         assert.equal((await client.ListTenants(token, new ListTenantsRequest(S.ClientId))).length, 1)
-        assert.deepEqual(await C.Refusal(client.CreateTenant(token, new CreateTenantRequest(S.ClientId, 'acme-second', 'Second'))), [CustomerErrorCode.NotEntitled, NotEntitledReason.Suspended])
+        assert.deepEqual(await C.Refusal(client.CreateTenant(token, new CreateTenantRequest(S.ClientId, C.SecondTenant, C.SecondName))), [CustomerErrorCode.NotEntitled, NotEntitledReason.Suspended])
     })
 
-    it('an invalid tenant id is invalid-request', async () =>
+    it('an invalid tenant id is a 400 invalid-request through the routes', async () =>
     {
-        assert.deepEqual(await C.Refusal(client.CreateTenant(token, new CreateTenantRequest(S.ClientId, 'Not_A_Tenant', 'x'))), [CustomerErrorCode.InvalidRequest, undefined])
+        assert.deepEqual(await C.Refusal(client.CreateTenant(token, new CreateTenantRequest(S.ClientId, C.BadTenantId, C.BadDisplayName))), [CustomerErrorCode.InvalidRequest, undefined])
     })
-})
+}))

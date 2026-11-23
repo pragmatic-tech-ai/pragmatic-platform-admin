@@ -154,6 +154,13 @@
           "description": "PRAGMATIC_ADMIN_INTERNAL_BIND: Address of the internal API listener (an IP address or localhost)."
         },
         {
+          "name": "allowedHosts",
+          "type": "string",
+          "required": false,
+          "secret": false,
+          "description": "PRAGMATIC_ADMIN_INTERNAL_ALLOWED_HOSTS: Host names the internal listener answers besides the loopback names and a non-wildcard bind address (comma-separated, e.g. a mesh name)."
+        },
+        {
           "name": "secret",
           "type": "string",
           "required": true,

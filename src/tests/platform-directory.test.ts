@@ -1,3 +1,5 @@
+import { HiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import type { PlatformHiveRecord } from '../platform-records.js'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
@@ -99,6 +101,22 @@ test('CreateClient then CreateTenant then CreateHive persists the chain', async 
         assert.deepEqual(f.directory.ListTenants('c1').map(t => t.id), ['t1'])
         assert.deepEqual(f.directory.ListHives('t1').map(h => h.id), ['h1'])
         assert.equal(f.directory.ListHives('t2').length, 0)
+    }
+    finally
+    {
+        await f.Dispose()
+    }
+})
+
+test('CreateHive writes the hive\'s level: Hosted unless given, as every operator-created hive is', async () =>
+{
+    const f = await DirectoryFixture.Create()
+    try
+    {
+        await f.Seed()
+        assert.equal((f.directory.GetHive('h1') as PlatformHiveRecord).level, HiveLevel.Hosted)
+        const enrolled = await f.directory.CreateHive({ id: 'h2', tenantId: 't1', displayName: 'H2', cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Attach }, level: HiveLevel.Enrolled })
+        assert.equal(enrolled.level, HiveLevel.Enrolled)
     }
     finally
     {

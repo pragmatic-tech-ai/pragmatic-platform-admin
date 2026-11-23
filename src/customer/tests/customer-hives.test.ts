@@ -20,6 +20,8 @@ class HiveCases
     public static readonly ConsoleUrl = 'https://console.acme.test'
     public static readonly AdvertDomain = 'acme.test'
     public static readonly TwoHives = { 'tenants': 1, 'hives': 2, 'verified-domains': 1 }
+    public static readonly StillPlaced = ': cluster still placed'
+    public static readonly BadRelease = 'latest; rm -rf /'
 
     public static async Ready(f: CustomerFixture, limits?: Record<string, number>): Promise<void>
     {
@@ -134,6 +136,40 @@ describe('PlatformCustomerApiService: enrolment, hives, leave', () =>
             assert.deepEqual(f.Deployments.Deregistered, [C.HiveId])
             assert.ok((await f.Service().StartEnrolment(S.Admin(), C.Start(HiveLevel.Hosted))).PlacementId !== null)
             assert.equal((await f.Service().LeaveHive(S.Admin(), new LeaveHiveRequest(S.ClientId, C.HiveId))).Health, HiveHealth.Gone)
+        })
+
+        it(`${backend}: leaving an open placement withdraws it: gone, off the list, no longer counted`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await C.Ready(f)
+            const placement = (await f.Service().StartEnrolment(S.Admin(), C.Start(HiveLevel.Hosted))).PlacementId as string
+            assert.equal((await C.Code(f.Service().StartEnrolment(S.Admin(), C.Start(HiveLevel.Hosted)))).reason, NotEntitledReason.LimitReached)
+            const view = await f.Service().LeaveHive(S.Admin(), new LeaveHiveRequest(S.ClientId, placement))
+            assert.deepEqual([view.HiveId, view.Level, view.Health], [placement, HiveLevel.Hosted, HiveHealth.Gone])
+            assert.deepEqual(await f.Service().ListHives(S.Admin(), new ListHivesRequest(S.ClientId)), [])
+            assert.ok((await f.Service().StartEnrolment(S.Admin(), C.Start(HiveLevel.Hosted))).PlacementId !== null, 'the slot is free again')
+            assert.equal((await C.Code(f.Service().LeaveHive(S.Admin(), new LeaveHiveRequest(S.ClientId, placement)))).code, CustomerErrorCode.UnknownHive)
+        })
+
+        it(`${backend}: leaving a Hosted hive records one operator activity entry: its cluster is still placed`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await C.Ready(f)
+            await f.Hive(C.HiveId, C.TenantId)
+            await f.Service().LeaveHive(S.Admin(), new LeaveHiveRequest(S.ClientId, C.HiveId))
+            await f.Service().LeaveHive(S.Admin(), new LeaveHiveRequest(S.ClientId, C.HiveId))
+            assert.equal(f.Activity.Entries.length, 1)
+            assert.equal(f.Activity.Entries[0]?.actor, S.Admin().Email)
+            assert.match(f.Activity.Entries[0]?.note ?? '', new RegExp(C.HiveId + C.StillPlaced))
+        })
+
+        it(`${backend}: an install release that is not a version is unavailable`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await C.Ready(f)
+            f.Deployments.Release = C.BadRelease
+            assert.equal((await C.Code(f.Service().StartEnrolment(S.Admin(), C.Start(HiveLevel.Standalone)))).code, CustomerErrorCode.Unavailable)
+            assert.equal((await C.Code(f.Service().StartEnrolment(S.Admin(), C.Start(HiveLevel.Enrolled)))).code, CustomerErrorCode.Unavailable)
         })
 
         it(`${backend}: a hive of another client, or none, is unknown-hive; a tenant of another client is unknown-tenant`, async () =>

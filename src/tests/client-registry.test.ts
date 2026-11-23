@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ClientRegistry } from '../client-registry.js'
@@ -13,6 +13,8 @@ class ClientFixture
     public static readonly MissingFileName = 'none.json'
     public static readonly Malformed = '{ not json'
     public static readonly Encoding = 'utf8'
+    public static readonly LegacyField = 'subscriptionRef'
+    public static readonly LegacyValue = 'sub-legacy-1'
 
     public static Record(): ClientRecord
     {
@@ -81,6 +83,27 @@ test('Load on malformed JSON throws (not silent-empty)', async () =>
     {
         await writeFile(file, ClientFixture.Malformed, ClientFixture.Encoding)
         await assert.rejects(new ClientRegistry(file).Load())
+    }
+    finally
+    {
+        await rm(dir, { recursive: true, force: true })
+    }
+})
+
+test('a legacy row\'s subscriptionRef is never answered and is dropped at its next write', async () =>
+{
+    const dir = await mkdtemp(join(tmpdir(), ClientFixture.Prefix))
+    const file = join(dir, ClientFixture.FileName)
+    try
+    {
+        const legacy = { ...ClientFixture.Record(), [ClientFixture.LegacyField]: ClientFixture.LegacyValue }
+        await writeFile(file, JSON.stringify({ [ClientRegistry.RootKey]: { [legacy.id]: legacy } }), ClientFixture.Encoding)
+        const reg = new ClientRegistry(file)
+        await reg.Load()
+        assert.deepEqual(reg.Get(legacy.id), ClientFixture.Record())
+        assert.deepEqual(reg.List(), [ClientFixture.Record()])
+        await reg.Put(reg.Get(legacy.id) as ClientRecord)
+        assert.equal((await readFile(file, ClientFixture.Encoding)).includes(ClientFixture.LegacyValue), false)
     }
     finally
     {

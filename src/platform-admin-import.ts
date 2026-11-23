@@ -12,6 +12,7 @@ import { PlatformAdminRegistry, type PlatformAdminDatabase } from './platform-ad
 import { SqlSignatureStore } from './sql-signature-store.js'
 import { OperatorIdentity } from './operator-identity.js'
 import { ClientRegistry } from './client-registry.js'
+import { ClientRecords, type ClientRecord } from './platform-records.js'
 import { TenantRegistry } from './tenant-registry.js'
 import { HiveRegistry } from './hive-registry.js'
 import { IdpRegistry } from './idp-registry.js'
@@ -27,7 +28,9 @@ import { ConsoleOwnerResets } from './console-owner-resets.js'
 /** One registry file of the data root and the table it goes to. */
 class DataRootFile
 {
-    public constructor(public readonly Registry: PlatformAdminRegistry, public readonly FileName: string, public readonly Options: FileRecordMapOptions)
+    /** `Normalise`: what a row becomes in the database (identity for most registries). */
+    public constructor(public readonly Registry: PlatformAdminRegistry, public readonly FileName: string, public readonly Options: FileRecordMapOptions,
+        public readonly Normalise: (record: unknown) => unknown = record => record)
     {
     }
 }
@@ -43,7 +46,8 @@ export class PlatformAdminDataRoot
     public static readonly SignaturesFile = 'signatures.json'
     public static readonly IdentityDir = 'identity'
     public static readonly Files: readonly DataRootFile[] = [
-        new DataRootFile(PlatformAdminRegistry.Clients, 'clients.json', { RootKey: ClientRegistry.RootKey }),
+        // A client row keeps only the console's own fields: a pre-D4 subscriptionRef (a provider reference) is dropped.
+        new DataRootFile(PlatformAdminRegistry.Clients, 'clients.json', { RootKey: ClientRegistry.RootKey }, record => ClientRecords.Of(record as ClientRecord)),
         new DataRootFile(PlatformAdminRegistry.Tenants, 'tenants.json', { RootKey: TenantRegistry.RootKey }),
         new DataRootFile(PlatformAdminRegistry.Hives, 'hives.json', { RootKey: HiveRegistry.RootKey }),
         new DataRootFile(PlatformAdminRegistry.Environments, 'registry.json', { RootKey: EnvironmentRegistry.RootKey }),
@@ -210,7 +214,8 @@ export class PlatformAdminImport
 
     private async ImportFile(file: DataRootFile, report: PlatformAdminImportReport): Promise<void>
     {
-        const records = await new FileRecordMap<unknown>(join(this.dataRoot, file.FileName), file.Options).Load()
+        const loaded = await new FileRecordMap<unknown>(join(this.dataRoot, file.FileName), file.Options).Load()
+        const records = new Map([...loaded].map(([key, record]) => [key, file.Normalise(record)]))
         const map = await this.database.Map<unknown>(file.Registry)
         await map.Save(records, new Set(records.keys()))
         report.Count(map.Location, records.size)

@@ -252,7 +252,7 @@ export class PlatformEmailDomains implements ITenantEmailDomains, IDomainUsage
             throw new DomainVerificationUnavailableError(P.LookupIncompletePrefix + DomainVerificationRecord.NameFor(normalised) + P.LookupIncompleteSuffix)
         }
         await this.approvals.RecordCheck(tenantId, normalised, check === DomainCheck.Verified, this.now().toISOString())
-        const answer = this.AnswerOf(tenantId, normalised, this.StandingOf(tenantId), claims.OthersClaiming(tenantId, normalised).length > 0)
+        const answer = this.AnswerOf(tenantId, normalised, this.StandingOf(tenantId), claims.Contesting(tenantId, normalised).length > 0)
         if (answer === undefined)
         {
             // Only ForgetTenant drops the entry between the check and here: the tenant is gone.
@@ -278,7 +278,7 @@ export class PlatformEmailDomains implements ITenantEmailDomains, IDomainUsage
         const claims = this.Claims()
         const standing = this.StandingOf(tenantId)
         return normalised
-            .map(d => this.AnswerOf(tenantId, d, standing, claims.OthersClaiming(tenantId, d).length > 0))
+            .map(d => this.AnswerOf(tenantId, d, standing, claims.Contesting(tenantId, d).length > 0))
             .filter((a): a is DomainVerificationAnswer => a !== undefined)
     }
 
@@ -396,7 +396,7 @@ export class PlatformEmailDomains implements ITenantEmailDomains, IDomainUsage
             throw new DomainVerificationUnavailableError(P.VerificationUnavailableMessage)
         }
         const claims = this.Claims()
-        const state = ConsoleDomainApprovals.StateOf(this.StandingOf(tenantId), domain, claims.OthersClaiming(tenantId, domain).length > 0)
+        const state = ConsoleDomainApprovals.StateOf(this.StandingOf(tenantId), domain, claims.Contesting(tenantId, domain).length > 0)
         return new DomainVerification(tenantId, domain, P.CustomerStates.get(state) ?? DomainVerificationState.Pending, DomainVerificationRecord.NameFor(domain), DomainVerificationRecord.ValueFor(entry.token))
     }
 
@@ -463,7 +463,7 @@ export class PlatformEmailDomains implements ITenantEmailDomains, IDomainUsage
         const entry = this.approvals?.VerificationOf(tenantId, domain)
         const row: EmailDomainApproval = {
             domain, approved: standing.approved.includes(domain), claimed, sharedWith,
-            state: ConsoleDomainApprovals.StateOf(standing, domain, sharedWith.length > 0), verified: entry?.verified ?? false,
+            state: ConsoleDomainApprovals.StateOf(standing, domain, claims.Contesting(tenantId, domain).length > 0), verified: entry?.verified ?? false,
         }
         if (entry === undefined)
         {
@@ -508,7 +508,7 @@ export class PlatformEmailDomains implements ITenantEmailDomains, IDomainUsage
     /** Every tenant's claim, read now: one per public call so all of that call's answers agree. */
     private Claims(): DomainClaims
     {
-        return DomainClaims.Collect(this.directory, this.adverts)
+        return DomainClaims.Collect(this.directory, this.adverts, this.approvals)
     }
 
     private ApprovalStore(): ConsoleDomainApprovals

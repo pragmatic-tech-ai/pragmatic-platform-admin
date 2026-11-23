@@ -6,6 +6,7 @@ import { IdpUnreachableError, OwnerAccountMissingError, OwnerIdpRefusedError, Ow
 import { LastOperatorError, OperatorExistsError, OperatorNotFoundError, OperatorProtectedError, OperatorSelfLockoutError } from './operator-identity.js'
 import { HiveHasEnvironmentsError, InHiveConsoleTakenError, RecordExistsError, TenantClientMismatchError, TenantHasHivesError, UnknownClientError, UnknownTenantError } from './platform-directory.js'
 import { EmailDomainApprovalRefusedError } from './platform-email-domains.js'
+import { HiveLeftError } from './platform-deployment-registry.js'
 import { InvalidHiveConsoleError } from './hive-console-spec.js'
 import { AgentInstallInProgressError, AgentInstallUnavailableError } from './hive-agent-installer.js'
 import { AgentUninstallError, ConsoleUninstallError, HiveClusterDestroyError } from './hive-agent-uninstaller.js'
@@ -46,6 +47,7 @@ export class ControlPlaneProblems extends ProblemMapper
             .Register(InvalidEnvironmentNameError, P.CodeBadRequest)
             .Register(EnvironmentNotFoundError, P.CodeNotFound)
             .Register(EnvironmentExistsError, P.CodeConflict)
+            .Register(HiveLeftError, P.CodeConflict)
             .Register(OperatorExistsError, P.CodeConflict)
             .Register(OperatorSelfLockoutError, P.CodeConflict)
             .Register(LastOperatorError, P.CodeConflict)

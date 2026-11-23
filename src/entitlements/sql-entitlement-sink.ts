@@ -43,9 +43,14 @@ export class SqlEntitlementSink implements IEntitlementSink, IClientStatements
         return sink
     }
 
+    /** The version held for the client: the stored statement's once the client record is derived from it, else the
+     *  record's (or none). So a projection that failed after its statement was stored is not hidden behind a duplicate:
+     *  the ledger's retry reaches Apply, which projects the stored statement again (Project is idempotent). */
     public async CurrentVersion(clientId: string): Promise<number | undefined>
     {
-        return (await this.store.Get(clientId))?.version
+        const stored = (await this.store.Get(clientId))?.version
+        const projected = this.projection.VersionOf(clientId)
+        return stored !== undefined && projected !== undefined && projected >= stored ? stored : projected
     }
 
     /** The client's newest statement, or undefined when the console holds none. */
@@ -69,6 +74,7 @@ export class SqlEntitlementSink implements IEntitlementSink, IClientStatements
             const current = await this.store.GetVersioned(statement.ClientId)
             if (current !== undefined && current.Record.version >= statement.Version)
             {
+                await this.projection.Project(EntitlementStatement.Parse(current.Record.statement))
                 return
             }
             try

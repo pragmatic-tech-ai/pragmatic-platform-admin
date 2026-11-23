@@ -18,6 +18,8 @@ export type ProvisionInput = {
     client: ExistingRecordRef
     tenant: NewTenantInput | ExistingRecordRef
     hive: { id: string; displayName: string; cluster: ClusterSpec; registry: RegistrySpec; trustRootRef?: string }
+    /** Who asked (`operator:<email>`): recorded on a new tenant. */
+    createdBy?: string
 }
 
 // The Owner's email and password are present only when a new tenant was created.
@@ -116,7 +118,8 @@ export class ProvisioningOrchestrator
             id: input.tenant.id,
             clientId: input.client.id,
             displayName: input.tenant.displayName,
-            ownerEmail: input.tenant.ownerEmail
+            ownerEmail: input.tenant.ownerEmail,
+            createdBy: input.createdBy
         })
         completed.tenant = true
         return {

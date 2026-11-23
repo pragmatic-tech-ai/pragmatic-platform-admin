@@ -374,11 +374,20 @@ describe('DesktopTenantMatcher', () =>
         assert.deepEqual(Summary(await matcher.Match('carl@beta.test', MatcherFixture.Plane)), [{ id: 'beta', consoleUrl: MatcherFixture.Plane, match: DiscoveryMatch.Domain }])
     })
 
-    it('a verified domain another tenant also claims does not match until an operator approves it', async () =>
+    it('a bare, unproven claim of another tenant does not keep a verified domain from matching', async () =>
     {
         directory.Tenants.set('beta', MatcherFixture.Tenant('beta', 'Beta', ['shared.test']))
         directory.Tenants.set('gamma', MatcherFixture.Tenant('gamma', 'Gamma', ['shared.test']))
         approvals.Verified.set('beta', ['shared.test'])
+        assert.deepEqual(Summary(await matcher.Match('carl@shared.test', MatcherFixture.Plane)), [{ id: 'beta', consoleUrl: MatcherFixture.Plane, match: DiscoveryMatch.Domain }])
+    })
+
+    it('a verified domain another tenant also holds with standing does not match until an operator approves it', async () =>
+    {
+        directory.Tenants.set('beta', MatcherFixture.Tenant('beta', 'Beta', ['shared.test']))
+        directory.Tenants.set('gamma', MatcherFixture.Tenant('gamma', 'Gamma', ['shared.test']))
+        approvals.Verified.set('beta', ['shared.test'])
+        approvals.Verified.set('gamma', ['shared.test'])
         assert.deepEqual(await matcher.Match('carl@shared.test', MatcherFixture.Plane), [])
         approvals.Approved.set('beta', ['shared.test'])
         assert.deepEqual(Summary(await matcher.Match('carl@shared.test', MatcherFixture.Plane)), [{ id: 'beta', consoleUrl: MatcherFixture.Plane, match: DiscoveryMatch.Domain }])
@@ -389,18 +398,20 @@ describe('DesktopTenantMatcher', () =>
         directory.Tenants.set('beta', MatcherFixture.Tenant('beta', 'Beta', ['shared.test']))
         directory.Tenants.set('gamma', MatcherFixture.Tenant('gamma', 'Gamma', ['shared.test']))
         approvals.Verified.set('beta', ['shared.test'])
+        approvals.Verified.set('gamma', ['shared.test'])
         assert.deepEqual(await matcher.Match('carl@shared.test', MatcherFixture.Plane), [])
         directory.Tenants.set('gamma', MatcherFixture.Tenant('gamma', 'Gamma', []))
         assert.deepEqual(Summary(await matcher.Match('carl@shared.test', MatcherFixture.Plane)), [{ id: 'beta', consoleUrl: MatcherFixture.Plane, match: DiscoveryMatch.Domain }])
     })
 
-    it('it leaves discovery again when another tenant claims it', async () =>
+    it('it leaves discovery again when another tenant claims it with standing', async () =>
     {
         directory.Tenants.set('beta', MatcherFixture.Tenant('beta', 'Beta', ['shared.test']))
         directory.Tenants.set('gamma', MatcherFixture.Tenant('gamma', 'Gamma', []))
         approvals.Verified.set('beta', ['shared.test'])
         assert.equal((await matcher.Match('carl@shared.test', MatcherFixture.Plane)).length, 1)
         directory.Tenants.set('gamma', MatcherFixture.Tenant('gamma', 'Gamma', ['shared.test']))
+        approvals.Verified.set('gamma', ['shared.test'])
         assert.deepEqual(await matcher.Match('carl@shared.test', MatcherFixture.Plane), [])
     })
 
@@ -427,12 +438,14 @@ describe('DesktopTenantMatcher', () =>
         assert.deepEqual(Summary(await matcher.Match('carl@acme.test', MatcherFixture.Plane)), [{ id: 'acme', consoleUrl: MatcherFixture.Console, match: DiscoveryMatch.Domain }])
     })
 
-    it('an in-hive tenant\'s verified advert domain another tenant\'s record also claims does not match', async () =>
+    it("an in-hive tenant's verified advert domain another tenant's record also claims with standing does not match", async () =>
     {
         adverts.Records.set('acme', MatcherFixture.Advert({ emailDomains: ['acme.test'] }))
         approvals.Verified.set('acme', ['acme.test'])
         directory.Tenants.set('beta', MatcherFixture.Tenant('beta', 'Beta', ['acme.test']))
-        assert.deepEqual(await matcher.Match('carl@acme.test', MatcherFixture.Plane), [])
+        assert.equal((await matcher.Match('carl@acme.test', MatcherFixture.Plane)).length, 1, 'a bare record claim contests nothing')
+        approvals.Approved.set('beta', ['acme.test'])
+        assert.deepEqual(Summary(await matcher.Match('carl@acme.test', MatcherFixture.Plane)).map(m => m.id), ['beta'])
     })
 
     it('drops index ids the directory does not know', async () =>

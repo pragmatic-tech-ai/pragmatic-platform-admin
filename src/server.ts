@@ -347,6 +347,7 @@ export class ControlPlaneServer
         const customerApi = new PlatformCustomerApiService({
             Statements: entitlements, Directory: directory, Domains: emailDomains, Usage: usage, Lock: clientLock, Codes: codes, Placements: hostedPlacements,
             Releases: deployments, Registrations: deployments, Reports: observations, Adverts: adverts,
+            Activity: new AuditTrail(audit, { MaxTargetLength: ControlPlaneHost.MaxAuditTargetLength }),
         })
         const agentBackend = ControlPlaneServer.AgentChannelBackendOf(deployments, directory, adverts, ownerResets, emailDomains)
         // One tenant session layer for the tenant plane and the Owner password reset (which ends the Owner's sessions), over the
