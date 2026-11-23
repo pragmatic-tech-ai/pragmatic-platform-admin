@@ -53,6 +53,7 @@ class FakeBrowser implements IPageNavigator, ISignInPage, IStaffSignInClient, IS
 class SignInFixture
 {
     public static readonly ProductName = 'Platform Admin'
+    public static readonly ProbeTimeoutMs = 20
     public static readonly Watched: readonly string[] = ['ShowsPasswordForm', 'BreakGlassToggleText', 'ShowBreakGlass']
     public static readonly Password = new AppShellConfig({ ProductName: SignInFixture.ProductName, SignInMethods: [SignInMethod.Password] })
 
@@ -203,11 +204,20 @@ describe('SessionMethodsClient', () =>
         const client = new SessionMethodsClient(async (_url, init) => {
             signal = init.signal ?? undefined
             return await new Promise<Response>((_resolve, reject) => { init.signal?.addEventListener('abort', () => reject(new Error('aborted'))) })
-        })
-        const pending = client.StaffSignInOffered()
-        assert.ok(signal !== undefined)
-        await assert.rejects(pending)
-        assert.equal(signal.aborted, true)
+        }, SignInFixture.ProbeTimeoutMs)
+        // The abort timer does not hold the event loop open; this one does, until well after it fired.
+        const hold = setTimeout(() => undefined, SignInFixture.ProbeTimeoutMs * 20)
+        try
+        {
+            const pending = client.StaffSignInOffered()
+            assert.ok(signal !== undefined)
+            await assert.rejects(pending)
+            assert.equal(signal.aborted, true)
+        }
+        finally
+        {
+            clearTimeout(hold)
+        }
     })
 
     it('reads anything but staff true as no staff sign-in, and rejects on an HTTP error', async () =>

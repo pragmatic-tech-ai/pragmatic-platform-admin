@@ -12,14 +12,14 @@ export class SessionMethodsClient implements ISessionMethodsSource
     /** The sign-in page waits at most this long before it shows the password form alone. */
     private static readonly TimeoutMs = 5000
 
-    public constructor(private readonly fetcher: FetchFunction = (url, init) => fetch(url, init))
+    public constructor(private readonly fetcher: FetchFunction = (url, init) => fetch(url, init), private readonly timeoutMs: number = SessionMethodsClient.TimeoutMs)
     {
     }
 
     public async StaffSignInOffered(): Promise<boolean>
     {
         const S = SessionMethodsClient
-        const reply = await this.fetcher(S.MethodsPath, { method: S.GetMethod, credentials: S.SameOrigin, signal: AbortSignal.timeout(S.TimeoutMs) })
+        const reply = await this.fetcher(S.MethodsPath, { method: S.GetMethod, credentials: S.SameOrigin, signal: AbortSignal.timeout(this.timeoutMs) })
         if (!reply.ok)
         {
             throw new Error(S.FailedPrefix + reply.status)
