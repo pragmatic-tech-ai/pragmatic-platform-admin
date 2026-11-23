@@ -244,7 +244,7 @@ export class TenantConsoleInstaller
     private static readonly RefusedEnd = ')'
     private static readonly SettingsSeparator = ', '
     private static readonly NotPreparedPrefix = "The tenant admin console did not prepare the realm sign-in service's configuration for this release within "
-    private static readonly NotPreparedSuffix = " minutes. The identity provider was not changed. The console prepares it when it starts: its Configuration page for " + ReleaseApp.TenantIdp + " shows a refusal or an error; it prepares nothing when this release's identity provider is not newer than the configured one, or when the configuration was applied for another realm. Then install again."
+    private static readonly NotPreparedSuffix = " minutes. The identity provider was not changed. The console prepares it when it starts: its Configuration page for " + ReleaseApp.TenantIdp + " shows a refusal or an error; it prepares nothing when this release's identity provider is not newer than the configured one, when the configuration was applied for another realm, when the configuration object's hash annotation does not match its file, or when the identity provider's Deployment is not one the console may configure. Then install again."
     private static readonly NoIdpDigestMessage = "The release's component descriptors name no descriptor for the identity provider, so its configuration cannot be prepared; the identity provider was not changed. Publish a complete release."
     private static readonly MinuteMs = 60_000
     private static readonly ConfigMapPrefix = 'configmap/'
@@ -253,7 +253,7 @@ export class TenantConsoleInstaller
         [ConsoleInstallStep.PreparingCertificates]: "Could not prepare the console's certificates and settings.",
         [ConsoleInstallStep.ReadingReleaseDescriptors]: "Could not read the release's component descriptors.",
         [ConsoleInstallStep.ApplyingConsole]: 'Could not apply the console to the cluster.',
-        [ConsoleInstallStep.StoringSecrets]: "Could not store the console's Secrets in the cluster.",
+        [ConsoleInstallStep.StoringSecrets]: "Could not store the console's Secrets or the release descriptors in the cluster.",
         [ConsoleInstallStep.WaitingForRollout]: 'The console did not roll out.',
         [ConsoleInstallStep.PreparingConfiguration]: "Could not read whether the console prepared the identity provider's configuration for this release.",
         [ConsoleInstallStep.RollingOutIdp]: 'The identity provider did not roll out.',
@@ -667,7 +667,7 @@ export class TenantConsoleInstaller
                 await kubectl.DeleteManifest(stale)
             }
             // The IdP's Deployment (the release's IdP image) waits until its configuration is prepared for that image; the empty
-            // configuration objects go server-side (a client-side apply would clear data a client-side apply wrote).
+            // configuration objects are created below when missing, never applied.
             const parts = ConsoleBootstrapSplit.Of(bootstrap.manifest, t)
             await kubectl.Apply(parts.Console)
             // The empty configuration objects the console writes into are created when missing and otherwise never touched:

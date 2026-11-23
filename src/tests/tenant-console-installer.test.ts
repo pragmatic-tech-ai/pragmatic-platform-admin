@@ -354,7 +354,7 @@ describe('TenantConsoleInstaller', () =>
         const key = await fingerprints.Get('h1') as Buffer
         const text = JSON.stringify(status) + '\n' + log
         assert.equal((status as { step: string }).step, ConsoleInstallStep.StoringSecrets)
-        assert.match((status as { error: string }).error, /^Could not store the console's Secrets in the cluster\. kubectl failed: apply failed \[REDACTED\]/)
+        assert.match((status as { error: string }).error, /^Could not store the console's Secrets or the release descriptors in the cluster\. kubectl failed: apply failed \[REDACTED\]/)
         for (const secret of [ConsoleInstallFixture.RunningIdpToken, key.toString('base64'), key.toString('hex'), 'fake.dev.leaf.key.Zq'])
         {
             assert.ok(!text.includes(secret), 'leaked a secret')
