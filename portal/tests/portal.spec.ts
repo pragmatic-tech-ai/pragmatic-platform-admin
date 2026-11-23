@@ -628,6 +628,8 @@ class PortalText
     public static readonly StaffSignInLabel = 'Sign in with Pragmatic staff'
     public static readonly BreakGlassLabel = 'Use the break-glass password'
     public static readonly ForbiddenNotice = 'Signed in, but your account has no operator role for this console.'
+    public static readonly FailedNotice = "Staff sign-in didn't complete."
+    public static readonly FailedQuery = '/?sign_in=failed'
     public static readonly EmailPlaceholder = 'Email'
     public static readonly PasswordPlaceholder = 'Password'
     public static readonly LogoutLabel = 'Log out'
@@ -984,6 +986,15 @@ test.describe('admin portal', () =>
         await PortalSteps.Click(page, PortalText.StaffSignInLabel)
         await expect.poll(() => fake.StaffBegins).toBe(1)
         await expect(PortalSteps.Text(page, PortalText.ForbiddenNotice)).toBeVisible()
+        await expect(PortalSteps.Text(page, PortalText.StaffSignInLabel)).toBeVisible()
+    })
+
+    test('a staff sign-in that did not complete says so on the sign-in page', async ({ page }) =>
+    {
+        fake.Authenticated = false
+        fake.StaffSignIn = true
+        await page.goto(base + PortalText.FailedQuery)
+        await expect(PortalSteps.Text(page, PortalText.FailedNotice)).toBeVisible()
         await expect(PortalSteps.Text(page, PortalText.StaffSignInLabel)).toBeVisible()
     })
 

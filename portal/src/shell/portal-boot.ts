@@ -43,6 +43,12 @@ export class PortalApplications implements IShellApplications<Application>
         PortalApplications.ShowSignInError(app.Services, message)
     }
 
+    /** Back from a staff sign-in that did not complete (`?sign_in=failed`): the sign-in page's own failed notice. */
+    public ShowSignInFailed(app: Application, _message: string): void
+    {
+        app.Services.getRequired(OperatorSignInHost.Key).Page.ShowSignInFailed()
+    }
+
     public StartShell(app: Application, session: AppSession): Promise<void>
     {
         return PortalApplications.StartShell(app.Services, this.client, session, this.reloader)

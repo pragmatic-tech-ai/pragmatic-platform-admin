@@ -4,6 +4,7 @@ import { SettingsViewModel, type OperatorRow } from '../../settings-view-model.j
 import { PortalPageViewModel } from '../../shell/portal-page-view-model.js'
 import type { PortalSessionService } from '../../shell/portal-session-service.js'
 import { InviteOperatorDialogViewModel } from './invite-operator-dialog-view-model.js'
+import { StaffOperatorRowViewModel } from './staff-operator-row-view-model.js'
 import type { SettingsSectionService } from './settings-section-service.js'
 
 // One operator on the roster: email, role and whether the account is enabled.
@@ -50,8 +51,11 @@ export class SettingsPageViewModel extends PortalPageViewModel
     private static readonly InviteTitle = 'Invite operator'
     private static readonly HasOperatorsProperty = 'HasOperators'
     private static readonly HasNoOperatorsProperty = 'HasNoOperators'
+    private static readonly HasStaffOperatorsProperty = 'HasStaffOperators'
 
     private readonly operators = new ObservableCollection<OperatorRowViewModel>()
+    private readonly staffOperators = new ObservableCollection<StaffOperatorRowViewModel>()
+    private readonly toggleStaffCommand: RelayCommand
     private readonly inviteCommand: RelayCommand
     private readonly openCommand: RelayCommand
 
@@ -60,6 +64,19 @@ export class SettingsPageViewModel extends PortalPageViewModel
         super(session)
         this.inviteCommand = this.MutatingCommand(() => this.Invite())
         this.openCommand = new RelayCommand(row => this.Open(row))
+        this.toggleStaffCommand = new RelayCommand(row => { void this.ToggleStaff(row) }, () => this.Session.CanMutate)
+    }
+
+    // The operators who signed in through the Pragmatic staff realm (their roles come from the realm; Disable here
+    // refuses them whatever the realm says and ends their sessions).
+    public get StaffOperators(): ObservableCollection<StaffOperatorRowViewModel>
+    {
+        return this.staffOperators
+    }
+
+    public get HasStaffOperators(): boolean
+    {
+        return !this.IsRosterDenied && this.staffOperators.Count > 0
     }
 
     public get Email(): string
@@ -115,6 +132,7 @@ export class SettingsPageViewModel extends PortalPageViewModel
         }
         const generation = this.LoadGeneration
         const summaries = await this.Session.Client.ListOperators()
+        const staff = await this.Session.Client.ListStaffOperators()
         if (generation !== this.LoadGeneration)
         {
             return false
@@ -127,6 +145,13 @@ export class SettingsPageViewModel extends PortalPageViewModel
         {
             this.operators.Add(new OperatorRowViewModel(row, this.openCommand))
         }
+        const hadStaff = this.HasStaffOperators
+        this.staffOperators.Clear()
+        for (const record of staff)
+        {
+            this.staffOperators.Add(new StaffOperatorRowViewModel(record, this.toggleStaffCommand))
+        }
+        this.RaisePropertyChanged(SettingsPageViewModel.HasStaffOperatorsProperty, hadStaff, this.HasStaffOperators)
         this.RaisePropertyChanged(SettingsPageViewModel.HasOperatorsProperty, had, this.HasOperators)
         this.RaisePropertyChanged(SettingsPageViewModel.HasNoOperatorsProperty, !had, this.HasNoOperators)
         return true
@@ -138,6 +163,19 @@ export class SettingsPageViewModel extends PortalPageViewModel
         {
             this.section.OpenOperator(row.Email)
         }
+    }
+
+    // Disables an active staff operator or enables a disabled one, then reloads the roster.
+    private async ToggleStaff(row: unknown): Promise<void>
+    {
+        if (!(row instanceof StaffOperatorRowViewModel) || !this.Session.CanMutate)
+        {
+            return
+        }
+        await this.Guard(async () => {
+            await this.Session.Client.SetStaffOperatorDisabled(row.Record.principal, !row.Record.disabled)
+            await this.Refresh()
+        })
     }
 
     private Invite(): Promise<void>

@@ -18,6 +18,7 @@ import OperatorRowViewModel from "./settings-page-view-model.js"
 import InviteOperatorDialogViewModel from "./invite-operator-dialog-view-model.js"
 import OperatorDetailPageViewModel from "./operator-detail-page-view-model.js"
 import OperatorPasswordRevealPageViewModel from "./operator-password-reveal-page-view-model.js"
+import StaffOperatorRowViewModel from "./staff-operator-row-view-model.js"
 
 resources SettingsResources {
     DataTemplate [ DataType = SettingsPageViewModel ] {
@@ -93,6 +94,30 @@ resources SettingsResources {
                         TextBlock [ Grid.Column = 2, Text = "Status", Style = @PortalTableHeader ]
                     }
                     ListBox [ Style = @PortalTableList, HorizontalAlignment = Stretch, ItemsSource = $Operators, ItemTemplate = @OperatorRowTemplate ]
+
+                    // Staff operators: signed in through the Pragmatic staff realm, which gives their role.
+                    StackPanel [ Orientation = Vertical, Margin = (0,24,0,0), Visibility = $HasStaffOperators << ToVisibility ] {
+                        TextBlock [ Text = "Staff operators", Style = @UiLabel, Foreground = @Fg1 ]
+                        TextBlock [ Text = "Signed in through the Pragmatic staff realm, which gives their role. Disable refuses one here whatever the realm says.",
+                                    Style = @UiCaption, Foreground = @Fg2, TextWrapping = Wrap, Margin = (0,2,0,8) ]
+                        Grid [ Style = @PortalTableColumns ] {
+                            RowDefinitions {
+                                RowDefinition [ Height = GridLength.Auto ]
+                            }
+                            ColumnDefinitions {
+                                ColumnDefinition [ Width = GridLength.Star ]
+                                ColumnDefinition [ Width = GridLength.Star ]
+                                ColumnDefinition [ Width = GridLength.Star ]
+                                ColumnDefinition [ Width = GridLength.Star ]
+                                ColumnDefinition [ Width = GridLength.Auto ]
+                            }
+                            TextBlock [ Grid.Column = 0, Text = "Email", Style = @PortalTableHeader ]
+                            TextBlock [ Grid.Column = 1, Text = "Role", Style = @PortalTableHeader ]
+                            TextBlock [ Grid.Column = 2, Text = "Last sign-in", Style = @PortalTableHeader ]
+                            TextBlock [ Grid.Column = 3, Text = "Status", Style = @PortalTableHeader ]
+                        }
+                        ListBox [ Style = @PortalTableList, HorizontalAlignment = Stretch, ItemsSource = $StaffOperators, ItemTemplate = @StaffOperatorRowTemplate ]
+                    }
                 }
             }
         }
@@ -110,6 +135,25 @@ resources SettingsResources {
             }
             TextBlock [ Grid.Column = 1, Text = $RoleLabel, Foreground = @Fg1, VerticalAlignment = Center ]
             TextBlock [ Grid.Column = 2, Text = $StatusLabel, Foreground = @Fg1, VerticalAlignment = Center ]
+        }
+    }
+
+    DataTemplate x:key="StaffOperatorRowTemplate" [ DataType = StaffOperatorRowViewModel ] {
+        Grid [ Style = @PortalTableColumns ] {
+            ColumnDefinitions {
+                ColumnDefinition [ Width = GridLength.Star ]
+                ColumnDefinition [ Width = GridLength.Star ]
+                ColumnDefinition [ Width = GridLength.Star ]
+                ColumnDefinition [ Width = GridLength.Star ]
+                ColumnDefinition [ Width = GridLength.Auto ]
+            }
+            TextBlock [ Grid.Column = 0, Text = $Email, Style = @UiLabel, Foreground = @Fg0, VerticalAlignment = Center ]
+            TextBlock [ Grid.Column = 1, Text = $RoleLabel, Foreground = @Fg1, VerticalAlignment = Center ]
+            TextBlock [ Grid.Column = 2, Text = $LastSignInLabel, Foreground = @Fg1, VerticalAlignment = Center ]
+            TextBlock [ Grid.Column = 3, Text = $StatusLabel, Foreground = @Fg1, VerticalAlignment = Center ]
+            Button [ Grid.Column = 4, Variant = Secondary, Command = $ToggleCommand ] {
+                TextBlock [ Text = $ToggleText ]
+            }
         }
     }
 

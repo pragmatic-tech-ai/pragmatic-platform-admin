@@ -12,7 +12,7 @@ import { PlatformShell } from '../platform-shell.js'
 import { OperatorContext } from '../../operator-context.js'
 import { AgentInstallState, AgentInstallStep, ConsoleInstallState, ConsoleInstallStep, DomainApprovalState, EmailDomainSource, type AgentInstallStatusDto, type ConsoleInstallStatusDto, type TenantEmailDomainsDto } from '../../portal-types.js'
 import type { ConsoleRemovalDto, HiveConsoleSpecDto, HiveDeleteOutcomeDto, InHiveOwnerPasswordDto, OwnerPasswordResetDto } from '../../portal-types.js'
-import type { ActivityDto, ClientDto, CreatedTenantDto, FleetHiveDto, GatingDto, HiveBootstrapDto, HiveDto, HiveRolloutDto, LedgerDto, ManifestDto, ObservationDto, OperatorSummaryDto, PolicyDto, ProvisionInputDto, ProvisionResultDto, ReleaseRefreshDto, SelectionDto, TenantDto } from '../../portal-types.js'
+import type { ActivityDto, ClientDto, CreatedTenantDto, FleetHiveDto, GatingDto, HiveBootstrapDto, HiveDto, HiveRolloutDto, LedgerDto, ManifestDto, ObservationDto, OperatorSummaryDto, StaffOperatorDto, PolicyDto, ProvisionInputDto, ProvisionResultDto, ReleaseRefreshDto, SelectionDto, TenantDto } from '../../portal-types.js'
 import { DownloadService } from '../download-service.js'
 import { PollScheduling, type IPollScheduler } from '../poll-scheduler.js'
 import { PortalSessionService } from '../portal-session-service.js'
@@ -225,6 +225,7 @@ export class FakeControlPlane
     public Gating: GatingDto[] = []
     public Activity: ActivityDto[] = []
     public Operators: OperatorSummaryDto[] = []
+    public StaffOperators: StaffOperatorDto[] = []
     public Selections: SelectionDto[] = []
     /** Undefined: the control plane runs no tenant IdP (in-hive sign-in), so a create returns no Owner password. */
     public OwnerPassword: string | undefined = 'fixture-owner-password'
@@ -510,6 +511,21 @@ export class FakeControlPlane
             throw new ApiError(403, 'forbidden')
         }
         return this.Operators.map(o => ({ ...o }))
+    }
+
+    public async ListStaffOperators(): Promise<StaffOperatorDto[]>
+    {
+        return this.StaffOperators.map(o => ({ ...o }))
+    }
+
+    public async SetStaffOperatorDisabled(principal: string, disabled: boolean): Promise<void>
+    {
+        this.OperatorCalls.push('SetStaffOperatorDisabled ' + principal + ' ' + String(disabled))
+        const record = this.StaffOperators.find(o => o.principal === principal)
+        if (record !== undefined)
+        {
+            record.disabled = disabled
+        }
     }
 
     public async SetOperatorRole(email: string, role: string): Promise<void>

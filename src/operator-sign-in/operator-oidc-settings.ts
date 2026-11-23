@@ -47,7 +47,7 @@ export class OperatorOidcSettings
     private static readonly PartialMessage = OperatorOidcSettings.IssuerEnvVar + ' is required when another operator sign-in setting is set'
 
     private constructor(
-        /** The realm's issuer, as its tokens carry it (no trailing slash). */
+        /** The realm's issuer, verbatim as its tokens carry it. */
         public readonly Issuer: string,
         public readonly DiscoveryUrl: string,
         public readonly ClientId: string,
@@ -81,10 +81,11 @@ export class OperatorOidcSettings
         }
         const clientId = S.Required(env, S.ClientIdEnvVar)
         const secretFile = S.Required(env, S.ClientSecretFileEnvVar)
-        const publicUrl = S.Url(S.Required(env, S.PublicUrlEnvVar), S.PublicUrlEnvVar)
+        // The public URL is an origin the callback path is appended to: its trailing slashes go.
+        const publicUrl = S.Url(S.Required(env, S.PublicUrlEnvVar), S.PublicUrlEnvVar).replace(S.TrailingSlashes, S.NoText)
         const trimmedIssuer = S.Url(issuer, S.IssuerEnvVar)
         const discovery = S.Value(env, S.DiscoveryUrlEnvVar)
-        const discoveryUrl = discovery === undefined ? trimmedIssuer + S.WellKnownSuffix : S.Url(discovery, S.DiscoveryUrlEnvVar)
+        const discoveryUrl = discovery === undefined ? trimmedIssuer.replace(S.TrailingSlashes, S.NoText) + S.WellKnownSuffix : S.Url(discovery, S.DiscoveryUrlEnvVar)
         return new OperatorOidcSettings(trimmedIssuer, discoveryUrl, clientId, S.ReadSecret(secretFile), publicUrl, S.Value(env, S.CaBundleFileEnvVar))
     }
 
@@ -104,7 +105,8 @@ export class OperatorOidcSettings
         return value
     }
 
-    /** An absolute https URL (http on a loopback host only), without query or fragment; trailing slashes dropped. */
+    /** An absolute https URL (http on a loopback host only), without query or fragment, kept verbatim (an issuer is
+     *  compared byte for byte with the tokens' `iss`). */
     private static Url(text: string, name: string): string
     {
         const S = OperatorOidcSettings
@@ -122,7 +124,7 @@ export class OperatorOidcSettings
         {
             throw new OperatorOidcSettingsError(name + S.UrlSuffix)
         }
-        return text.replace(S.TrailingSlashes, S.NoText)
+        return text
     }
 
     private static ReadSecret(file: string): string

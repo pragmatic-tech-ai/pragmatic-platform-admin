@@ -98,6 +98,8 @@ export type ProvisionRollbackDto = { rolledBack: string[]; residue: string[] }
 export type GatingDto = { tenantId: string; version: string; gatedAt: string }
 export type SelectionDto = { hiveId: string; targetVersion: string; selectedAt: string }
 export type OperatorSummaryDto = { email: string; role: string; disabled?: boolean }
+// An operator who signed in through the Pragmatic staff realm (GET /api/operators/staff); never a password or token.
+export type StaffOperatorDto = { principal: string; email: string; method: string; role: string; firstSignInAt: string; lastSignInAt: string; disabled: boolean }
 export type ManifestDto = { id: string; image: string; notes?: string; publishedAt: string; withdrawn?: boolean; channel?: 'stable' | 'early'; digest?: string; signed?: boolean; withdrawal?: { reason: string; actor: string; at: string }; release?: ManifestReleaseDto }
 
 // The outcome of verifying a registry release on import; values match the server wire strings.

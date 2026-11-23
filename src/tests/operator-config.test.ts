@@ -154,3 +154,33 @@ describe('ControlPlaneServer.InternalApiSettingsOf', () =>
         assert.throws(() => ControlPlaneServer.InternalApiSettingsOf({ PRAGMATIC_ADMIN_INTERNAL_PORT: '7001', PRAGMATIC_ADMIN_INTERNAL_BIND: 'nope', PRAGMATIC_INTERNAL_API_SECRET_FILE: '/s' }), /PRAGMATIC_ADMIN_INTERNAL_BIND/)
     })
 })
+
+describe('ControlPlaneServer.OperatorOidcOf', () =>
+{
+    const issuer = 'https://idp.example/realms/r'
+
+    it('a flawed operator sign-in option turns staff sign-in off instead of stopping the console (break-glass stays)', () =>
+    {
+        assert.equal(ControlPlaneServer.OperatorOidcOf({}), undefined)
+        assert.equal(ControlPlaneServer.OperatorOidcOf({ PRAGMATIC_ADMIN_OPERATOR_OIDC_CLIENT_ID: 'c' }), undefined)
+        assert.equal(ControlPlaneServer.OperatorOidcOf({ PRAGMATIC_ADMIN_OPERATOR_OIDC_ISSUER: issuer, PRAGMATIC_ADMIN_OPERATOR_OIDC_CLIENT_ID: 'c',
+            PRAGMATIC_ADMIN_OPERATOR_OIDC_CLIENT_SECRET_FILE: join(tmpdir(), 'no-such-operator-secret'), PRAGMATIC_ADMIN_PUBLIC_URL: 'https://admin.example' }), undefined)
+    })
+
+    it('a complete option is read', () =>
+    {
+        const root = mkdtempSync(join(tmpdir(), 'cp-oidc-of-'))
+        try
+        {
+            const secret = join(root, 'secret')
+            writeFileSync(secret, 's3cret\n')
+            const settings = ControlPlaneServer.OperatorOidcOf({ PRAGMATIC_ADMIN_OPERATOR_OIDC_ISSUER: issuer, PRAGMATIC_ADMIN_OPERATOR_OIDC_CLIENT_ID: 'c',
+                PRAGMATIC_ADMIN_OPERATOR_OIDC_CLIENT_SECRET_FILE: secret, PRAGMATIC_ADMIN_PUBLIC_URL: 'https://admin.example' })
+            assert.equal(settings?.Issuer, issuer)
+        }
+        finally
+        {
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
+})

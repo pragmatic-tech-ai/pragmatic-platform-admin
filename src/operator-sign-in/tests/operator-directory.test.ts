@@ -3,7 +3,19 @@ import { describe, it } from 'node:test'
 import { MemoryRecordMap } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { SqlTestSessions } from '@pragmatic-tech-ai/pragmatic-realm-adapters/testing'
 import { PlatformAdminDatabase, PlatformAdminRegistry } from '../../platform-admin-database.js'
-import { OperatorDirectory, OperatorSignInMethod, type StaffOperatorRecord } from '../operator-directory.js'
+import { OperatorDirectory, OperatorSignInMethod, StaffOperatorRole, type StaffOperatorRecord } from '../operator-directory.js'
+
+/** A memory record map whose saves yield first, so overlapping writes interleave as they would over Postgres. */
+class SlowRecordMap extends MemoryRecordMap<StaffOperatorRecord>
+{
+    private static readonly DelayMs = 5
+
+    public override async Save(all: ReadonlyMap<string, StaffOperatorRecord>, changed: ReadonlySet<string>): Promise<void>
+    {
+        await new Promise(resolve => setTimeout(resolve, SlowRecordMap.DelayMs))
+        await super.Save(all, changed)
+    }
+}
 
 class DirectoryFixture
 {
@@ -21,10 +33,10 @@ describe('OperatorDirectory', () =>
     it('records the first sign-in and updates the last one, keeping first sign-in and the disabled flag', async () =>
     {
         const directory = new OperatorDirectory(new MemoryRecordMap<StaffOperatorRecord>())
-        await directory.RecordSignIn(F.Principal, F.Email, 'operator.read-only', F.First)
+        await directory.RecordSignIn(F.Principal, F.Email, StaffOperatorRole.ReadOnly, F.First)
         assert.equal(await directory.SetDisabled(F.Principal, true), true)
-        const record = await directory.RecordSignIn(F.Principal, F.Email, 'operator.full', F.Later)
-        assert.deepEqual(record, { principal: F.Principal, email: F.Email, method: OperatorSignInMethod.Staff, role: 'operator.full', firstSignInAt: F.First.toISOString(), lastSignInAt: F.Later.toISOString(), disabled: true })
+        const record = await directory.RecordSignIn(F.Principal, F.Email, StaffOperatorRole.Full, F.Later)
+        assert.deepEqual(record, { principal: F.Principal, email: F.Email, method: OperatorSignInMethod.Staff, role: StaffOperatorRole.Full, firstSignInAt: F.First.toISOString(), lastSignInAt: F.Later.toISOString(), disabled: true })
         assert.equal(await directory.IsDisabled(F.Principal), true)
     })
 
@@ -36,11 +48,39 @@ describe('OperatorDirectory', () =>
         assert.deepEqual(await directory.List(), [])
     })
 
+    it('a sign-in without an operator role records no one new, and sets a recorded operator\'s role to none', async () =>
+    {
+        const directory = new OperatorDirectory(new MemoryRecordMap<StaffOperatorRecord>())
+        assert.equal(await directory.RecordSignIn(F.Principal, F.Email, StaffOperatorRole.None, F.First), undefined)
+        assert.deepEqual(await directory.List(), [])
+        await directory.RecordSignIn(F.Principal, F.Email, StaffOperatorRole.Full, F.First)
+        assert.equal(await directory.RoleOf(F.Principal), StaffOperatorRole.Full)
+        await directory.RecordSignIn(F.Principal, F.Email, StaffOperatorRole.None, F.Later)
+        assert.equal(await directory.RoleOf(F.Principal), StaffOperatorRole.None)
+        assert.equal(await directory.RoleOf(F.Other), StaffOperatorRole.None)
+    })
+
+    it('overlapping writes never undo one another (a disable racing a sign-in stays disabled)', async () =>
+    {
+        const map = new SlowRecordMap()
+        const directory = new OperatorDirectory(map)
+        await directory.RecordSignIn(F.Principal, F.Email, StaffOperatorRole.Full, F.First)
+        await Promise.all([directory.SetDisabled(F.Principal, true), directory.RecordSignIn(F.Principal, F.Email, StaffOperatorRole.Full, F.Later), directory.RecordSignIn(F.Other, F.Email, StaffOperatorRole.Full, F.Later)])
+        assert.equal(await directory.IsDisabled(F.Principal), true)
+        assert.equal(await directory.RoleOf(F.Principal), StaffOperatorRole.None)
+        const stored = await map.Load()
+        assert.equal(stored.get(F.Principal)?.disabled, true)
+        assert.equal(stored.get(F.Principal)?.lastSignInAt, F.Later.toISOString())
+        assert.ok(stored.has(F.Other))
+        const reread = new OperatorDirectory(map)
+        assert.equal(await reread.IsDisabled(F.Principal), true)
+    })
+
     it('lists the newest sign-in first', async () =>
     {
         const directory = new OperatorDirectory(new MemoryRecordMap<StaffOperatorRecord>())
-        await directory.RecordSignIn(F.Principal, F.Email, 'operator.full', F.First)
-        await directory.RecordSignIn(F.Other, F.Email, 'operator.full', F.Later)
+        await directory.RecordSignIn(F.Principal, F.Email, StaffOperatorRole.Full, F.First)
+        await directory.RecordSignIn(F.Other, F.Email, StaffOperatorRole.Full, F.Later)
         assert.deepEqual((await directory.List()).map(r => r.principal), [F.Other, F.Principal])
     })
 
@@ -50,7 +90,7 @@ describe('OperatorDirectory', () =>
         {
             const database = PlatformAdminDatabase.Over(await makeSession())
             const written = new OperatorDirectory(await database.Map<StaffOperatorRecord>(PlatformAdminRegistry.OperatorDirectory))
-            await written.RecordSignIn(F.Principal, F.Email, 'operator.full', F.First)
+            await written.RecordSignIn(F.Principal, F.Email, StaffOperatorRole.Full, F.First)
             await written.SetDisabled(F.Principal, true)
             const read = new OperatorDirectory(await database.Map<StaffOperatorRecord>(PlatformAdminRegistry.OperatorDirectory))
             assert.equal(await read.IsDisabled(F.Principal), true)

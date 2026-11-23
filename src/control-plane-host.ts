@@ -24,7 +24,7 @@ import { EnvironmentDtoMapper, type EnvironmentDto, type IIdpService, TenantEmai
 import type { HiveObservationRegistry } from './hive-observation-record.js'
 import type { OwnerPasswordReset, TenantProvisioningService } from './tenant-provisioning-service.js'
 import { OperatorRole, OperatorSelfLockoutError, type IOperatorIdentity, type OperatorPrincipal } from './operator-identity.js'
-import { OperatorPasswordAuthenticator, OperatorRoleClaims, OperatorSessions, type OperatorSessionGate } from './operator-sessions.js'
+import { OperatorPasswordAuthenticator, OperatorRoleClaims, OperatorSessions, StaffSessionPolicy, type OperatorSessionGate } from './operator-sessions.js'
 import type { OperatorOidcSignIn } from './operator-sign-in/operator-oidc-sign-in.js'
 import type { OperatorDirectory } from './operator-sign-in/operator-directory.js'
 import { type DesktopDiscoveryEndpoint, ReleaseRegistryUnavailableError } from '@pragmatic-tech-ai/pragmatic-platform-link'
@@ -211,7 +211,7 @@ export class ControlPlaneHost
     private static readonly RetryAfterHeader = 'Retry-After'
     /** Request bodies are small JSON objects: 4 KiB unless a route declares more. */
     private static readonly MaxBodyBytes = 4096
-    private static readonly MaxAuditTargetLength = 256
+    public static readonly MaxAuditTargetLength = 256
     private static readonly RevalidateIntervalMs = 30_000
     private static readonly ActivityLimitMax = 200
     private static readonly ActivityLimitParam = 'limit'
@@ -404,7 +404,15 @@ export class ControlPlaneHost
     public constructor(private readonly options: ControlPlaneHostOptions)
     {
         this.sessions = options.Sessions
-        this.gate = options.Sessions.GateOver(options.Operator, options.StaffOperators)
+        const signIn = options.OperatorSignIn
+        const staff = signIn === undefined || options.StaffOperators === undefined ? undefined : new StaffSessionPolicy(signIn.Issuer, options.StaffOperators)
+        this.gate = options.Sessions.GateOver(options.Operator, staff)
+        if (signIn !== undefined)
+        {
+            // The staff callback arrives as a cross-site redirect from the realm: a Strict cookie would not travel on the
+            // navigation that follows it, so the session cookie is Lax while staff sign-in is on (D5 ruling 15).
+            this.sessions.Cookie.AdmitCrossSiteSignIn()
+        }
         this.audit = options.Audit === undefined ? undefined : new AuditTrail(options.Audit, { MaxTargetLength: ControlPlaneHost.MaxAuditTargetLength })
         this.registry = options.Sockets ?? new OperatorSocketRegistry<WebSocket>()
         this.revalidateIntervalMs = options.RevalidateIntervalMs ?? ControlPlaneHost.RevalidateIntervalMs
@@ -418,7 +426,7 @@ export class ControlPlaneHost
             AllowedHosts: this.options.AllowedHosts ?? [],
             TrustedProxy: this.options.TrustedProxy ?? false,
             DefaultBodyLimit: ControlPlaneHost.MaxBodyBytes,
-            AuditActorClaim: OperatorRoleClaims.EmailClaim,
+            AuditActorClaim: OperatorRoleClaims.ActorClaim,
         }), {
             Routes: this.Routes(),
             Sessions: this.gate,
@@ -493,7 +501,7 @@ export class ControlPlaneHost
         table.Add({ Method: HttpMethod.Get, Pattern: C.PingPath, Auth: RouteAuth.Public, Handler: async ctx => ctx.WriteJson(C.StatusOk, { ok: true }) })
         // Break-glass: the operator password sign-in stays whatever else is configured.
         new PasswordLoginEndpoint(new OperatorPasswordAuthenticator(this.options.Operator, this.audit, C.LoginPath), this.gate, this.sessions.LoginThrottle).Register(table, C.LoginPath)
-        this.options.OperatorSignIn?.Register(table, this.audit)
+        this.options.OperatorSignIn?.Register(table)
         table.Add({ Method: HttpMethod.Get, Pattern: C.SessionMethodsPath, Auth: RouteAuth.Public, Handler: async ctx => this.HandleSessionMethods(ctx) })
         table.Add({ Method: HttpMethod.Get, Pattern: C.SessionPath, Auth: RouteAuth.Public, Handler: async ctx => this.HandleSession(ctx) })
         table.Add({ Method: HttpMethod.Post, Pattern: C.LogoutPath, Auth: RouteAuth.Public, Audited: false, Handler: ctx => this.HandleLogout(ctx) })

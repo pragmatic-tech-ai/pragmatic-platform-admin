@@ -1,7 +1,7 @@
 import { ApiError, AppSessionClient, type FetchFunction } from '@pragmatic-tech-ai/pragmatic-app-shell'
 import { BrowserEventSockets, type IEventSocket, type IEventSocketFactory } from './shell/event-sockets.js'
 import { PlatformShell } from './shell/platform-shell.js'
-import type { ClientDto, CreatedTenantDto, EnvironmentDto, HiveDto, FleetHiveDto, ManifestDto, OperatorSummaryDto, GatingDto, SelectionDto, HiveRolloutDto, TenantDto, GraphDto, GraphLoadedDto, PromotionResultDto, ProvisionInputDto, ProvisionResultDto, PolicyDto, ActivityDto, ObservationDto, LedgerDto, HiveBootstrapDto, RolloutRegistrationDto, AgentInstallStatusDto, HiveDeleteOutcomeDto, OwnerPasswordResetDto, HiveConsoleSpecDto, ConsoleInstallStatusDto, ConsoleRemovalDto, InHiveOwnerPasswordDto, ReleaseRefreshDto, TenantEmailDomainsDto, ProvisionRollbackDto } from './portal-types.js'
+import type { StaffOperatorDto, ClientDto, CreatedTenantDto, EnvironmentDto, HiveDto, FleetHiveDto, ManifestDto, OperatorSummaryDto, GatingDto, SelectionDto, HiveRolloutDto, TenantDto, GraphDto, GraphLoadedDto, PromotionResultDto, ProvisionInputDto, ProvisionResultDto, PolicyDto, ActivityDto, ObservationDto, LedgerDto, HiveBootstrapDto, RolloutRegistrationDto, AgentInstallStatusDto, HiveDeleteOutcomeDto, OwnerPasswordResetDto, HiveConsoleSpecDto, ConsoleInstallStatusDto, ConsoleRemovalDto, InHiveOwnerPasswordDto, ReleaseRefreshDto, TenantEmailDomainsDto, ProvisionRollbackDto } from './portal-types.js'
 
 // The shell's error type: thrown for every non-2xx control-plane answer, its message the server's error text, its
 // Code the server's machine-readable code and its Body the whole error reply (a provision's rollback).
@@ -49,6 +49,9 @@ export class ControlPlaneClient extends AppSessionClient
     private static readonly OperatorPasswordResetRoute = '/api/operators/password-reset'
     private static readonly OperatorDisabledRoute = '/api/operators/disabled'
     private static readonly OperatorRevokeSessionsRoute = '/api/operators/revoke-sessions'
+    private static readonly StaffOperatorsRoute = '/api/operators/staff'
+    private static readonly StaffOperatorDisabledRoute = '/api/operators/staff/disabled'
+    private static readonly PrincipalKey = 'principal'
     private static readonly GatingRoute = '/api/gating'
     private static readonly SelectionsRoute = '/api/selections'
     private static readonly RolloutsRoute = '/api/rollouts'
@@ -238,6 +241,16 @@ export class ControlPlaneClient extends AppSessionClient
     public async SetOperatorDisabled(email: string, disabled: boolean): Promise<void>
     {
         await this.Post<unknown>(ControlPlaneClient.OperatorDisabledRoute, { [ControlPlaneClient.EmailKey]: email, [ControlPlaneClient.DisabledKey]: disabled })
+    }
+
+    public async ListStaffOperators(): Promise<StaffOperatorDto[]>
+    {
+        return await this.Get<StaffOperatorDto[]>(ControlPlaneClient.StaffOperatorsRoute)
+    }
+
+    public async SetStaffOperatorDisabled(principal: string, disabled: boolean): Promise<void>
+    {
+        await this.Post<unknown>(ControlPlaneClient.StaffOperatorDisabledRoute, { [ControlPlaneClient.PrincipalKey]: principal, [ControlPlaneClient.DisabledKey]: disabled })
     }
 
     public async RevokeOperatorSessions(email: string): Promise<void>

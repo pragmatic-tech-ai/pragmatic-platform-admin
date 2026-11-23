@@ -66,6 +66,13 @@ describe('OperatorOidcSettings', () =>
         assert.equal(settings.CaBundleFile, undefined)
     })
 
+    it('keeps the issuer verbatim (a trailing slash too: tokens are matched byte for byte)', () =>
+    {
+        const settings = S.Of(F.Env(secretFile, { [S.IssuerEnvVar]: F.Issuer + '/' }))
+        assert.equal(settings?.Issuer, F.Issuer + '/')
+        assert.equal(settings?.DiscoveryUrl, F.Issuer + '/.well-known/openid-configuration')
+    })
+
     it('takes an explicit discovery URL and CA bundle', () =>
     {
         const settings = S.Of(F.Env(secretFile, { [S.DiscoveryUrlEnvVar]: 'https://internal.example/realms/r/.well-known/openid-configuration', [S.CaBundleFileEnvVar]: '/run/ca.pem' }))

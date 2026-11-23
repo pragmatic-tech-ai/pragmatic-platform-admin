@@ -53,7 +53,7 @@ import { DockerImageDigest, RegistryRefImageDigest } from './image-digest.js'
 import { FileSignatureStore } from './signature-store.js'
 import { PlatformAdminDatabase, PlatformAdminRegistry } from './platform-admin-database.js'
 import { OperatorSessions } from './operator-sessions.js'
-import { OperatorOidcSettings } from './operator-sign-in/operator-oidc-settings.js'
+import { OperatorOidcSettings, OperatorOidcSettingsError } from './operator-sign-in/operator-oidc-settings.js'
 import { OperatorOidcSignIn } from './operator-sign-in/operator-oidc-sign-in.js'
 import { OperatorDirectory } from './operator-sign-in/operator-directory.js'
 import { PlatformAdminImport } from './platform-admin-import.js'
@@ -63,7 +63,7 @@ import { IdpRegistry } from './idp-registry.js'
 import { DockerIdpDriver } from './docker-idp-driver.js'
 import { IdpService } from './idp-service.js'
 import { TenantProvisioningService } from './tenant-provisioning-service.js'
-import { OidcRelyingParty, type IAuditRepository } from '@pragmatic-tech-ai/pragmatic-app-host'
+import { AuditTrail, OidcRelyingParty, type IAuditRepository } from '@pragmatic-tech-ai/pragmatic-app-host'
 import { InProcessRolloutClient } from './tenant-api/in-process-rollout-client.js'
 import { ControlPlaneRoles, ControlPlaneStart, type IControlPlaneListenerStarts } from './control-plane-role.js'
 import { ReleaseCatalogConfig, type IReleaseServices } from './release/release-catalog-config.js'
@@ -150,8 +150,17 @@ class ComposedListeners implements IControlPlaneListenerStarts
     }
 }
 
+/** Operator sign-in through the realm, composed: the sign-in routes and the operator directory they record into. */
+export class StaffSignIn
+{
+    public constructor(public readonly SignIn: OperatorOidcSignIn, public readonly Directory: OperatorDirectory)
+    {
+    }
+}
+
 export class ControlPlaneServer
 {
+    private static readonly StaffSignInOffPrefix = '[control-plane] staff sign-in is off (break-glass only): '
     private static readonly PortEnvVar = 'PRAGMATIC_ADMIN_PORT'
     private static readonly AdminBindEnvVar = 'PRAGMATIC_ADMIN_BIND'
     private static readonly InternalPortEnvVar = 'PRAGMATIC_ADMIN_INTERNAL_PORT'
@@ -235,14 +244,15 @@ export class ControlPlaneServer
         const dataRoot = ControlPlaneServer.DataRootOf(process.env, here)
         mkdirSync(dataRoot, { recursive: true })
         const opts = ControlPlaneServer.ReadOperatorOptions(process.env, dataRoot)
-        // Read (and checked) before anything is opened, so a half-set operator sign-in option fails at start.
-        const operatorOidc = OperatorOidcSettings.Of(process.env)
+        // Read before anything is opened. A flawed option turns staff sign-in off (logged by setting name) instead of
+        // stopping the console: break-glass must stay reachable exactly when the realm side is broken.
+        const operatorOidc = ControlPlaneServer.OperatorOidcOf(process.env)
         // Every record of the console lives in its own Postgres database (A5); only keys and public material stay on files.
         const database = await PlatformAdminDatabase.Open(process.env)
         await PlatformAdminImport.RequireImported(dataRoot, database)
         const sessions = new OperatorSessions(await database.SessionRepositories(), opts.secureCookie)
         const operator = await OperatorIdentity.Compose({ session: database.Session, masterKeyFile: opts.masterKeyFile, operatorEmail: opts.operatorEmail, initialPassword: opts.initialPassword, sessions: sessions.Store })
-        const staffSignIn = await ControlPlaneServer.StaffSignInOf(operatorOidc, database, sessions)
+        const staffSignIn = await ControlPlaneServer.StaffSignInOf(operatorOidc, database, sessions, new AuditTrail(await database.Audit(), { MaxTargetLength: ControlPlaneHost.MaxAuditTargetLength }))
         const masterKey = MasterKeyFile.Load(opts.masterKeyFile)
         const signatures = await database.Signatures()
         // Only `local` has a Docker engine. `none` (no target) and `hosted` (registered clusters on our machines, pushed over
@@ -393,7 +403,7 @@ export class ControlPlaneServer
      * console's database, the realm's CA bundle when given) and the operator directory it records staff operators in.
      * Undefined when the option is off: only the break-glass password signs operators in.
      */
-    public static async StaffSignInOf(settings: OperatorOidcSettings | undefined, database: PlatformAdminDatabase, sessions: OperatorSessions): Promise<{ SignIn: OperatorOidcSignIn; Directory: OperatorDirectory } | undefined>
+    public static async StaffSignInOf(settings: OperatorOidcSettings | undefined, database: PlatformAdminDatabase, sessions: OperatorSessions, audit: AuditTrail): Promise<StaffSignIn | undefined>
     {
         if (settings === undefined)
         {
@@ -401,7 +411,25 @@ export class ControlPlaneServer
         }
         const directory = new OperatorDirectory(await database.Map(PlatformAdminRegistry.OperatorDirectory))
         const rp = new OidcRelyingParty(await database.FlowStates(), settings.CaBundleFile === undefined ? {} : { CaBundleFile: settings.CaBundleFile })
-        return { SignIn: new OperatorOidcSignIn(settings, rp, directory, sessions), Directory: directory }
+        return new StaffSignIn(new OperatorOidcSignIn(settings, rp, directory, sessions, audit), directory)
+    }
+
+    /** The operator sign-in option, or undefined when it is off or flawed (a flaw is logged by setting name, never a value). */
+    public static OperatorOidcOf(env: NodeJS.ProcessEnv): OperatorOidcSettings | undefined
+    {
+        try
+        {
+            return OperatorOidcSettings.Of(env)
+        }
+        catch (err)
+        {
+            if (!(err instanceof OperatorOidcSettingsError))
+            {
+                throw err
+            }
+            console.error(ControlPlaneServer.StaffSignInOffPrefix + err.message)
+            return undefined
+        }
     }
 
     /** The in-process agent channel (registries + console advert receiver) the internal API answers the edge with. */

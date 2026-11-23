@@ -1,6 +1,6 @@
 import { RelayCommand } from '@pragmatic-tech-ai/mural/runtime'
 import { Observable } from '@pragmatic-tech-ai/todl-runtime'
-import type { IPageNavigator, SignInPageViewModel } from '@pragmatic-tech-ai/pragmatic-app-shell'
+import { AppShellConfig, type IPageNavigator, type SignInPageViewModel } from '@pragmatic-tech-ai/pragmatic-app-shell'
 
 /** Whether the console offers staff sign-in (GET /api/session/methods). */
 export interface ISessionMethodsSource
@@ -14,10 +14,10 @@ export interface IStaffSignInClient
     BeginOidcSignIn(navigator: IPageNavigator): void
 }
 
-/** Why the browser came back to the sign-in page: the `sign_in` marker the console's OIDC callback sets. */
+/** Why the browser came back to the sign-in page: the `sign_in` marker the console's OIDC callback sets (`failed` is
+ *  the shared shell's AppShellConfig.SignInFailedValue). */
 export enum SignInMarker
 {
-    Failed = 'failed',
     Forbidden = 'forbidden',
 }
 
@@ -31,7 +31,6 @@ export enum SignInMarker
  */
 export class OperatorSignInViewModel extends Observable
 {
-    public static readonly SignInParam = 'sign_in'
     private static readonly StaffSignInOfferedProperty = 'StaffSignInOffered'
     private static readonly ShowBreakGlassProperty = 'ShowBreakGlass'
     private static readonly ShowsPasswordFormProperty = 'ShowsPasswordForm'
@@ -40,7 +39,6 @@ export class OperatorSignInViewModel extends Observable
     private static readonly NoticeTextProperty = 'NoticeText'
     private static readonly ShowsNoticeAbovePasswordProperty = 'ShowsNoticeAbovePassword'
     private static readonly IsBusyProperty = 'IsBusy'
-    private static readonly StaffSignInText = 'Sign in with Pragmatic staff'
     private static readonly ShowBreakGlassText = 'Use the break-glass password'
     private static readonly HideBreakGlassText = 'Hide the break-glass password'
     /** The 403 page's text: it names the missing operator role and nothing the realm said. */
@@ -63,8 +61,9 @@ export class OperatorSignInViewModel extends Observable
         private readonly navigator: IPageNavigator)
     {
         super()
-        this.staffSignInCommand = new RelayCommand(() => this.BeginStaffSignIn(), () => this.staffSignInOffered && !this.isBusy, { Text: OperatorSignInViewModel.StaffSignInText })
-        this.toggleBreakGlassCommand = new RelayCommand(() => this.ToggleBreakGlass(), () => this.staffSignInOffered && !this.isBusy)
+        this.staffSignInCommand = new RelayCommand(() => this.BeginStaffSignIn(), () => this.staffSignInOffered && !this.isBusy)
+        // Never gated on IsBusy: break-glass stays reachable while (or after) a staff sign-in leaves the page.
+        this.toggleBreakGlassCommand = new RelayCommand(() => this.ToggleBreakGlass(), () => this.staffSignInOffered)
     }
 
     public get ProductName(): string
@@ -145,8 +144,7 @@ export class OperatorSignInViewModel extends Observable
         {
             offered = false
         }
-        this.Update(() =>
-        {
+        this.Update(() => {
             this.staffSignInOffered = offered
         })
     }
@@ -154,15 +152,30 @@ export class OperatorSignInViewModel extends Observable
     /** Shows what the page's query says the last staff sign-in did (`?sign_in=forbidden|failed`); anything else is ignored. */
     public ApplyMarker(search: string): void
     {
-        switch (new URLSearchParams(search).get(OperatorSignInViewModel.SignInParam))
+        if (AppShellConfig.IsSignInFailure(search))
         {
-            case SignInMarker.Forbidden:
-                this.SetNotice(OperatorSignInViewModel.ForbiddenText)
-                return
-            case SignInMarker.Failed:
-                this.SetNotice(OperatorSignInViewModel.FailedText)
-                return
+            this.ShowSignInFailed()
+            return
         }
+        if (new URLSearchParams(search).get(AppShellConfig.SignInFailedParam) === SignInMarker.Forbidden)
+        {
+            this.SetNotice(OperatorSignInViewModel.ForbiddenText)
+        }
+    }
+
+    /** The last staff sign-in did not complete. */
+    public ShowSignInFailed(): void
+    {
+        this.SetNotice(OperatorSignInViewModel.FailedText)
+    }
+
+    /** The page is shown again without a reload (the browser's back/forward cache after a staff sign-in left it, or a
+     *  navigation that never happened): nothing is in flight any more. */
+    public Resume(): void
+    {
+        this.Update(() => {
+            this.isBusy = false
+        })
     }
 
     /** Why the console could not start (the session probe failed): on the notice line. */
@@ -178,8 +191,7 @@ export class OperatorSignInViewModel extends Observable
         {
             return
         }
-        this.Update(() =>
-        {
+        this.Update(() => {
             this.isBusy = true
             this.noticeText = OperatorSignInViewModel.NoText
         })
@@ -188,16 +200,14 @@ export class OperatorSignInViewModel extends Observable
 
     private ToggleBreakGlass(): void
     {
-        this.Update(() =>
-        {
+        this.Update(() => {
             this.showBreakGlass = !this.showBreakGlass
         })
     }
 
     private SetNotice(text: string): void
     {
-        this.Update(() =>
-        {
+        this.Update(() => {
             this.noticeText = text
         })
     }
@@ -210,8 +220,7 @@ export class OperatorSignInViewModel extends Observable
         change()
         const after = this.Snapshot()
         const names = [V.StaffSignInOfferedProperty, V.ShowBreakGlassProperty, V.ShowsPasswordFormProperty, V.ShowsBreakGlassToggleProperty, V.BreakGlassToggleTextProperty, V.NoticeTextProperty, V.ShowsNoticeAbovePasswordProperty, V.IsBusyProperty]
-        names.forEach((name, i) =>
-        {
+        names.forEach((name, i) => {
             if (before[i] !== after[i])
             {
                 this.RaisePropertyChanged(name, before[i], after[i])

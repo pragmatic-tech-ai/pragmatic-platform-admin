@@ -14,6 +14,7 @@ import { SettingsSectionService } from '../settings-section-service.js'
 class SettingsFixture
 {
     public static readonly InvitePassword = 'fixture-invite-password'
+    public static readonly StaffPrincipal = 'oidc:https://realm.example/realms/r#account-1'
 
     public readonly Api = new FakeControlPlane()
     public readonly Host: PortalTestHost
@@ -83,6 +84,31 @@ describe('Settings section', () =>
             ['zed@example.test', 'Observer', 'Active'],
         ])
         assert.equal(page.HasOperators, true)
+    })
+
+    it('staff operators list with the realm role and last sign-in; Disable and Enable toggle them and reload', async () =>
+    {
+        const fx = new SettingsFixture()
+        fx.Api.StaffOperators = [{ principal: SettingsFixture.StaffPrincipal, email: 'staff@example.test', method: 'staff', role: 'operator.full', firstSignInAt: '2026-11-23T10:00:00.000Z', lastSignInAt: '2026-11-23T11:00:00.000Z', disabled: false }]
+        const page = await fx.Page()
+        assert.equal(page.HasStaffOperators, true)
+        const row = page.StaffOperators.ToArray()[0]!
+        assert.deepEqual([row.Email, row.RoleLabel, row.StatusLabel, row.ToggleText], ['staff@example.test', 'Operator', 'Active', 'Disable'])
+        assert.notEqual(row.LastSignInLabel, '')
+        row.ToggleCommand.Execute()
+        await Tick.Settle()
+        assert.ok(fx.Api.OperatorCalls.includes('SetStaffOperatorDisabled ' + SettingsFixture.StaffPrincipal + ' true'))
+        const again = page.StaffOperators.ToArray()[0]!
+        assert.deepEqual([again.StatusLabel, again.ToggleText], ['Disabled', 'Enable'])
+    })
+
+    it('Observer: the staff toggle is disabled', async () =>
+    {
+        const fx = new SettingsFixture(OperatorContext.ReadOnlyWireRole)
+        fx.Api.StaffOperators = [{ principal: SettingsFixture.StaffPrincipal, email: 's@example.test', method: 'staff', role: 'operator.read-only', firstSignInAt: '2026-11-23T10:00:00.000Z', lastSignInAt: '2026-11-23T10:00:00.000Z', disabled: false }]
+        const page = await fx.Page()
+        assert.equal(page.HasStaffOperators, false)
+        assert.equal(page.StaffOperators.Count, 0)
     })
 
     it('Invite opens a dialog and calls CreateOperator; the password is cleared afterwards', async () =>
