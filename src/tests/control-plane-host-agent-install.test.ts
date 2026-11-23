@@ -146,9 +146,8 @@ class GatedKindFactory extends HiveOrchestratorFactory
 class Harness
 {
     public static readonly ChannelUrl = 'http://host.docker.internal:7001'
-    /** The folder removal's retries (an install left running may still be writing into it). */
-    public static readonly CleanupRetries = 10
-    public static readonly CleanupRetryDelayMs = 50
+    /** The hives the suite installs on: the cleanup waits for every install a test left running on them. */
+    public static readonly HiveIds: readonly string[] = ['local1', 'aks1', 'kind1']
 
     public static Send(host: ControlPlaneHost, method: string, path: string, token: string = FakeOperator.FullToken): Promise<Reply>
     {
@@ -195,14 +194,22 @@ describe('ControlPlaneHost automatic agent install', () =>
     let orchestrators: FakeOrchestrators
     let kindFactory: GatedKindFactory
     let sessions: HostSessions
+    let installers: HiveAgentInstaller[]
 
     const Make = (installer: HiveAgentInstaller | undefined, images?: IPlatformImages): ControlPlaneHost =>
-        new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: sessions.Sessions,
+    {
+        if (installer !== undefined)
+        {
+            installers.push(installer)
+        }
+        return new ControlPlaneHost({ Service: {} as IEnvironmentService, Graphs: {} as IGraphService, PortalRoot: root, Operator: new FakeOperator(), Sessions: sessions.Sessions,
             Directory: directory, Entitlements: TestEntitlements.Gate(directory), Deployments: deployments, Provisioning: new FakeProvisioning(directory).AsService(), Observations: observations,
             AgentChannelUrl: Harness.ChannelUrl, AgentInstaller: installer, PlatformImages: images })
+    }
 
     beforeEach(async () =>
     {
+        installers = []
         parent = mkdtempSync(join(tmpdir(), 'cp-agent-install-'))
         sessions = await FakeOperator.Sessions()
         root = join(parent, 'static')
@@ -233,9 +240,10 @@ describe('ControlPlaneHost automatic agent install', () =>
     afterEach(async () =>
     {
         await host.Close()
-        // An install a test left running may still write its records into the folder while it is removed (ENOTEMPTY):
-        // the removal retries until the folder stays empty.
-        rmSync(parent, { recursive: true, force: true, maxRetries: Harness.CleanupRetries, retryDelay: Harness.CleanupRetryDelayMs })
+        // An install a test left running still writes its records into the folder (ENOTEMPTY on removal): wait until
+        // every such install has settled (connected, failed or timed out) before the folder goes.
+        await Promise.all(installers.flatMap(installer => Harness.HiveIds.map(id => installer.WhenSettled(id))))
+        rmSync(parent, { recursive: true, force: true })
     })
 
     it('POST starts the install (202, no-store, no token); the hive checks in with the stored token and GET ends Connected', async () =>
