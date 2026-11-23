@@ -70,7 +70,8 @@ export class IdpRolloutStatus
             if (reason !== undefined && reason !== I.NoText) reasons.add(reason)
         }
         const text = [...reasons].join(I.ReasonSeparator)
-        return text.length > I.MaxReasonLength ? text.slice(0, I.MaxReasonLength) : text
+        // The tail: a log-fallback message ends with the line that says why.
+        return text.length > I.MaxReasonLength ? text.slice(-I.MaxReasonLength) : text
     }
 
     private static TerminationOf(state: ContainerState | undefined): string | undefined

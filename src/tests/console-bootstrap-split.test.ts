@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { K8sManifestBuilder } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { ConsoleBootstrapSplit } from '../console-bootstrap-split.js'
+import { IdpRolloutStatus } from '../idp-rollout-state.js'
 
 class SplitCase
 {
@@ -51,5 +52,18 @@ describe('ConsoleBootstrapSplit', () =>
         const none = ConsoleBootstrapSplit.Of(JSON.stringify({ kind: 'List', items: [] }), SplitCase.Tenant)
         assert.equal(none.IdpDeployment, undefined)
         assert.equal(none.IdpHold(JSON.stringify({ spec: { template: {} } })), undefined)
+    })
+})
+
+describe('IdpRolloutStatus', () =>
+{
+    it('keeps the tail of a long termination message (its last line says why)', () =>
+    {
+        const message = 'x'.repeat(2000) + '\npragmatic-tenant-idp: cannot start (unknown-secret-store)'
+        const pods = JSON.stringify({ items: [{ spec: { containers: [{ name: 'idp', image: 'img' }] }, status: { containerStatuses: [{ name: 'idp', lastState: { terminated: { exitCode: 78, message } } }] } }] })
+        const reason = IdpRolloutStatus.ReasonOf(pods, 'idp', 'img')
+        assert.ok(reason.endsWith('(unknown-secret-store)'))
+        assert.ok(reason.length <= 600)
+        assert.equal(IdpRolloutStatus.ReasonOf(pods, 'idp', 'other'), '')
     })
 })
