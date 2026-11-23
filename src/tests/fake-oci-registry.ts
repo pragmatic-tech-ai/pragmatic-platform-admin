@@ -138,9 +138,13 @@ export class FakeOciRegistry
         this.tags.set(repo, [...tags])
     }
 
-    /** Drops a tag (the manifest stays reachable by its digest), as deleting a tag in the registry does. */
+    /** Drops a tag (the manifest stays reachable by its digest), as deleting a tag in the registry does; a digest is no tag. */
     public RemoveTag(repo: string, tag: string): void
     {
+        if (tag.startsWith(FakeOciRegistry.DigestPrefix))
+        {
+            return
+        }
         this.manifests.delete(FakeOciRegistry.KeyOf(repo, tag))
         this.tags.set(repo, (this.tags.get(repo) ?? []).filter(t => t !== tag))
     }

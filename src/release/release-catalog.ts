@@ -304,7 +304,8 @@ export class ReleaseCatalog
      * The digest the image repository tags for the release: its release tag `release-<version>` (ReleaseManifest.ImageTagOf,
      * what the platform release tags from 0.1.0-early.6 on), else the bare `<version>` the releases up to 0.1.0-early.5
      * tagged. A present release tag is final: an image under the bare version (a container release's own semver tag of the
-     * same name) never stands in for it.
+     * same name) never stands in for it. The fallback is not limited to those older versions: any release whose release tag
+     * is absent is read at its bare version, which is safe because the digest found must still equal the signed one.
      */
     private async ImageDigestOf(repository: string, version: string): Promise<string | undefined>
     {

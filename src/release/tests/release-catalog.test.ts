@@ -4,7 +4,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { OciRegistryClient, type OciFetch, Channel, ReleaseDescriptorCodec, type ReleaseDescriptor, ReleasePublisher, ReleaseSignature, ReleaseApp, ReleaseApps, ReleaseTag, ReleaseTrustKeys, ImageSigner, type IImageSigner, FileKeyStore, ReleaseManifest, type ReleaseManifestDocument, type IComponentAssetSource } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { OciRegistryClient, type OciFetch, Channel, ReleaseDescriptorCodec, type ReleaseDescriptor, ReleasePublisher, ReleaseSignature, ReleaseApp, ReleaseApps, ReleaseTag, ReleaseTrustKeys, ImageSigner, type IImageSigner, FileKeyStore, ReleaseManifest, type ReleaseManifestComponent, type ReleaseManifestDocument, type IComponentAssetSource } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { FakeOciRegistry } from '../../tests/fake-oci-registry.js'
 import { FakeImageLayout, FakeReleaseImage } from '../../tests/fake-release-image.js'
 import { RolloutFixture } from '../../tests/rollout-fixture.js'
@@ -208,13 +208,14 @@ class CatalogFixture
      * Publishes the way pragmatic-platform-release does, through the real ReleasePublisher.PublishManifest: each image is
      * the one its container repository released at ComponentVersion (tagged `<ComponentVersion>` and `git-<commit>`,
      * labelled with its component.json digest), and the publisher adds the toolkit's own release tag to it. No image is
-     * ever tagged with the bare release version.
+     * ever tagged with the bare release version. The contract holds for the toolkit this repository installs; the release
+     * repository installs the same `^0.17` range, so both resolve one toolkit.
      */
     public async PublishManifest(version: string): Promise<{ descriptor: ReleaseDescriptor; descriptorDigest: string }>
     {
         const S = CatalogFixture
         const assets = new FakeComponentAssets()
-        const components = {} as ReleaseManifestDocument['components']
+        const components: Partial<Record<ReleaseApp, ReleaseManifestComponent>> = {}
         for (const app of ReleaseApps.All)
         {
             const repository = S.Repo(app)
@@ -229,7 +230,7 @@ class CatalogFixture
         }
         const publisher = new ReleasePublisher(this.Client(), S.Namespace, () => new Date(S.BuiltAt))
         return publisher.PublishManifest({
-            Manifest: { schema: ReleaseManifest.Schema, version, components },
+            Manifest: { schema: ReleaseManifest.Schema, version, components: components as ReleaseManifestDocument['components'] },
             Assets: assets,
             ReleaseCommit: S.ServerCommit,
             SigningKeyId: this.Trusted.Id,
@@ -716,9 +717,14 @@ describe('ReleaseCatalog and the toolkit release image tag', () =>
     {
         await CatalogFixture.Run(async fx =>
         {
-            await fx.Publish(CatalogFixture.Early)
-            assert.equal(await fx.Client().HeadManifest(CatalogFixture.Repo(ReleaseApp.PlatformAdmin), ReleaseManifest.ImageTagOf(CatalogFixture.Early)), undefined)
-            assert.deepEqual((await fx.Catalog().Refresh()).imported, [CatalogFixture.Early])
+            const { descriptor } = await fx.Publish(CatalogFixture.Early)
+            const client = fx.Client()
+            for (const [app, image] of ReleaseDescriptorCodec.ImagesOf(descriptor))
+            {
+                assert.equal(await client.HeadManifest(CatalogFixture.Repo(app), ReleaseManifest.ImageTagOf(CatalogFixture.Early)), undefined, app)
+                assert.equal(await client.HeadManifest(CatalogFixture.Repo(app), CatalogFixture.Early), image.digest, app)
+            }
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [CatalogFixture.Early], rejected: [], unchanged: 0, shadowed: [] })
             assert.equal(fx.Release(CatalogFixture.Early)?.release?.state, ReleaseState.Verified)
         })
     })
@@ -729,7 +735,7 @@ describe('ReleaseCatalog and the toolkit release image tag', () =>
         {
             await fx.PublishManifest(CatalogFixture.V2)
             fx.Registry.PutManifest(CatalogFixture.Repo(ReleaseApp.EnvGateway), CatalogFixture.V2, new TextEncoder().encode(CatalogFixture.Rebuilt), CatalogFixture.ManifestType)
-            assert.deepEqual((await fx.Catalog().Refresh()).imported, [CatalogFixture.V2])
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [CatalogFixture.V2], rejected: [], unchanged: 0, shadowed: [] })
         })
     })
 
@@ -740,7 +746,7 @@ describe('ReleaseCatalog and the toolkit release image tag', () =>
             await fx.Publish(CatalogFixture.V1)
             const gateway = CatalogFixture.Repo(ReleaseApp.EnvGateway)
             fx.Registry.PutManifest(gateway, ReleaseManifest.ImageTagOf(CatalogFixture.V1), new TextEncoder().encode(CatalogFixture.Rebuilt), CatalogFixture.ManifestType)
-            assert.deepEqual((await fx.Catalog().Refresh()).rejected, [CatalogFixture.V1])
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [], rejected: [CatalogFixture.V1], unchanged: 0, shadowed: [] })
             assert.equal(fx.Reason(CatalogFixture.V1), 'image digest mismatch: pragmatic-env-gateway')
         })
     })
@@ -753,10 +759,10 @@ describe('ReleaseCatalog and the toolkit release image tag', () =>
             const admin = descriptor.images[ReleaseApp.PlatformAdmin]
             const releaseTag = ReleaseManifest.ImageTagOf(CatalogFixture.Early)
             fx.Registry.RemoveTag(admin.repository, releaseTag)
-            assert.deepEqual((await fx.Catalog().Refresh()).rejected, [CatalogFixture.Early])
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [], rejected: [CatalogFixture.Early], unchanged: 0, shadowed: [] })
             assert.equal(fx.Reason(CatalogFixture.Early), 'image missing: pragmatic-platform-admin')
             await fx.Client().TagManifest(admin.repository, admin.digest, releaseTag)
-            assert.deepEqual((await fx.Catalog().Refresh()).imported, [CatalogFixture.Early])
+            assert.deepEqual(await fx.Catalog().Refresh(), { imported: [CatalogFixture.Early], rejected: [], unchanged: 0, shadowed: [] })
             assert.equal(fx.Release(CatalogFixture.Early)?.release?.state, ReleaseState.Verified)
         })
     })
