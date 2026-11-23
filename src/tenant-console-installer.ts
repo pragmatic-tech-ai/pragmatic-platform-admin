@@ -21,6 +21,9 @@ import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { TenantAdminBootstrap } from './tenant-admin-bootstrap.js'
 import { DevPlatformImages, PlatformImages, type IPlatformImages } from './platform-images.js'
 import { OwnerAccountMissingError, OwnerIdpRefusedError, OwnerNotRecordedError, IdpUnreachableError } from './tenant-provisioning-service.js'
+import { AppliedConfigurationKeys } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
+import { ConsoleBootstrapSplit } from './console-bootstrap-split.js'
+import { ComponentConfigurationReadiness, ConfigurationReadinessState } from './component-configuration-readiness.js'
 
 /** Where a console install stands. Values are the wire strings. */
 export enum ConsoleInstallState
@@ -40,7 +43,12 @@ export enum ConsoleInstallStep
     ReadingReleaseDescriptors = 'reading-release-descriptors',
     ApplyingConsole = 'applying-console',
     StoringSecrets = 'storing-secrets',
+    /** The console restarts onto the release and becomes ready (the realm sign-in service is not touched yet). */
     WaitingForRollout = 'waiting-for-rollout',
+    /** The console prepares the configurations for the release's descriptors; the install waits on their status. */
+    PreparingConfiguration = 'preparing-configuration',
+    /** The realm sign-in service rolls onto the release's image and becomes ready. */
+    RollingOutIdp = 'rolling-out-idp',
     SeedingOwner = 'seeding-owner',
 }
 
@@ -199,7 +207,10 @@ class ConsoleInstallRun
  * Installs a hive's tenant console (and its in-hive IdP) from the control plane, in the background, on a Local hive whose agent
  * already runs: check the agent's token Secret, prepare the console's TLS (development leaf, existing Secret, or cert-manager),
  * approve the image, render the bootstrap (agent token reused, master key / fingerprint key / IdP credentials kept across
- * reinstalls), apply it, store its Secrets server-side, restart and wait for the IdP and console, then seed the Owner account.
+ * reinstalls), apply it (all but the IdP's Deployment), store its Secrets server-side, restart the console and wait for it,
+ * wait (bounded) until it has prepared the IdP's configuration for the release's IdP descriptor (stopping, the IdP
+ * untouched, when it refuses it), then apply the IdP's Deployment with the release's image, restart and wait for it, then
+ * seed the Owner account.
  * The console's pinned-image allow-list holds only the server image approved by this install, so a console-created environment
  * runs (and rolls to) that ref only: after a platform release the operator reinstalls the console to approve the new server image
  * (the console says so: ImageNotApprovedError). One install per hive at a time; the latest status is kept in memory only. No
@@ -209,6 +220,9 @@ export class TenantConsoleInstaller
 {
     public static readonly ConsolePort = 7100
     public static readonly IdpPort = 9443
+    /** How long the install waits for the console to prepare the IdP's configuration, and how often it reads its status. */
+    public static readonly PreparationTimeoutMs = 180_000
+    public static readonly PreparationPollMs = 3_000
 
     private static readonly NotLocalMessage = 'The console cannot be installed in this hive from here: the control plane does not manage its cluster.'
     private static readonly ChannelOffMessage = 'The console cannot be installed: the agent channel is not configured (set PRAGMATIC_AGENT_CHANNEL_PORT or PRAGMATIC_AGENT_CHANNEL_URL to the channel of the platform edge).'
@@ -224,13 +238,22 @@ export class TenantConsoleInstaller
     private static readonly MixedReleaseMessage = "The console cannot be installed: its tenant-admin, IdP and pragmatic-postgres images come from different platform releases, so no one release's descriptors describe them. Withdraw the newer partial release or publish a full one."
     private static readonly DescriptorsHeldPrefix = 'The release descriptors ConfigMap in pragmatic-system belongs to hive '
     private static readonly DescriptorsHeldSuffix = ': one cluster holds the console of one hive only. Remove that console first.'
+    private static readonly RefusedPrefix = "The realm sign-in service's configuration does not validate for version "
+    private static readonly RefusedChange = ' of this release: change '
+    private static readonly RefusedWhere = ' in the tenant admin console (Configuration, pragmatic-tenant-idp), then install again. The identity provider was not changed. ('
+    private static readonly RefusedEnd = ')'
+    private static readonly SettingsSeparator = ', '
+    private static readonly NotPreparedMessage = "The tenant admin console did not prepare the realm sign-in service's configuration for this release within 3 minutes. The identity provider was not changed; open the console's Configuration page, then install again."
+    private static readonly ConfigMapPrefix = 'configmap/'
     private static readonly StepFailureMessages: Readonly<Record<ConsoleInstallStep, string>> = {
         [ConsoleInstallStep.CheckingAgent]: 'Could not check the hive agent.',
         [ConsoleInstallStep.PreparingCertificates]: "Could not prepare the console's certificates and settings.",
         [ConsoleInstallStep.ReadingReleaseDescriptors]: "Could not read the release's component descriptors.",
         [ConsoleInstallStep.ApplyingConsole]: 'Could not apply the console to the cluster.',
         [ConsoleInstallStep.StoringSecrets]: "Could not store the console's Secrets in the cluster.",
-        [ConsoleInstallStep.WaitingForRollout]: 'The identity provider or the console did not roll out.',
+        [ConsoleInstallStep.WaitingForRollout]: 'The console did not roll out.',
+        [ConsoleInstallStep.PreparingConfiguration]: "Could not read whether the console prepared the identity provider's configuration for this release.",
+        [ConsoleInstallStep.RollingOutIdp]: 'The identity provider did not roll out.',
         [ConsoleInstallStep.SeedingOwner]: "Could not seed the tenant's Owner in the in-hive identity provider.",
     }
     /** Errors whose message is a safe plain sentence (or names only a resource) and helps the operator; others add nothing. */
@@ -640,7 +663,10 @@ export class TenantConsoleInstaller
             {
                 await kubectl.DeleteManifest(stale)
             }
-            await kubectl.Apply(bootstrap.manifest)
+            // The IdP's Deployment (the release's IdP image) waits until its configuration is prepared for that image; the empty
+            // configuration objects go server-side (a client-side apply would clear data a client-side apply wrote).
+            const parts = ConsoleBootstrapSplit.Of(bootstrap.manifest, t)
+            await kubectl.Apply(parts.Console)
             this.Enter(run, ConsoleInstallStep.StoringSecrets)
             await kubectl.ApplyServerSide(bootstrap.secrets.RenderManifest())
             if (idp.secretsManifest !== undefined)
@@ -673,13 +699,36 @@ export class TenantConsoleInstaller
             await this.idpAdmin.RememberOwner(t, hive.id)
             // Last before the restarts: a step that failed earlier leaves the running console the descriptors of the release it runs
             // (a mounted ConfigMap updates in place), and the restarted console reads this release's.
+            // Before the console restarts: the empty configuration objects it writes into, and a running IdP's labels alone (so
+            // the console finds it as a configuration target; its pod template, and so the IdP, does not change).
+            if (parts.ConfigurationObjects !== undefined)
+            {
+                await kubectl.ApplyServerSide(parts.ConfigurationObjects)
+            }
+            if (parts.IdpLabels !== undefined && await kubectl.Find(idpName, C.DeploymentPrefix + idpName) !== undefined)
+            {
+                await kubectl.ApplyServerSide(parts.IdpLabels)
+            }
             await C.DeliverDescriptors(kubectl, hive.id, descriptors)
-            // A reinstall must pick up the new Secrets: both Deployments restart.
-            await kubectl.RolloutRestart(idpName, idpName)
+            // The console first: it restarts onto the release (and its new Secrets), and once ready prepares every configuration
+            // for the release's descriptors.
             await kubectl.RolloutRestart(system, K8sManifestBuilder.TenantAdminNameOf(t))
             this.Enter(run, ConsoleInstallStep.WaitingForRollout)
-            await kubectl.RolloutStatus(idpName, idpName)
             await kubectl.RolloutStatus(system, K8sManifestBuilder.TenantAdminNameOf(t))
+            this.Enter(run, ConsoleInstallStep.PreparingConfiguration)
+            const idpDigest = ReleaseDescriptorsConfigMap.DigestOf(descriptors, ReleaseApp.TenantIdp)
+            if (idpDigest !== undefined)
+            {
+                await this.AwaitPrepared(kubectl, idpName, idpDigest)
+            }
+            // Then the IdP: its Deployment with the release's image, restarted for the new Secrets.
+            this.Enter(run, ConsoleInstallStep.RollingOutIdp)
+            if (parts.IdpDeployment !== undefined)
+            {
+                await kubectl.Apply(parts.IdpDeployment)
+            }
+            await kubectl.RolloutRestart(idpName, idpName)
+            await kubectl.RolloutStatus(idpName, idpName)
             this.Enter(run, ConsoleInstallStep.SeedingOwner)
             await this.idpAdmin.SeedOwner(hive, tenant)
             run.state = ConsoleInstallState.Deployed
@@ -697,6 +746,29 @@ export class TenantConsoleInstaller
         finally
         {
             run.secrets.splice(0)
+        }
+    }
+
+    /**
+     * Waits (bounded) until the console prepared the IdP's configuration for `digest`, the release's IdP descriptor
+     * (ComponentConfigurationReadiness over the status it records). A refusal stops the install naming the settings that
+     * must change; no answer in PreparationTimeoutMs stops it too. Either way the IdP has not been touched.
+     */
+    private async AwaitPrepared(kubectl: IKubectl, namespace: string, digest: string): Promise<void>
+    {
+        const C = TenantConsoleInstaller
+        const resource = C.ConfigMapPrefix + AppliedConfigurationKeys.ObjectNamePrefix + ReleaseApp.TenantIdp
+        for (let attempt = 0; ; attempt += 1)
+        {
+            const readiness = ComponentConfigurationReadiness.Of(await kubectl.Find(namespace, resource), digest)
+            if (readiness.State === ConfigurationReadinessState.Ready) return
+            if (readiness.State === ConfigurationReadinessState.Refused && readiness.Refusal !== undefined)
+            {
+                const r = readiness.Refusal
+                throw new ConsoleInstallStepError(C.RefusedPrefix + r.ComponentVersion + C.RefusedChange + r.Settings.join(C.SettingsSeparator) + C.RefusedWhere + r.Reason + C.RefusedEnd)
+            }
+            if (attempt * C.PreparationPollMs >= C.PreparationTimeoutMs) throw new ConsoleInstallStepError(C.NotPreparedMessage)
+            await this.clock.Delay(C.PreparationPollMs)
         }
     }
 

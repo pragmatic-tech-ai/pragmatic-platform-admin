@@ -264,6 +264,8 @@ export enum ConsoleInstallStep
     ApplyingConsole = 'applying-console',
     StoringSecrets = 'storing-secrets',
     WaitingForRollout = 'waiting-for-rollout',
+    PreparingConfiguration = 'preparing-configuration',
+    RollingOutIdp = 'rolling-out-idp',
     SeedingOwner = 'seeding-owner',
 }
 

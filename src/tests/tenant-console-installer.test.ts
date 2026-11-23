@@ -261,10 +261,13 @@ describe('TenantConsoleInstaller', () =>
             ['ApplyServerSide'],
             ['DeleteBySelector', idp, 'secret', 'pragmatic/hive=h1,pragmatic/tls-copy=true,pragmatic/tls-copy-run!=' + run],
             ['Remember', 'acme'],
-            ['RolloutRestart', idp, idp],
+            // The empty configuration objects (server-side), then the console first; the IdP's Deployment only after.
+            ['ApplyServerSide'],
             ['RolloutRestart', 'pragmatic-system', admin],
-            ['RolloutStatus', idp, idp],
             ['RolloutStatus', 'pragmatic-system', admin],
+            ['Apply'],
+            ['RolloutRestart', idp, idp],
+            ['RolloutStatus', idp, idp],
             ['SeedOwner', 'h1'],
         ])
         // Bootstrap secrets (pragmatic-system), the freshly minted IdP seed Secrets and the IdP's database Secret (IdP namespace), then the two TLS copies.
@@ -304,7 +307,8 @@ describe('TenantConsoleInstaller', () =>
         fx.Installer.Start('h1')
         const second = await fx.Installer.WhenSettled('h1')
         assert.equal(second?.consoleUrl, 'https://portal.localtest.me')
-        const ingress = Items.Ingress(fx.Kubectl.Applied[1] as string, admin)
+        // Each install applies the console, then the IdP's Deployment: the second install's console apply is the third.
+        const ingress = Items.Ingress(fx.Kubectl.Applied[2] as string, admin)
         assert.equal(ingress?.spec?.rules?.[0]?.host, 'portal.localtest.me')
         assert.equal((JSON.parse(fx.Kubectl.Objects.get(fingerprintKey) as string) as Item).data?.['fingerprint.key'], firstFingerprint)
         assert.equal((JSON.parse(fx.Kubectl.Objects.get(seedKey) as string) as Item).data?.['master.key'], firstMaster)
@@ -485,8 +489,9 @@ describe('TenantConsoleInstaller', () =>
         const sweep = fx.Kubectl.Calls.findIndex(c => c[0] === 'DeleteBySelector')
         assert.deepEqual(fx.Kubectl.Calls[sweep], ['DeleteBySelector', ns, 'secret', 'pragmatic/hive=h1,pragmatic/tls-copy=true,pragmatic/tls-copy-run!=' + run])
         // The IdP Ingress never goes without a certificate: the new copy lands before the old ones go.
-        const verbs = fx.Kubectl.Calls.map(c => c[0])
-        assert.ok(sweep > verbs.lastIndexOf('ApplyServerSide'))
+        const copyApply = fx.Kubectl.ServerApplied.findIndex(m => Items.Of(m).some(i => i.type === 'kubernetes.io/tls' && i.metadata.namespace === ns))
+        const serverCalls = fx.Kubectl.Calls.map((c, i) => [c[0], i] as const).filter(([verb]) => verb === 'ApplyServerSide').map(([, i]) => i)
+        assert.ok(sweep > (serverCalls[copyApply] ?? Infinity))
     })
 
     it('a TLS-source switch also deletes the unlabelled earlier copy the IdP Ingress named, and pragmatic-dev-tls, never the IdP own Secrets', async () =>
@@ -587,7 +592,7 @@ describe('TenantConsoleInstaller', () =>
         fx.Hives.set('h1', { ...ConsoleInstallFixture.Hive('h1'), console: { baseDomain: 'localtest.me', tls: { source: IngressTlsSource.Development }, ingressNamespace: 'ingress' } })
         fx.Installer.Start('h1')
         await fx.Installer.WhenSettled('h1')
-        assert.deepEqual(fromOf(fx.Kubectl.Applied[1]!), [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'ingress' } } }])
+        assert.deepEqual(fromOf(fx.Kubectl.Applied[2]!), [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'ingress' } } }])
     })
 
     it('refuses a cluster below Kubernetes 1.30 (no ValidatingAdmissionPolicy) at checking-agent, before anything is applied', async () =>

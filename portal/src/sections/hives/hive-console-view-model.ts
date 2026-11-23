@@ -44,7 +44,9 @@ export class HiveConsoleViewModel extends Observable
         [ConsoleInstallStep.ReadingReleaseDescriptors, 'Read the release descriptors'],
         [ConsoleInstallStep.ApplyingConsole, 'Apply the console'],
         [ConsoleInstallStep.StoringSecrets, 'Store its secrets'],
-        [ConsoleInstallStep.WaitingForRollout, 'Wait for it to start'],
+        [ConsoleInstallStep.WaitingForRollout, 'Wait for the console to start'],
+        [ConsoleInstallStep.PreparingConfiguration, 'Prepare the configurations for this release'],
+        [ConsoleInstallStep.RollingOutIdp, 'Start the identity provider'],
         [ConsoleInstallStep.SeedingOwner, 'Create the Owner account'],
     ]
     private static readonly StartingText = 'Starting the console install...'

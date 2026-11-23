@@ -201,14 +201,15 @@ describe('Hive tenant console (panel)', () =>
         assert.equal(panel.SaveCommand.CanExecute(), false)
         assert.equal(panel.SetOwnerPasswordCommand.CanExecute(), false)
         assert.deepEqual(panel.Steps.ToArray().map(s => s.Label), [
-            'Check the hive agent', 'Prepare certificates', 'Read the release descriptors', 'Apply the console', 'Store its secrets', 'Wait for it to start', 'Create the Owner account',
+            'Check the hive agent', 'Prepare certificates', 'Read the release descriptors', 'Apply the console', 'Store its secrets', 'Wait for the console to start',
+            'Prepare the configurations for this release', 'Start the identity provider', 'Create the Owner account',
         ])
         assert.deepEqual(fx.Polls.Delays, [2000])
         fx.Api.ConsoleInstallReplies = [FakeControlPlane.ConsoleStatus(ConsoleInstallState.Installing, ConsoleInstallStep.ApplyingConsole)]
         await fx.Poll()
         assert.deepEqual(panel.Steps.ToArray().map(s => s.State), [
             AgentInstallStepState.Done, AgentInstallStepState.Done, AgentInstallStepState.Done, AgentInstallStepState.Running,
-            AgentInstallStepState.Pending, AgentInstallStepState.Pending, AgentInstallStepState.Pending,
+            AgentInstallStepState.Pending, AgentInstallStepState.Pending, AgentInstallStepState.Pending, AgentInstallStepState.Pending, AgentInstallStepState.Pending,
         ])
         assert.equal(fx.Polls.Pending, 1)
         fx.Api.ConsoleInstallReplies = [FakeControlPlane.ConsoleStatus(ConsoleInstallState.Deployed, ConsoleInstallStep.SeedingOwner, {
@@ -378,6 +379,20 @@ describe('Hive tenant console (panel)', () =>
         assert.deepEqual(fx.Api.ConsoleInstallStarts, ['h1', 'h1'])
         assert.equal(panel.IsInstalling, true)
         assert.equal(panel.ErrorText, '')
+    })
+
+    it('a configuration refused for the release fails at the preparation step, the IdP step still pending', async () =>
+    {
+        const fx = new ConsoleFixture()
+        const panel = await fx.Configured()
+        await panel.Install()
+        const refusal = "The realm sign-in service's configuration does not validate for version 0.2.4 of this release: change core.databaseUrl in the tenant admin console (Configuration, pragmatic-tenant-idp), then install again. The identity provider was not changed. (rule)"
+        fx.Api.ConsoleInstallReplies = [FakeControlPlane.ConsoleStatus(ConsoleInstallState.Failed, ConsoleInstallStep.PreparingConfiguration, { error: refusal })]
+        await fx.Poll()
+        assert.equal(panel.ErrorText, refusal)
+        assert.equal(panel.Steps.Get(6)?.State, AgentInstallStepState.Failed)
+        assert.equal(panel.Steps.Get(5)?.State, AgentInstallStepState.Done)
+        assert.equal(panel.Steps.Get(7)?.State, AgentInstallStepState.Pending)
     })
 
     it('a refused install (another one running) follows the running install', async () =>

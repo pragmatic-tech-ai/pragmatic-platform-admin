@@ -87,7 +87,18 @@ export class ConsoleFakeKubectl implements IKubectl
         {
             if ((item.kind === 'Secret' || item.kind === 'ConfigMap') && item.metadata?.name !== undefined && item.metadata.namespace !== undefined)
             {
-                this.Put(item.metadata.namespace, item.kind.toLowerCase() + '/' + item.metadata.name, item)
+                // Server-side apply merges: an object applied without data keeps the data another writer put there.
+                const resource = item.kind.toLowerCase() + '/' + item.metadata.name
+                const existing = this.Objects.get(ConsoleFakeKubectl.Key(item.metadata.namespace, resource))
+                const before = existing === undefined ? undefined : JSON.parse(existing) as ManifestItem & { data?: unknown }
+                const keep = before !== undefined && (item as { data?: unknown }).data === undefined && before.data !== undefined
+                // ...and the labels and annotations it does not set.
+                const meta = (o: unknown): Record<string, Record<string, string> | undefined> => ((o as { metadata?: object })?.metadata ?? {}) as Record<string, Record<string, string> | undefined>
+                const merged = before === undefined ? item : {
+                    ...item,
+                    metadata: { ...meta(before), ...meta(item), labels: { ...meta(before).labels, ...meta(item).labels }, annotations: { ...meta(before).annotations, ...meta(item).annotations } },
+                }
+                this.Put(item.metadata.namespace, resource, keep ? { ...merged, data: before.data } : merged)
             }
         }
     }

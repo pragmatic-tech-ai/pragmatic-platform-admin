@@ -130,6 +130,25 @@ export class ReleaseDescriptorsConfigMap
         return JSON.stringify(doc)
     }
 
+    /** The descriptor digest `digests.json` of the object (a manifest or what kubectl returned) names for `component`;
+     *  undefined when there is no object, no such key or no such component. */
+    public static DigestOf(json: string | undefined, component: string): string | undefined
+    {
+        const C = ReleaseDescriptorsConfigMap
+        if (json === undefined) return undefined
+        const text = (JSON.parse(json) as { data?: Record<string, unknown> }).data?.[C.DigestsKey]
+        if (typeof text !== 'string') return undefined
+        try
+        {
+            const digest = (JSON.parse(text) as Record<string, unknown>)[component]
+            return typeof digest === 'string' ? digest : undefined
+        }
+        catch
+        {
+            return undefined
+        }
+    }
+
     /** The hive whose label the object carries; undefined when it is absent or carries none. */
     public static HiveOf(json: string | undefined): string | undefined
     {
