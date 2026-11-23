@@ -4,7 +4,7 @@ import type { HiveRegistry } from './hive-registry.js'
 import { type EnvironmentRecord, HivePlacementError, RecordId, type TenantRecord, type HiveRecord, type ClusterSpec, type RegistrySpec, K8sManifestBuilder, EmailDomainPolicy, type HiveConsoleSpec, type ITenantRecordSource } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { HiveConsoleSpecs } from './hive-console-spec.js'
-import type { ClientRecord } from './platform-records.js'
+import type { ClientRecord, PlatformHiveRecord, PlatformTenantRecord } from './platform-records.js'
 
 export interface IEnvironmentLookup
 {
@@ -216,14 +216,18 @@ export class PlatformDirectory implements ITenantRecordSource
     }
 
     /** Records a tenant; with an Owner (email and principal) when its sign-in runs in its hive rather than in a platform IdP. */
-    public async CreateTenant(input: { id: string; clientId: string; displayName: string; ownerEmail?: string; ownerPrincipalId?: string }): Promise<TenantRecord>
+    public async CreateTenant(input: { id: string; clientId: string; displayName: string; ownerEmail?: string; ownerPrincipalId?: string; createdBy?: string }): Promise<PlatformTenantRecord>
     {
         this.AssertNew(RecordKind.Tenant, input.id, this.tenants.Get(input.id))
         if (this.clients.Get(input.clientId) === undefined)
         {
             throw new UnknownClientError(input.clientId)
         }
-        const record: TenantRecord = { id: input.id, clientId: input.clientId, displayName: input.displayName, createdAt: this.Stamp() }
+        const record: PlatformTenantRecord = { id: input.id, clientId: input.clientId, displayName: input.displayName, createdAt: this.Stamp() }
+        if (input.createdBy !== undefined)
+        {
+            record.createdBy = input.createdBy
+        }
         if (input.ownerEmail !== undefined && input.ownerPrincipalId !== undefined)
         {
             record.ownerEmail = input.ownerEmail
@@ -343,6 +347,28 @@ export class PlatformDirectory implements ITenantRecordSource
         }
         const { console: _previous, ...rest } = hive
         const updated: HiveRecord = console === undefined ? rest : { ...rest, console }
+        await this.hives.Put(updated)
+        return updated
+    }
+
+    /**
+     * Marks the hive left by its customer (never deletes it: the record stays for the operators) and releases where it
+     * served its tenant's console, so its domain claims (the console's advert) stop counting. Leaving twice keeps the
+     * first time. UnknownHiveError for an unknown id.
+     */
+    public async MarkHiveLeft(hiveId: string): Promise<PlatformHiveRecord>
+    {
+        const hive = this.hives.Get(hiveId) as PlatformHiveRecord | undefined
+        if (hive === undefined)
+        {
+            throw new UnknownHiveError(hiveId)
+        }
+        if (hive.leftAt !== undefined)
+        {
+            return hive
+        }
+        const { console: _released, ...rest } = hive
+        const updated: PlatformHiveRecord = { ...rest, leftAt: this.Stamp() }
         await this.hives.Put(updated)
         return updated
     }

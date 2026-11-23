@@ -5,6 +5,7 @@ import type { PlatformAdminDatabase } from '../platform-admin-database.js'
 import { PlatformAdminRegistry } from '../platform-admin-database.js'
 import type { ClientProjection } from './client-projection.js'
 import type { EntitlementRecord } from './entitlement-record.js'
+import type { IClientStatements } from './client-statements.js'
 
 /** Apply lost the conditional write on every attempt (another writer kept changing the client's row). */
 export class EntitlementSinkContentionError extends Error
@@ -26,7 +27,7 @@ export class EntitlementSinkContentionError extends Error
  * client record (ClientProjection); opening the sink re-projects every stored statement, so a crash between the write
  * and the projection cannot leave the record behind.
  */
-export class SqlEntitlementSink implements IEntitlementSink
+export class SqlEntitlementSink implements IEntitlementSink, IClientStatements
 {
     private static readonly MaxAttempts = 8
 

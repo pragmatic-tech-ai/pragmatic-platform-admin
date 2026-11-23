@@ -2,10 +2,12 @@ import { AuditThrottle } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { ConsoleAdvertRegistry, type ConsoleAdvertRecord, type IConsoleAdvertLookup } from './console-advert-registry.js'
 import { ConsoleDomainApprovals, type DomainStanding } from './console-domain-approvals.js'
 import { DomainClaims } from './domain-claims.js'
-import { DomainVerificationRecord, type DomainApprovalState, type DomainVerificationAnswer, type DomainVerificationView, EmailDomainPolicy, InvalidEmailDomainError, type TenantRecord, DomainNotClaimedError, DomainVerificationUnavailableError, DomainVerifyThrottledError, EmailDomainsNotEditableError, type ITenantEmailDomains, type TenantEmailDomainsView } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { DomainVerificationRecord, DomainApprovalState, type DomainVerificationAnswer, type DomainVerificationView, EmailDomainPolicy, InvalidEmailDomainError, type TenantRecord, DomainNotClaimedError, DomainVerificationUnavailableError, DomainVerifyThrottledError, EmailDomainsNotEditableError, type ITenantEmailDomains, type TenantEmailDomainsView } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { HiveConsoleSpecs } from './hive-console-spec.js'
 import { UnknownTenantError, type PlatformDirectory } from './platform-directory.js'
 import { DomainCheck, type DomainTxtVerifier } from './txt-resolver.js'
+import { DomainVerification, DomainVerificationState } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import type { IDomainUsage } from './customer/client-usage.js'
 
 /** Where a tenant's email domains come from: its platform record (control-plane tenant) or its in-hive console's advert. */
 export enum EmailDomainSource
@@ -58,6 +60,19 @@ export class EmailDomainApprovalRefusedError extends Error
     }
 }
 
+/** A customer asked to verify a domain another tenant already holds (approved or verified there); maps to `domain-taken`. */
+export class DomainTakenError extends Error
+{
+    private static readonly ErrorName = 'DomainTakenError'
+    private static readonly MessageSuffix = ' is held by another tenant'
+
+    public constructor(domain: string)
+    {
+        super(domain + DomainTakenError.MessageSuffix)
+        this.name = DomainTakenError.ErrorName
+    }
+}
+
 /**
  * The control plane's email domains per tenant, for the operator routes and the control-plane tenant plane.
  *
@@ -78,7 +93,7 @@ export class EmailDomainApprovalRefusedError extends Error
  * tenant plane) wait for approval or verification. Which tenant claims what comes from one DomainClaims per public call, so the
  * claimed check, `sharedWith` and "contested" of one answer always agree; an operator sees a conflict before approving.
  */
-export class PlatformEmailDomains implements ITenantEmailDomains
+export class PlatformEmailDomains implements ITenantEmailDomains, IDomainUsage
 {
     private static readonly NotEditableMessage = "This tenant's console runs in its hive; its email domains are set there by the tenant Owner."
     private static readonly ApprovalsUnavailableMessage = 'Email domain approval is not available on this control plane.'
@@ -99,6 +114,15 @@ export class PlatformEmailDomains implements ITenantEmailDomains
     private static readonly VerifyWindowMs = 15 * 60 * 1000
     private static readonly VerifyLockoutMs = 15 * 60 * 1000
     private static readonly NoStanding: DomainStanding = { approved: [], revoked: [], verified: [] }
+    /** How a domain's approval state reads to its customer admin: effective is verified, an operator's revoke is failed,
+     *  anything else (not yet seen, or seen while another tenant claims it too) is pending. */
+    private static readonly CustomerStates: ReadonlyMap<DomainApprovalState, DomainVerificationState> = new Map([
+        [DomainApprovalState.Approved, DomainVerificationState.Verified],
+        [DomainApprovalState.Verified, DomainVerificationState.Verified],
+        [DomainApprovalState.VerifiedContested, DomainVerificationState.Pending],
+        [DomainApprovalState.Revoked, DomainVerificationState.Failed],
+        [DomainApprovalState.Pending, DomainVerificationState.Pending],
+    ])
 
     public constructor(
         private readonly directory: PlatformDirectory,
@@ -312,6 +336,81 @@ export class PlatformEmailDomains implements ITenantEmailDomains
         const normalised = PlatformEmailDomains.WellFormed(domain)
         await this.ApprovalStore().Revoke(tenantId, normalised)
         return normalised
+    }
+
+    /** The domains `tenantIds` hold: claimed and not revoked (pending or verified); the customer's verify-email-domain usage. */
+    public HeldCount(tenantIds: readonly string[]): number
+    {
+        const claims = this.Claims()
+        return tenantIds.reduce((sum, tenantId) => sum + this.HeldBy(claims, tenantId).length, 0)
+    }
+
+    /** Whether the tenant holds the (normalised) domain: claimed and not revoked. */
+    public Holds(tenantId: string, domain: string): boolean
+    {
+        return this.HeldBy(this.Claims(), tenantId).includes(EmailDomainPolicy.Normalise(domain))
+    }
+
+    /**
+     * A customer admin starts proving a domain for a control-plane tenant: the domain joins the tenant's record (if it is
+     * not there yet), its token is issued, and the TXT record to publish is answered. Throws UnknownTenantError,
+     * InvalidEmailDomainError (the policy refuses it), DomainTakenError (another tenant holds it: approved, or verified
+     * and uncontested there) or EmailDomainsNotEditableError (the tenant's console runs in its hive and the console does
+     * not report the domain: its domains are set there).
+     */
+    public async StartForCustomer(tenantId: string, domain: string): Promise<DomainVerification>
+    {
+        const tenant = this.KnownTenant(tenantId)
+        const normalised = EmailDomainPolicy.Normalise(domain)
+        const refusal = EmailDomainPolicy.Check(normalised)
+        if (refusal !== undefined)
+        {
+            throw new InvalidEmailDomainError(refusal)
+        }
+        const claims = this.Claims()
+        if (claims.OthersClaiming(tenantId, normalised).some(other => this.EffectiveFor(claims, other, normalised)))
+        {
+            throw new DomainTakenError(normalised)
+        }
+        if (!claims.ClaimedBy(tenantId).includes(normalised))
+        {
+            await this.WriteRecord(tenantId, [...PlatformEmailDomains.RecordDomainsOf(tenant), normalised])
+        }
+        await this.EnsureTokens(tenantId, [normalised])
+        return this.CustomerViewOf(tenantId, normalised)
+    }
+
+    /** VerifyDomain (the tenant's own throttle) for a customer admin, answered as the customer API's verification. */
+    public async CheckForCustomer(tenantId: string, domain: string): Promise<DomainVerification>
+    {
+        await this.VerifyDomain(tenantId, domain)
+        return this.CustomerViewOf(tenantId, EmailDomainPolicy.Normalise(domain))
+    }
+
+    private CustomerViewOf(tenantId: string, domain: string): DomainVerification
+    {
+        const P = PlatformEmailDomains
+        const entry = this.approvals?.VerificationOf(tenantId, domain)
+        if (entry === undefined)
+        {
+            throw new DomainVerificationUnavailableError(P.VerificationUnavailableMessage)
+        }
+        const claims = this.Claims()
+        const state = ConsoleDomainApprovals.StateOf(this.StandingOf(tenantId), domain, claims.OthersClaiming(tenantId, domain).length > 0)
+        return new DomainVerification(tenantId, domain, P.CustomerStates.get(state) ?? DomainVerificationState.Pending, DomainVerificationRecord.NameFor(domain), DomainVerificationRecord.ValueFor(entry.token))
+    }
+
+    /** The tenant's claimed domains that are not revoked. */
+    private HeldBy(claims: DomainClaims, tenantId: string): readonly string[]
+    {
+        const revoked = new Set(this.StandingOf(tenantId).revoked)
+        return claims.ClaimedBy(tenantId).filter(domain => !revoked.has(domain))
+    }
+
+    /** Whether the domain is effective (matches in discovery) for `tenantId`. */
+    private EffectiveFor(claims: DomainClaims, tenantId: string, domain: string): boolean
+    {
+        return ConsoleDomainApprovals.EffectiveDomains([domain], this.StandingOf(tenantId), claims.ContestedFor(tenantId)).includes(domain)
     }
 
     private KnownTenant(tenantId: string): TenantRecord
