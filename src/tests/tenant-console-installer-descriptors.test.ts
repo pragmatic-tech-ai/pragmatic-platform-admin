@@ -421,7 +421,38 @@ class PreparedInstall
     public static readonly CreateCall = 'Create'
     public static readonly RolloutStatusCall = 'RolloutStatus'
     public static readonly DeploymentResource = 'deployment/'
-    public static readonly RunningTemplate = { metadata: { labels: { 'pragmatic/app': 'pragmatic-idp-acme' } }, spec: { containers: [{ name: 'idp', image: 'ghcr.io/x/pragmatic-tenant-idp@sha256:' + '1'.repeat(64) }] } }
+    public static readonly RunningHash = `sha256:${'4'.repeat(64)}`
+    public static readonly RunningTemplate = { metadata: { labels: { 'pragmatic/app': 'pragmatic-idp-acme' }, annotations: { [AppliedConfigurationKeys.HashAnnotation]: PreparedInstall.RunningHash } }, spec: { containers: [{ name: 'idp', image: 'ghcr.io/x/pragmatic-tenant-idp@sha256:' + '1'.repeat(64) }] } }
+    public static readonly Ready = { observedGeneration: 2, replicas: 1, updatedReplicas: 1, availableReplicas: 1 }
+    public static readonly Rolling = { observedGeneration: 2, replicas: 1, updatedReplicas: 1, availableReplicas: 0, conditions: [{ type: 'Progressing', status: 'True', reason: 'ReplicaSetUpdated' }] }
+    public static readonly Failed = { observedGeneration: 2, replicas: 1, updatedReplicas: 1, availableReplicas: 0, conditions: [{ type: 'Progressing', status: 'False', reason: 'ProgressDeadlineExceeded' }] }
+    public static readonly RefusalLine = 'pragmatic-tenant-idp: cannot start on the applied configuration: google.clientSecret (unknown-secret-store)'
+
+    /** What the IdP Deployment's status reads after the release's apply: `first` once, then `rest` (default `first`). */
+    public static Rollout(fx: ConsoleInstallFixture, first: object, rest: object = first): void
+    {
+        const P = PreparedInstall
+        const key = ConsoleFakeKubectl.Key(P.Idp, P.DeploymentResource + P.Idp)
+        const held = fx.Kubectl.Objects.get(key)
+        const at = (status: object): string => JSON.stringify({ kind: 'Deployment', metadata: { name: P.Idp, namespace: P.Idp, generation: 2 }, spec: { replicas: 1, template: P.RunningTemplate }, status })
+        // The hold reads the running Deployment first (when there is one), then every poll reads the release's roll.
+        fx.Kubectl.FindAnswers.set(key, [...(held === undefined ? [] : [held]), at(first)])
+        fx.Kubectl.Objects.set(key, at(rest))
+    }
+
+    /** The release's pods crash-looping on a refused configuration (their termination message). */
+    public static CrashingPods(fx: ConsoleInstallFixture, d: DescriptorInstall): void
+    {
+        const P = PreparedInstall
+        void d
+        fx.Kubectl.Put(P.Idp, 'pods', { items: [{ spec: { containers: [{ name: 'idp', image: P.ReleaseImageOf(fx) }] }, status: { containerStatuses: [{ name: 'idp', state: { waiting: { reason: 'CrashLoopBackOff' } }, lastState: { terminated: { exitCode: 78, message: P.RefusalLine } } }] } }] })
+    }
+
+    /** The IdP image the installer applies (the fixture's platform images). */
+    public static ReleaseImageOf(fx: ConsoleInstallFixture): string
+    {
+        return fx.ReleaseIdpImage()
+    }
 
     /** The digest of the release's tenant-idp descriptor (what the new pods will carry). */
     public static ReleaseDigest(d: DescriptorInstall): string
@@ -461,10 +492,10 @@ class PreparedInstall
     }
 
     /** A running IdP Deployment (an earlier release's) and its configuration answering `answers` in turn, then `last`. */
-    public static Cluster(fx: ConsoleInstallFixture, answers: Array<string | undefined>, last: string | undefined): void
+    public static Cluster(fx: ConsoleInstallFixture, answers: Array<string | undefined>, last: string | undefined, available: number = 1): void
     {
         const P = PreparedInstall
-        fx.Kubectl.Put(P.Idp, P.DeploymentResource + P.Idp, { kind: 'Deployment', metadata: { name: P.Idp, namespace: P.Idp }, spec: { replicas: 1, template: P.RunningTemplate } })
+        fx.Kubectl.Put(P.Idp, P.DeploymentResource + P.Idp, { kind: 'Deployment', metadata: { name: P.Idp, namespace: P.Idp }, spec: { replicas: 1, template: P.RunningTemplate }, status: { availableReplicas: available } })
         if (last !== undefined) fx.Kubectl.Objects.set(ConsoleFakeKubectl.Key(P.Idp, P.ConfigResource), last)
         fx.Kubectl.FindAnswers.set(ConsoleFakeKubectl.Key(P.Idp, P.ConfigResource), answers)
     }
@@ -532,17 +563,19 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         assert.ok(configAt < consoleRestart, 'the configuration object before the console restarts')
     })
 
-    it('an IdP that does not start on the release is put back on its own template, and the install says so', async () =>
+    it('an IdP whose roll the controller gave up on is put back on its own template, saying why the new one stopped', async () =>
     {
         const d = D.WithRelease()
         fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
         P.Cluster(fx, [], P.Prepared(P.ReleaseDigest(d)))
+        P.Rollout(fx, P.Failed)
+        P.CrashingPods(fx, d)
         fx.Kubectl.RolloutStatusFailures.set(P.Idp, [true])
         fx.Installer.Start(D.Hive)
         const status = await fx.Installer.WhenSettled(D.Hive)
         assert.equal(status?.state, ConsoleInstallState.Failed)
         assert.equal(status?.step, ConsoleInstallStep.RollingOutIdp)
-        assert.match(status?.error ?? '', /previous version was put back and runs again/)
+        assert.match(status?.error ?? '', /previous version was put back and runs again\. Why the new one stopped: pragmatic-tenant-idp: cannot start/)
         const idpApplies = fx.Kubectl.Applied.map(m => D.Items(m).find(i => P.IsIdpDeployment(i))).filter(i => i !== undefined)
         assert.equal(idpApplies.length, 2, 'the release template, then the running one back')
         assert.deepEqual((idpApplies[1]?.spec as { template?: unknown }).template, P.RunningTemplate)
@@ -550,15 +583,87 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         assert.equal(fx.IdpAdmin.Seeded.length, 0)
     })
 
+    it('a put-back whose pods are not ready yet, or that is refused, says so', async () =>
+    {
+        const d = D.WithRelease()
+        fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
+        P.Cluster(fx, [], P.Prepared(P.ReleaseDigest(d)))
+        P.Rollout(fx, P.Failed)
+        fx.Kubectl.RolloutStatusFailures.set(P.Idp, [true, true])
+        fx.Installer.Start(D.Hive)
+        assert.match((await fx.Installer.WhenSettled(D.Hive))?.error ?? '', /put back but is not ready yet/)
+        fx.Dispose()
+        fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
+        P.Cluster(fx, [], P.Prepared(P.ReleaseDigest(d)))
+        P.Rollout(fx, P.Failed)
+        fx.Kubectl.RolloutStatusFailures.set(P.Idp, [true])
+        fx.Kubectl.ApplyFailures.add(2)
+        fx.Installer.Start(D.Hive)
+        const refused = await fx.Installer.WhenSettled(D.Hive)
+        assert.equal(refused?.step, ConsoleInstallStep.RollingOutIdp)
+        assert.match(refused?.error ?? '', /putting its previous version back was refused: it is left on this release/)
+    })
+
+    it('a slow but healthy roll is never put back: the Deployment status, not kubectl wait, decides', async () =>
+    {
+        const d = D.WithRelease()
+        fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
+        P.Cluster(fx, [], P.Prepared(P.ReleaseDigest(d)))
+        P.Rollout(fx, P.Rolling, P.Ready)
+        fx.Kubectl.RolloutStatusFailures.set(P.Idp, [true])
+        await D.Installed(fx)
+        assert.equal(fx.Kubectl.Applied.filter(m => D.Items(m).some(i => P.IsIdpDeployment(i))).length, 1)
+    })
+
+    it('a roll still undecided after IdpDecideMs fails the install without reverting it', async () =>
+    {
+        const d = D.WithRelease()
+        fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
+        P.Cluster(fx, [], P.Prepared(P.ReleaseDigest(d)))
+        P.Rollout(fx, P.Rolling)
+        fx.Kubectl.RolloutStatusFailures.set(P.Idp, [true])
+        fx.Installer.Start(D.Hive)
+        const status = await fx.Installer.WhenSettled(D.Hive)
+        assert.match(status?.error ?? '', /has not finished starting on this release; it was left rolling/)
+        assert.equal(fx.Kubectl.Applied.filter(m => D.Items(m).some(i => P.IsIdpDeployment(i))).length, 1)
+        const reads = fx.Kubectl.Calls.filter(c => c[0] === P.FindCall && c[2] === P.DeploymentResource + P.Idp).length
+        assert.equal(reads, 1 + TenantConsoleInstaller.IdpDecideMs / TenantConsoleInstaller.IdpPollMs + 1, 'the hold read, then every poll')
+    })
+
+    it('a running IdP that was not available (a failed earlier release) is never put back', async () =>
+    {
+        const d = D.WithRelease()
+        fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
+        P.Cluster(fx, [], P.Prepared(P.ReleaseDigest(d)), 0)
+        P.Rollout(fx, P.Failed)
+        fx.Kubectl.RolloutStatusFailures.set(P.Idp, [true])
+        fx.Installer.Start(D.Hive)
+        const status = await fx.Installer.WhenSettled(D.Hive)
+        assert.match(status?.error ?? '', /nothing earlier to put back/)
+        assert.equal(fx.Kubectl.Applied.filter(m => D.Items(m).some(i => P.IsIdpDeployment(i))).length, 1)
+    })
+
+    it('the release template keeps the console annotations of the running one and logs its exit reason', async () =>
+    {
+        const d = D.WithRelease()
+        fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery })
+        P.Cluster(fx, [], P.Prepared(P.ReleaseDigest(d)))
+        await D.Installed(fx)
+        const applied = D.Items(fx.Kubectl.Applied[1] as string).find(i => P.IsIdpDeployment(i)) as unknown as { spec: { template: { metadata: { annotations: Record<string, string> }; spec: { containers: Array<Record<string, string>> } } } }
+        assert.equal(applied.spec.template.metadata.annotations[AppliedConfigurationKeys.HashAnnotation], P.RunningHash)
+        assert.equal(applied.spec.template.spec.containers.find(c => c.name === 'idp')?.terminationMessagePolicy, 'FallbackToLogsOnError')
+    })
+
     it('a fresh install whose IdP does not start fails at rolling-out-idp with nothing to put back', async () =>
     {
         const d = D.WithRelease()
         fx = await ConsoleInstallFixture.Create({ descriptors: d.Delivery, runningIdp: false })
+        P.Rollout(fx, P.Failed)
         fx.Kubectl.RolloutStatusFailures.set(P.Idp, [true])
         fx.Installer.Start(D.Hive)
         const status = await fx.Installer.WhenSettled(D.Hive)
         assert.equal(status?.step, ConsoleInstallStep.RollingOutIdp)
-        assert.match(status?.error ?? '', /^The identity provider did not roll out\./)
+        assert.match(status?.error ?? '', /nothing earlier to put back/)
         assert.equal(fx.Kubectl.Applied.filter(m => D.Items(m).some(i => P.IsIdpDeployment(i))).length, 1)
     })
 

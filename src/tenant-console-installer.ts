@@ -23,6 +23,7 @@ import { DevPlatformImages, PlatformImages, type IPlatformImages } from './platf
 import { OwnerAccountMissingError, OwnerIdpRefusedError, OwnerNotRecordedError, IdpUnreachableError } from './tenant-provisioning-service.js'
 import { AppliedConfigurationKeys } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
 import { ConsoleBootstrapSplit } from './console-bootstrap-split.js'
+import { IdpRolloutState, IdpRolloutStatus } from './idp-rollout-state.js'
 import { ComponentConfigurationReadiness, ConfigurationReadinessState } from './component-configuration-readiness.js'
 
 /** Where a console install stands. Values are the wire strings. */
@@ -223,6 +224,9 @@ export class TenantConsoleInstaller
     /** How long the install waits for the console to prepare the IdP's configuration, and how often it reads its status. */
     public static readonly PreparationTimeoutMs = 180_000
     public static readonly PreparationPollMs = 3_000
+    /** After kubectl's wait ends, how long the IdP Deployment's own status is read for a verdict, and how often. */
+    public static readonly IdpDecideMs = 720_000
+    public static readonly IdpPollMs = 10_000
 
     private static readonly NotLocalMessage = 'The console cannot be installed in this hive from here: the control plane does not manage its cluster.'
     private static readonly ChannelOffMessage = 'The console cannot be installed: the agent channel is not configured (set PRAGMATIC_AGENT_CHANNEL_PORT or PRAGMATIC_AGENT_CHANNEL_URL to the channel of the platform edge).'
@@ -247,8 +251,12 @@ export class TenantConsoleInstaller
     private static readonly NotPreparedSuffix = " minutes. The identity provider was not changed. The console prepares it when it starts: its Configuration page for " + ReleaseApp.TenantIdp + " shows a refusal or an error; it prepares nothing when this release's identity provider is not newer than the configured one, when the configuration was applied for another realm, when the configuration object's hash annotation does not match its file, or when the identity provider's Deployment is not one the console may configure. Then install again."
     private static readonly NoIdpDigestMessage = "The release's component descriptors name no descriptor for the identity provider, so its configuration cannot be prepared; the identity provider was not changed. Publish a complete release."
     private static readonly MinuteMs = 60_000
-    private static readonly IdpPutBackMessage = 'The identity provider did not start on this release; its previous version was put back and runs again. Check its logs (a configuration it refuses names the setting), then install again.'
-    private static readonly IdpPutBackPendingMessage = 'The identity provider did not start on this release; its previous version was put back but is not ready yet. Check both in the cluster, then install again.'
+    private static readonly IdpPutBackMessage = 'The identity provider did not start on this release; its previous version was put back and runs again. Why the new one stopped:'
+    private static readonly IdpPutBackPendingMessage = 'The identity provider did not start on this release; its previous version was put back but is not ready yet: check it in the cluster. Why the new one stopped:'
+    private static readonly IdpPutBackFailedMessage = 'The identity provider did not start on this release, and putting its previous version back was refused: it is left on this release. Why the new one stopped, then the refusal:'
+    private static readonly IdpFailedMessage = 'The identity provider did not start on this release (nothing earlier to put back). Why it stopped:'
+    private static readonly IdpStillRollingMessage = 'The identity provider has not finished starting on this release; it was left rolling (a slow start is not reverted). Check it in the cluster, then install again.'
+    private static readonly PodsResource = 'pods'
     private static readonly NoDetail = ''
     private static readonly ConfigMapPrefix = 'configmap/'
     private static readonly StepFailureMessages: Readonly<Record<ConsoleInstallStep, string>> = {
@@ -681,7 +689,10 @@ export class TenantConsoleInstaller
             }
             // A running IdP gets the new labels on its own pod template, so the restarted console finds it as a configuration
             // target while the IdP does not roll.
-            const hold = parts.IdpHold(await kubectl.Find(idpName, C.DeploymentPrefix + idpName))
+            const live = await kubectl.Find(idpName, C.DeploymentPrefix + idpName)
+            const hold = parts.IdpHold(live)
+            // Worth putting back only when it served: re-running after a failed release must not "restore" a broken template.
+            const putBack = hold !== undefined && IdpRolloutStatus.WasAvailable(live) ? hold : undefined
             if (hold !== undefined)
             {
                 await kubectl.ApplyServerSide(hold)
@@ -738,7 +749,7 @@ export class TenantConsoleInstaller
             }
             // Then the IdP: its Deployment with the release's image, restarted for the new Secrets.
             this.Enter(run, ConsoleInstallStep.RollingOutIdp)
-            await this.RollOutIdp(kubectl, idpName, parts, hold)
+            await this.RollOutIdp(kubectl, idpName, parts, live, putBack)
             this.Enter(run, ConsoleInstallStep.SeedingOwner)
             await this.idpAdmin.SeedOwner(hive, tenant)
             run.state = ConsoleInstallState.Deployed
@@ -761,11 +772,14 @@ export class TenantConsoleInstaller
 
     /**
      * The IdP onto the release: its Deployment applied with a restart stamp in the pod template (the new Secrets are read
-     * too), so the install leaves exactly one new revision. When the new pods do not become ready and the install held a
-     * running IdP, that IdP's own template is applied back (client-side, so what the release's template added goes too):
-     * the previous pods come back and the install fails saying so. A fresh install has nothing to put back.
+     * too), so the install leaves exactly one new revision. kubectl's wait ending is not a verdict: the Deployment's own
+     * status decides (IdpRolloutStatus), read every IdpPollMs for up to IdpDecideMs. Ready: done. Still rolling: the install
+     * fails without touching it (a slow start is never reverted). Failed (ProgressDeadlineExceeded): the new pods' reason is
+     * read first (put back, they are gone), then, when the install held an available IdP, that IdP's own template is applied
+     * back (client-side, so what the release's template added goes too) and awaited; the install fails saying which. Put
+     * back runs the previous version on the IdP's database: its migrations stay backward compatible (C3.1 Ledger R9).
      */
-    private async RollOutIdp(kubectl: IKubectl, idpName: string, parts: ConsoleBootstrapSplit, hold: string | undefined): Promise<void>
+    private async RollOutIdp(kubectl: IKubectl, idpName: string, parts: ConsoleBootstrapSplit, live: string | undefined, putBack: string | undefined): Promise<void>
     {
         const C = TenantConsoleInstaller
         if (parts.IdpDeployment === undefined)
@@ -774,24 +788,54 @@ export class TenantConsoleInstaller
             await kubectl.RolloutStatus(idpName, idpName)
             return
         }
-        await kubectl.Apply(parts.IdpDeploymentRestartedAt(new Date(this.clock.Now()).toISOString()))
+        await kubectl.Apply(parts.IdpDeploymentRestartedAt(new Date(this.clock.Now()).toISOString(), live))
         try
         {
             await kubectl.RolloutStatus(idpName, idpName)
+            return
         }
-        catch (failed)
+        catch (waited)
         {
-            if (hold === undefined) throw failed
-            await kubectl.Apply(hold)
-            const back = await kubectl.RolloutStatus(idpName, idpName).then(() => true, () => false)
-            throw new ConsoleInstallStepError((back ? C.IdpPutBackMessage : C.IdpPutBackPendingMessage) + C.DetailSeparator + C.Scrubbed(failed))
+            const state = await this.DecideIdp(kubectl, idpName)
+            if (state === IdpRolloutState.Ready) return
+            if (state === IdpRolloutState.Rolling) throw new ConsoleInstallStepError(C.WithDetail(C.IdpStillRollingMessage, C.KubectlText(waited)))
+        }
+        const image = parts.IdpImage
+        const reason = image === undefined ? C.NoDetail : IdpRolloutStatus.ReasonOf(await kubectl.Find(idpName, C.PodsResource).catch(() => undefined), parts.IdpContainer, image)
+        if (putBack === undefined) throw new ConsoleInstallStepError(C.WithDetail(C.IdpFailedMessage, reason))
+        try
+        {
+            await kubectl.Apply(putBack)
+        }
+        catch (refused)
+        {
+            throw new ConsoleInstallStepError(C.WithDetail(C.WithDetail(C.IdpPutBackFailedMessage, reason), C.KubectlText(refused)))
+        }
+        const back = await kubectl.RolloutStatus(idpName, idpName).then(() => true, () => false)
+        throw new ConsoleInstallStepError(C.WithDetail(back ? C.IdpPutBackMessage : C.IdpPutBackPendingMessage, reason))
+    }
+
+    // The Deployment's own verdict once kubectl's wait ended without one.
+    private async DecideIdp(kubectl: IKubectl, idpName: string): Promise<IdpRolloutState>
+    {
+        const C = TenantConsoleInstaller
+        for (let attempt = 0; ; attempt += 1)
+        {
+            const state = IdpRolloutStatus.StateOf(await kubectl.Find(idpName, C.DeploymentPrefix + idpName))
+            if (state !== IdpRolloutState.Rolling || attempt * C.IdpPollMs >= C.IdpDecideMs) return state
+            await this.clock.Delay(C.IdpPollMs)
         }
     }
 
-    // A rollout failure's own text when it is a showable one (kubectl's), else nothing more.
-    private static Scrubbed(err: unknown): string
+    // kubectl's own text (Fail scrubs it), nothing for another error.
+    private static KubectlText(err: unknown): string
     {
-        return err instanceof KubectlError ? KubectlError.Redact(err.message) : TenantConsoleInstaller.NoDetail
+        return err instanceof KubectlError ? err.message.trim() : TenantConsoleInstaller.NoDetail
+    }
+
+    private static WithDetail(message: string, detail: string): string
+    {
+        return detail === TenantConsoleInstaller.NoDetail ? message : message + TenantConsoleInstaller.DetailSeparator + detail
     }
 
     /**

@@ -1,5 +1,6 @@
 import { AppliedConfigurationKeys } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
 import { ComponentConfigurationMounts, K8sManifestBuilder } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 
 type ManifestItem = { apiVersion?: string; kind?: string; metadata?: { name?: string; namespace?: string; labels?: Record<string, string> }; spec?: Record<string, unknown>; data?: unknown; stringData?: unknown }
 
@@ -32,6 +33,12 @@ export class ConsoleBootstrapSplit
     /** What `kubectl rollout restart` sets: a new value rolls the pods. */
     public static readonly RestartedAtAnnotation = 'kubectl.kubernetes.io/restartedAt'
     private static readonly NoIdpDeployment = 'the bootstrap renders no IdP Deployment'
+    private static readonly SpecKey = 'spec'
+    private static readonly NameKey = 'name'
+    private static readonly TerminationPolicyKey = 'terminationMessagePolicy'
+    private static readonly FallbackToLogsOnError = 'FallbackToLogsOnError'
+    private static readonly DefaultIdpContainer = 'idp'
+    private static readonly KeptAnnotations: readonly string[] = [AppliedConfigurationKeys.HashAnnotation, AppliedConfigurationKeys.SecretsRevisionAnnotation]
 
     private constructor(
         public readonly Console: string,
@@ -57,17 +64,53 @@ export class ConsoleBootstrapSplit
         return new ConsoleBootstrapSplit(S.List(rest), objects.map(o => JSON.stringify(o)), deployment === undefined ? undefined : S.List([deployment]), deployment)
     }
 
-    /** The IdP Deployment with `kubectl.kubernetes.io/restartedAt` = `at` on its pod template: applying it rolls the pods
-     *  once even when the image is unchanged (a reinstall's new Secrets), one revision instead of an apply and a restart. */
-    public IdpDeploymentRestartedAt(at: string): string
+    /**
+     * The IdP Deployment to roll onto: `kubectl.kubernetes.io/restartedAt` = `at` on its pod template, so applying it rolls
+     * the pods once even when the image is unchanged (a reinstall's new Secrets), one revision instead of an apply and a
+     * restart; the console's configuration-hash and secrets-revision annotations of the running template (`live`) kept (a
+     * client-side apply would otherwise drop them); and the IdP container's termination message taken from its last log
+     * lines when it exits on an error, so the install can say why it did not start.
+     */
+    public IdpDeploymentRestartedAt(at: string, live?: string): string
     {
         const S = ConsoleBootstrapSplit
         if (this.idp === undefined) throw new Error(S.NoIdpDeployment)
         const spec = (this.idp.spec ?? {}) as Record<string, Record<string, Record<string, unknown>>>
         const template = spec[S.TemplateKey] ?? {}
         const metadata = (template[S.MetadataKey] ?? {}) as Record<string, Record<string, string>>
-        const stamped = { ...metadata, [S.AnnotationsKey]: { ...metadata[S.AnnotationsKey], [S.RestartedAtAnnotation]: at } }
-        return S.List([{ ...this.idp, spec: { ...spec, [S.TemplateKey]: { ...template, [S.MetadataKey]: stamped } } }])
+        const running = S.RunningAnnotations(live)
+        const stamped = { ...metadata, [S.AnnotationsKey]: { ...metadata[S.AnnotationsKey], ...running, [S.RestartedAtAnnotation]: at } }
+        const pod = (template[S.SpecKey] ?? {}) as { containers?: Array<Record<string, unknown>> }
+        const containers = (pod.containers ?? []).map(c => c[S.NameKey] === this.IdpContainer ? { ...c, [S.TerminationPolicyKey]: S.FallbackToLogsOnError } : c)
+        return S.List([{ ...this.idp, spec: { ...spec, [S.TemplateKey]: { ...template, [S.MetadataKey]: stamped, [S.SpecKey]: { ...pod, containers } } } }])
+    }
+
+    /** The container that runs the IdP (the component label names it). */
+    public get IdpContainer(): string
+    {
+        return this.idp?.metadata?.labels?.[ComponentConfigurationMounts.ConfiguresLabelPrefix + ReleaseApp.TenantIdp] ?? ConsoleBootstrapSplit.DefaultIdpContainer
+    }
+
+    /** The image the release runs the IdP on; undefined without a rendered IdP Deployment. */
+    public get IdpImage(): string | undefined
+    {
+        const containers = ((this.idp?.spec?.[ConsoleBootstrapSplit.TemplateKey] as { spec?: { containers?: Array<{ name?: string; image?: string }> } } | undefined)?.spec?.containers) ?? []
+        return containers.find(c => c.name === this.IdpContainer)?.image
+    }
+
+    // The console's annotations on the running pod template (configuration hash, secrets revision).
+    private static RunningAnnotations(live: string | undefined): Record<string, string>
+    {
+        const S = ConsoleBootstrapSplit
+        if (live === undefined) return {}
+        const annotations = (JSON.parse(live) as { spec?: { template?: { metadata?: { annotations?: Record<string, unknown> } } } }).spec?.template?.metadata?.annotations ?? {}
+        const out: Record<string, string> = {}
+        for (const key of S.KeptAnnotations)
+        {
+            const value = annotations[key]
+            if (typeof value === 'string') out[key] = value
+        }
+        return out
     }
 
     /** The rendered IdP Deployment holding the running one's pod template and replicas (`live`, as kubectl returns it), so

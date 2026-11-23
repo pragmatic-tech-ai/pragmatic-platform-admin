@@ -9,11 +9,11 @@ import type { IOwnerResetRecorder } from '../console-owner-resets.js'
 import type { IDevCertificateIssuer, IssuedCertificate } from '../dev-certificate-authority.js'
 import { InClusterIdpSeedSource } from '../in-cluster-idp-seed.js'
 import type { IInHiveIdpAdmin, InHiveOwnerPassword } from '../in-hive-idp-admin.js'
-import type { IKeyStore, VerifiedImage } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { ReleaseApp, type IKeyStore, type VerifiedImage } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { KubectlError, type IKubectl } from '@pragmatic-tech-ai/pragmatic-kube'
 import { TenantAdminBootstrap, type IHiveRegistrar } from '../tenant-admin-bootstrap.js'
 import { TenantConsoleInstaller, type IConsoleDirectory, type IConsoleImageApproval } from '../tenant-console-installer.js'
-import type { IPlatformImages } from '../platform-images.js'
+import { DevPlatformImages, type IPlatformImages } from '../platform-images.js'
 import type { ConsoleReleaseDescriptors } from '../console-release-descriptors.js'
 
 type ManifestItem = { kind?: string; metadata?: { name?: string; namespace?: string }; data?: Record<string, string> }
@@ -68,10 +68,18 @@ export class ConsoleFakeKubectl implements IKubectl
         return this.Objects.get(key)
     }
 
+    /** Positions (in Applied) of client-side applies that fail. */
+    public readonly ApplyFailures = new Set<number>()
+
     public async Apply(manifestJson: string): Promise<void>
     {
+        const index = this.Applied.length
         this.Calls.push(['Apply'])
         this.Applied.push(manifestJson)
+        if (this.ApplyFailures.has(index))
+        {
+            throw new KubectlError('apply refused')
+        }
     }
 
     public async ApplyServerSide(manifestJson: string): Promise<void>
@@ -435,7 +443,7 @@ export class ConsoleInstallFixture
     public readonly Adverts = new FakeAdvertLookup()
     public readonly Installer: TenantConsoleInstaller
 
-    private constructor(private readonly dir: string, public readonly Fingerprints: ConsoleFingerprintKeys, channelOn: boolean, platformImages?: IPlatformImages, descriptors?: ConsoleReleaseDescriptors)
+    private constructor(private readonly dir: string, public readonly Fingerprints: ConsoleFingerprintKeys, channelOn: boolean, private readonly platformImages?: IPlatformImages, descriptors?: ConsoleReleaseDescriptors)
     {
         this.Installer = new TenantConsoleInstaller(
             { GetHive: (id: string) => this.Hives.get(id), GetTenant: (id: string) => this.Tenants.get(id) },
@@ -500,6 +508,12 @@ export class ConsoleInstallFixture
             { GetHive: (id: string) => this.Hives.get(id), GetTenant: (id: string) => this.Tenants.get(id) },
             this.Orchestrators, new TenantAdminBootstrap(this.Registrar), this.Fingerprints, this.DevCa, this.IdpAdmin, this.Images, new FakeTrustRoots(),
             ConsoleInstallFixture.ChannelUrl, { Now: () => this.ClockMs, Delay: async () => undefined }, this.Adverts)
+    }
+
+    /** The IdP image an install applies (development images unless the fixture was given release images). */
+    public ReleaseIdpImage(): string
+    {
+        return (this.platformImages ?? new DevPlatformImages()).ImageOf(ReleaseApp.TenantIdp) as string
     }
 
     public Dispose(): void
