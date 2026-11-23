@@ -9,5 +9,5 @@ export class PlatformAdminGolden
 {
     public static readonly Fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'pragmatic-platform-admin.component.json')
     /** At 0.1.3: the entitlements and customerApi options (D4) and the version. */
-    public static readonly Digest = 'sha256:ad9e52c5cbb693b9e22669fc42659be0cb56053f47116ec931051769ddd91c56'
+    public static readonly Digest = 'sha256:836d311c5f2a1376e9831d310aac9e5b483b5ba3a0cd4636f9048b3e520aa03a'
 }
