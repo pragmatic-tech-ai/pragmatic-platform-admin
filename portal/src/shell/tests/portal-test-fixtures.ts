@@ -663,12 +663,8 @@ export class FakeControlPlane
         await this.createGate
         this.ThrowIfFailing()
         this.Provisioned.push(input)
-        let client = this.Clients.find(c => c.id === input.client.id)
-        if (!('existing' in input.client))
-        {
-            client = { ...input.client, createdAt: '2026-10-25T00:00:00.000Z' }
-            this.Clients.push(client)
-        }
+        // The client is always an existing one (the clients ledger owns clients).
+        const client = this.Clients.find(c => c.id === input.client.id)
         let tenant = this.Tenants.find(t => t.id === input.tenant.id)
         let secrets: ProvisionResultDto['secrets'] = { agentToken: this.AgentToken }
         if (!('existing' in input.tenant))

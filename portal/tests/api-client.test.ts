@@ -98,7 +98,7 @@ describe('ControlPlaneClient provisioning', () =>
     {
         const input: ProvisionInputDto =
         {
-            client: { id: 'c1', displayName: 'Client 1' },
+            client: { existing: true, id: 'c1' },
             tenant: { id: 't1', displayName: 'Tenant 1', ownerEmail: 'owner@example.com' },
             hive: { id: 'h1', displayName: 'Hive 1', cluster: { backend: 'local', mode: 'attach' }, registry: { mode: 'attach', endpoint: 'reg.example.com' } }
         }
