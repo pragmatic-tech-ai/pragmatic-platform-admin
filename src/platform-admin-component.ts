@@ -11,7 +11,7 @@ export class PlatformAdminComponent
 {
     public static readonly Name = 'pragmatic-platform-admin'
     /** The descriptor version: this application's package version (the release test pins it to package.json). */
-    public static readonly Version = '0.1.3'
+    public static readonly Version = '0.1.4'
 
     private static readonly Declaration: ComponentDeclaration = {
         name: PlatformAdminComponent.Name,
@@ -100,6 +100,7 @@ export class PlatformAdminComponent
                     { name: 'externalScheme', type: SettingType.String, source: 'PRAGMATIC_TENANT_ADMIN_EXTERNAL_SCHEME', default: 'https', description: 'Scheme browsers use for tenant origins.' },
                     { name: 'externalPort', type: SettingType.Integer, source: 'PRAGMATIC_TENANT_ADMIN_EXTERNAL_PORT', description: 'Port browsers use for tenant origins, when not the scheme default.' },
                     { name: 'trustedProxy', type: SettingType.Boolean, source: 'PRAGMATIC_TENANT_ADMIN_TRUSTED_PROXY', default: false, description: 'Whether the tenant listener sits behind a trusted proxy.' },
+                    { name: 'desktopRealmSignIn', type: SettingType.String, source: 'PRAGMATIC_TENANT_ADMIN_DESKTOP_REALM_SIGN_IN', default: 'off', description: 'Whether Plexus signs in at the tenant realm itself (on: /desktop/console names it and realm access tokens are desktop bearers) or through the console (off).' },
                     { name: 'secretTtlHours', type: SettingType.Integer, source: 'PRAGMATIC_TENANT_ADMIN_SECRET_TTL_HOURS', default: 168, description: 'Lifetime of issued tenant secrets, in hours.' },
                     { name: 'healthProbeMs', type: SettingType.Integer, source: 'PRAGMATIC_TENANT_ADMIN_HEALTH_PROBE_MS', default: 30000, description: 'Interval of environment health probes, in milliseconds.' },
                     { name: 'healthProbeTimeoutMs', type: SettingType.Integer, source: 'PRAGMATIC_TENANT_ADMIN_HEALTH_PROBE_TIMEOUT_MS', default: 60000, description: 'Timeout of one environment health probe, in milliseconds.' },

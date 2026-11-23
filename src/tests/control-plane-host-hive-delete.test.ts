@@ -101,6 +101,7 @@ class FakeKubectl implements IKubectl
 
     public async Apply(_m: string): Promise<void> { this.Calls.push(['Apply']) }
     public async ApplyServerSide(_m: string): Promise<void> { this.Calls.push(['ApplyServerSide']) }
+    public async Create(_m: string): Promise<boolean> { this.Calls.push(['Create']); return true }
     public async RolloutStatus(_n: string, _d: string): Promise<void> { }
     public async SetImage(_n: string, _d: string, _c: string, _i: string): Promise<void> { }
     public async Scale(_n: string, _d: string, _r: number): Promise<void> { }

@@ -37,6 +37,7 @@ class FakeKubectl implements IKubectl
 {
     public readonly Applied: string[] = []
     public readonly ServerApplied: string[] = []
+    public readonly Created: string[] = []
     public readonly Args: string[][] = []
     public ApplyError: Error | undefined
     public ServerApplyError: Error | undefined
@@ -48,6 +49,12 @@ class FakeKubectl implements IKubectl
         {
             throw this.ApplyError
         }
+    }
+
+    public async Create(manifestJson: string): Promise<boolean>
+    {
+        this.Created.push(manifestJson)
+        return true
     }
 
     public async ApplyServerSide(manifestJson: string): Promise<void>

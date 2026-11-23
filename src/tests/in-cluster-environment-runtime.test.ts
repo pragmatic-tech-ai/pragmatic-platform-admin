@@ -33,6 +33,19 @@ class FakeKubectl
         this.Applied.push(manifestJson)
     }
 
+    public readonly Created: string[] = []
+
+    public async Find(_namespace: string, _resource: string): Promise<string | undefined>
+    {
+        return undefined
+    }
+
+    public async Create(manifestJson: string): Promise<boolean>
+    {
+        this.Created.push(manifestJson)
+        return true
+    }
+
     public readonly Deleted: string[] = []
 
     public async DeleteManifest(manifestJson: string): Promise<void>
@@ -81,7 +94,7 @@ class FakeOrchestrator implements IHiveOrchestrator
 class SigningFx
 {
     public static readonly PlatformKey = 'platform-signing'
-    public static readonly Workload = { ...Fx.Workload, image: 'pragmatic-server:dev' } as unknown as EnvironmentWorkload
+    public static readonly Workload = { ...Fx.Workload, image: 'pragmatic-server:dev', serverDatabase: { image: 'pragmatic-postgres:local', secretName: 'e1-postgres' } } as unknown as EnvironmentWorkload
     /** A workload deploying an app: its pod also runs the UI unpack init container from its own (dev) image. */
     public static readonly AppWorkload = { ...SigningFx.Workload, appDeployment: { appName: 'northwind', unpackImage: 'pragmatic-ui-unpack:dev' } } as unknown as EnvironmentWorkload
     public static readonly Hive = { id: 'h1', registry: { mode: InfraMode.Attach, endpoint: 'reg.local:5000' }, trustRootRef: 'platform-signing' } as unknown as HiveRecord
@@ -211,8 +224,8 @@ test('BringUp signs the server image, as the hive pulls it, with the platform ke
     signer.Log = h.Orchestrator.Order
     await h.Runtime.Prepare(h.Ctx)
     await h.Runtime.BringUp(h.Ctx)
-    assert.deepEqual(signer.Signed, [['reg.local:5000/pragmatic-server:dev', 'platform-signing']])
-    assert.deepEqual(h.Orchestrator.Order.slice(0, 2), ['Sign', 'Apply'])
+    assert.deepEqual(signer.Signed, [['reg.local:5000/pragmatic-server:dev', 'platform-signing'], ['reg.local:5000/pragmatic-postgres:local', 'platform-signing']])
+    assert.deepEqual(h.Orchestrator.Order.slice(0, 3), ['Sign', 'Sign', 'Apply'])
 })
 
 test('BringUp signs the UI unpack image beside the server image, as the hive pulls both, for a workload deploying an app', async () =>
@@ -222,8 +235,8 @@ test('BringUp signs the UI unpack image beside the server image, as the hive pul
     signer.Log = h.Orchestrator.Order
     await h.Runtime.Prepare(h.Ctx)
     await h.Runtime.BringUp(h.Ctx)
-    assert.deepEqual(signer.Signed, [['reg.local:5000/pragmatic-server:dev', 'platform-signing'], ['reg.local:5000/pragmatic-ui-unpack:dev', 'platform-signing']])
-    assert.deepEqual(h.Orchestrator.Order.slice(0, 3), ['Sign', 'Sign', 'Apply'])
+    assert.deepEqual(signer.Signed, [['reg.local:5000/pragmatic-server:dev', 'platform-signing'], ['reg.local:5000/pragmatic-postgres:local', 'platform-signing'], ['reg.local:5000/pragmatic-ui-unpack:dev', 'platform-signing']])
+    assert.deepEqual(h.Orchestrator.Order.slice(0, 4), ['Sign', 'Sign', 'Sign', 'Apply'])
 })
 
 test('BringUp signs nothing for a hive with its own trust root or none, or with no signer composed', async () =>
@@ -322,6 +335,10 @@ test('BringUp applies the workload first, then a seed List with the ConfigMap an
     await h.Runtime.Prepare(h.Ctx)
     await h.Runtime.BringUp(h.Ctx)
     assert.deepEqual(h.Orchestrator.Order, ['Apply', 'KubectlApply'])
+    assert.equal(h.Orchestrator.Fake.Created.length, 1)
+    const created = JSON.parse(h.Orchestrator.Fake.Created[0]) as { kind: string; metadata: { name: string } }
+    assert.equal(created.kind, 'Secret')
+    assert.equal(created.metadata.name, 'e1-postgres')
     assert.equal(h.Orchestrator.Fake.Applied.length, 1)
     const items = (JSON.parse(h.Orchestrator.Fake.Applied[0]) as { items: { kind: string; metadata: { name: string } }[] }).items
     assert.ok(items.some(i => i.kind === 'ConfigMap' && i.metadata.name === EnvServerSeedSource.ConfigMapNameOf('e1')))

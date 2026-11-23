@@ -93,6 +93,7 @@ class Fixture
     public readonly kind = new FakeKind()
     public readonly inner = new FakeInner()
     public readonly sut = new KindHiveOrchestrator(this.kind, Fixture.Cluster, this.inner)
+    public static readonly ServerDatabaseImage = 'pragmatic-postgres:local'
     public static readonly Workload: EnvironmentWorkload = {
         environmentName: 'dev',
         environmentId: 'dev-id',
@@ -101,6 +102,7 @@ class Fixture
         serverPort: 8080,
         env: {},
         secretRefs: [],
+        serverDatabase: { image: Fixture.ServerDatabaseImage, secretName: 'dev-postgres' },
     }
     public static readonly UnpackImage = 'pragmatic-ui-unpack:dev'
     public static readonly AppWorkload: EnvironmentWorkload = {
@@ -214,7 +216,7 @@ test('Apply loads the workload image into the cluster before delegating Apply', 
         order.push('Apply')
     }
     await f.sut.Apply(Fixture.Workload)
-    assert.deepEqual(order, ['LoadImage:pragmatic-server:dev@' + Fixture.Cluster, 'Apply'])
+    assert.deepEqual(order, ['LoadImage:pragmatic-server:dev@' + Fixture.Cluster, 'LoadImage:' + Fixture.ServerDatabaseImage + '@' + Fixture.Cluster, 'Apply'])
 })
 
 test('Apply loads the UI unpack image beside the server image for a workload with an app deployment, before delegating', async () =>
@@ -230,7 +232,7 @@ test('Apply loads the UI unpack image beside the server image for a workload wit
         order.push('Apply')
     }
     await f.sut.Apply(Fixture.AppWorkload)
-    assert.deepEqual(order, ['LoadImage:pragmatic-server:dev@' + Fixture.Cluster, 'LoadImage:pragmatic-ui-unpack:dev@' + Fixture.Cluster, 'Apply'])
+    assert.deepEqual(order, ['LoadImage:pragmatic-server:dev@' + Fixture.Cluster, 'LoadImage:' + Fixture.ServerDatabaseImage + '@' + Fixture.Cluster, 'LoadImage:pragmatic-ui-unpack:dev@' + Fixture.Cluster, 'Apply'])
 })
 
 test('Apply still delegates when only the unpack image fails to load (each load is best-effort on its own)', async () =>
@@ -245,7 +247,7 @@ test('Apply still delegates when only the unpack image fails to load (each load 
         f.kind.loaded.push({ image, clusterName })
     }
     await f.sut.Apply(Fixture.AppWorkload)
-    assert.deepEqual(f.kind.loaded, [{ image: 'pragmatic-server:dev', clusterName: Fixture.Cluster }])
+    assert.deepEqual(f.kind.loaded, [{ image: 'pragmatic-server:dev', clusterName: Fixture.Cluster }, { image: Fixture.ServerDatabaseImage, clusterName: Fixture.Cluster }])
     assert.ok(f.inner.calls.includes('Apply'))
 })
 
@@ -255,7 +257,7 @@ test('Apply is repeatable: a second Apply loads the image again without failing'
     f.kind.clusters = [Fixture.Cluster]
     await f.sut.Apply(Fixture.Workload)
     await f.sut.Apply(Fixture.Workload)
-    assert.equal(f.kind.loaded.length, 2)
+    assert.equal(f.kind.loaded.length, 4)
 })
 
 test('PrepareAgent creates the cluster when absent and loads the agent image, without touching inner', async () =>

@@ -179,7 +179,10 @@ describe('TenantAdminBootstrap.GenerateBootstrap', () =>
     {
         const b = await new TenantAdminBootstrap(new FakeRegistrar()).GenerateBootstrap(BootstrapFixture.Input())
         const doc = JSON.parse(b.manifest)
-        assert.ok(!doc.items.some((i: any) => i.kind === 'Secret'))
+        // Only the components' EMPTY configuration Secrets are rendered: never one that carries data.
+        const secretNames = doc.items.filter((i: any) => i.kind === 'Secret').map((i: any) => i.metadata.name).sort()
+        assert.deepEqual(secretNames, ['pragmatic-secrets-pragmatic-hive-agent', 'pragmatic-secrets-pragmatic-tenant-admin', 'pragmatic-secrets-pragmatic-tenant-idp'])
+        assert.ok(doc.items.filter((i: any) => i.kind === 'Secret').every((i: any) => i.data === undefined && i.stringData === undefined))
         assert.ok(!b.manifest.includes(FakeRegistrar.Token))
         assert.ok(!b.manifest.includes('pull-only-secret'))
         assert.ok(b.manifest.includes(K8sManifestBuilder.AgentTokenSecretNameOf('hive-a')))
@@ -215,7 +218,7 @@ describe('TenantAdminBootstrap.GenerateBootstrap', () =>
         const idpDeployment = items.find(i => i.kind === 'Deployment' && i.metadata.name === idpNs)!
         assert.equal(idpDeployment.metadata.namespace, idpNs)
         const volumes = (idpDeployment as any).spec.template.spec.volumes.map((v: any) => v.secret?.secretName).filter(Boolean)
-        assert.deepEqual(volumes.sort(), ['idp-admin', 'idp-db', 'idp-db', 'idp-tls'])
+        assert.deepEqual(volumes.sort(), ['idp-admin', 'idp-db', 'idp-db', 'idp-tls', 'pragmatic-secrets-pragmatic-tenant-idp'])
         assert.ok(!b.secrets.Names().some(n => n === 'idp-tls' || n === 'idp-admin' || n === 'idp-db'))
     })
 

@@ -38,6 +38,7 @@ class FakeOci extends OciRegistryClient
 class FakeKubectl implements IKubectl
 {
     public readonly Applied: string[] = []
+    public readonly Created: string[] = []
     public readonly Restarts: Array<[string, string]> = []
 
     public constructor(private readonly events: string[])
@@ -58,6 +59,12 @@ class FakeKubectl implements IKubectl
 
     public async RolloutRestartSelector(_namespace: string, _selector: string): Promise<void>
     {
+    }
+
+    public async Create(manifestJson: string): Promise<boolean>
+    {
+        this.Created.push(manifestJson)
+        return true
     }
 
     public async ApplyServerSide(_manifestJson: string): Promise<void>

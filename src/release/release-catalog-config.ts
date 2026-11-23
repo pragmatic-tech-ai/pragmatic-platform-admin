@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { OciRegistryClient, type OciFetch, type RegistryCredential, ReleaseRegistry, ReleaseTrustKeyInvalidError, ReleaseTrustKeys } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { GitHubComponentAssetSource, type GitHubFetch, OciRegistryClient, type OciFetch, type RegistryCredential, ReleaseComponentDescriptors, ReleaseRegistry, ReleaseTrustKeyInvalidError, ReleaseTrustKeys } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import type { PlatformDeploymentRegistry } from '../platform-deployment-registry.js'
 import { ReleaseCatalog } from './release-catalog.js'
 import { ReleasePoll } from './release-poll.js'
 import { ReleaseRefresher } from './release-refresher.js'
 import type { IReleaseCountersigner } from './release-countersigner.js'
+import { GitHubReleaseManifestSource } from './github-release-manifest-source.js'
+import { type IReleaseDescriptorSource, ReleaseDescriptorSource } from './release-descriptor-source.js'
 
 /** A release setting is unusable. The sentence names only the variable: never its value or a file's contents. */
 export class ReleaseConfigError extends Error
@@ -24,6 +26,8 @@ export interface IReleaseServices
 {
     Refresher: ReleaseRefresher
     Poll: ReleasePoll | undefined
+    /** The component descriptors of a verified release, over the catalogue's registry and trust keys (and GitHub before the artifact). */
+    Descriptors: IReleaseDescriptorSource
 }
 
 /**
@@ -59,7 +63,7 @@ export class ReleaseCatalogConfig
      * Composes the release services, or undefined when no credential file is configured. The poll interval is always validated.
      * The countersigner, when given, adds the platform signature to every newly verified release's images.
      */
-    public static Compose(env: NodeJS.ProcessEnv, repoRoot: string, deployments: PlatformDeploymentRegistry, fetchFn?: OciFetch, countersigner?: IReleaseCountersigner): IReleaseServices | undefined
+    public static Compose(env: NodeJS.ProcessEnv, repoRoot: string, deployments: PlatformDeploymentRegistry, fetchFn?: OciFetch, countersigner?: IReleaseCountersigner, gitHubFetch?: GitHubFetch): IReleaseServices | undefined
     {
         const C = ReleaseCatalogConfig
         const pollSeconds = C.PollSecondsOf(env)
@@ -71,10 +75,13 @@ export class ReleaseCatalogConfig
         const registryUrl = C.RegistryOf(env)
         const registry = new OciRegistryClient(registryUrl, fetchFn, credential)
         const namespace = C.ValueOr(env, C.NamespaceEnvVar, ReleaseRegistry.DefaultNamespace)
-        const catalog = new ReleaseCatalog(registry, namespace, C.TrustOf(env, repoRoot), deployments, ReleaseRegistry.HostOf(registryUrl), countersigner)
+        const trust = C.TrustOf(env, repoRoot)
+        const catalog = new ReleaseCatalog(registry, namespace, trust, deployments, ReleaseRegistry.HostOf(registryUrl), countersigner)
         const refresher = new ReleaseRefresher(catalog)
         const poll = pollSeconds === 0 ? undefined : new ReleasePoll(refresher, pollSeconds * C.MsPerSecond)
-        return { Refresher: refresher, Poll: poll }
+        const descriptors = new ReleaseDescriptorSource(deployments, new ReleaseComponentDescriptors(registry, trust, namespace),
+            new GitHubReleaseManifestSource(gitHubFetch, GitHubReleaseManifestSource.DefaultRepository, namespace), new GitHubComponentAssetSource(gitHubFetch))
+        return { Refresher: refresher, Poll: poll, Descriptors: descriptors }
     }
 
     /** The poll interval in seconds: 300 when unset or blank, 0 when off; anything but a whole number in range is refused. */

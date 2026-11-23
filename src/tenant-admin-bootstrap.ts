@@ -82,7 +82,7 @@ export interface TenantIdpMaterial
 
 /** A rendered v1 List as the builder emits it (only the fields bootstrap reads). */
 type RenderedList = { items: RenderedItem[] }
-type RenderedItem = { kind: string; metadata: { name: string } }
+type RenderedItem = { kind: string; metadata: { name: string; namespace?: string } }
 
 type SecretEntry = { readonly name: string; readonly type: string; readonly data: Map<string, Buffer>; readonly retention: SecretRetention }
 
@@ -415,10 +415,12 @@ export class TenantAdminBootstrap
         }
         rendered.push(this.manifests.RenderTenantAdmin(admin))
         const items = rendered.flatMap(r => (JSON.parse(r) as RenderedList).items)
+        // One object per kind, namespace and name: the shared pragmatic-system Namespace is rendered twice, while the console's
+        // configuration Role and RoleBinding share one name in pragmatic-system and the IdP namespace and must both apply.
         const seen = new Set<string>()
         const unique = items.filter(i =>
         {
-            const key = i.kind + TenantAdminBootstrap.KeySeparator + i.metadata.name
+            const key = i.kind + TenantAdminBootstrap.KeySeparator + (i.metadata.namespace ?? '') + TenantAdminBootstrap.KeySeparator + i.metadata.name
             if (seen.has(key))
             {
                 return false

@@ -44,7 +44,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin', () =>
     it('emits the shared Namespace first (unlabeled), then SA, console RBAC, PVC, Deployment and Service; no Ingress', () =>
     {
         const items = TenantAdminFixture.Items()
-        assert.deepEqual(items.map(i => i.kind), ['Namespace', 'ServiceAccount', 'ClusterRole', 'ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding', 'ClusterRoleBinding', 'ClusterRole', 'PersistentVolumeClaim', 'Deployment', 'Service'])
+        assert.deepEqual(items.map(i => i.kind), ['Namespace', 'ServiceAccount', 'ClusterRole', 'ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding', 'ClusterRoleBinding', 'ClusterRole', 'ConfigMap', 'Secret', 'Role', 'RoleBinding', 'PersistentVolumeClaim', 'Deployment', 'Service'])
         assert.equal(items[0].metadata.name, 'pragmatic-system')
         assert.equal(items[0].metadata.labels, undefined)
         for (const i of items.slice(1))
@@ -143,7 +143,45 @@ describe('K8sManifestBuilder.RenderTenantAdmin', () =>
     {
         const text = new K8sManifestBuilder().RenderTenantAdmin(TenantAdminFixture.Spec())
         assert.ok(!text.includes(TenantAdminFixture.TokenValue))
-        assert.ok(!JSON.parse(text).items.some((i: any) => i.kind === 'Secret'))
+        // The only Secret is the console's EMPTY configuration Secret (no data: the console writes it by name).
+        const secrets = JSON.parse(text).items.filter((i: any) => i.kind === 'Secret')
+        assert.deepEqual(secrets.map((i: any) => i.metadata.name), ['pragmatic-secrets-pragmatic-tenant-admin'])
+        assert.ok(secrets.every((i: any) => i.data === undefined && i.stringData === undefined))
+    })
+
+    it('configures the console as a component: labels, strategy, configuration volumes and the release descriptors mount', () =>
+    {
+        const dep = TenantAdminFixture.Of('Deployment')
+        for (const labels of [dep.metadata.labels, dep.spec.template.metadata.labels])
+        {
+            assert.equal(labels['app.kubernetes.io/component'], 'pragmatic-tenant-admin')
+            assert.equal(labels['app.kubernetes.io/managed-by'], 'pragmatic-tenant-admin')
+            assert.equal(labels['component.pragmatic-tech.ai/pragmatic-tenant-admin'], 'tenant-admin')
+        }
+        // The console owns a single-writer data volume, so it never surges a second writer.
+        assert.deepEqual(dep.spec.strategy, { type: 'Recreate' })
+        const pod = dep.spec.template.spec
+        const mounts = new Map<string, any>(pod.containers[0].volumeMounts.map((m: any) => [m.mountPath, m]))
+        assert.deepEqual(mounts.get('/etc/pragmatic/descriptors'), { name: 'release-descriptors', mountPath: '/etc/pragmatic/descriptors', readOnly: true })
+        assert.deepEqual(pod.volumes.find((v: any) => v.name === 'release-descriptors').configMap, { name: 'pragmatic-release-descriptors', optional: true })
+        assert.equal(mounts.get('/etc/pragmatic/configuration').name, 'cfg-tenant-admin')
+        assert.equal(mounts.get('/run/secrets/pragmatic/pragmatic-tenant-admin').name, 'cfgstore-tenant-admin')
+        assert.equal(mounts.get('/run/pragmatic/secrets').name, 'cfgrun-tenant-admin')
+    })
+
+    it('renders the configuration Role and RoleBinding that let the console write its own and the hive agent configuration', () =>
+    {
+        const items = TenantAdminFixture.Items()
+        const role = items.find(i => i.kind === 'Role' && i.metadata.name === 'pragmatic-tenant-admin-acme-configuration')
+        assert.equal(role.metadata.namespace, 'pragmatic-system')
+        assert.deepEqual(role.rules, [
+            { apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'patch'], resourceNames: ['pragmatic-config-pragmatic-hive-agent', 'pragmatic-config-pragmatic-tenant-admin'] },
+            { apiGroups: [''], resources: ['secrets'], verbs: ['get', 'patch'], resourceNames: ['pragmatic-secrets-pragmatic-hive-agent', 'pragmatic-secrets-pragmatic-tenant-admin'] },
+            { apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'patch'], resourceNames: ['pragmatic-hive-hive-a-agent', 'pragmatic-tenant-admin-acme'] },
+        ])
+        const binding = items.find(i => i.kind === 'RoleBinding' && i.metadata.name === 'pragmatic-tenant-admin-acme-configuration')
+        assert.deepEqual(binding.subjects, [{ kind: 'ServiceAccount', name: 'pragmatic-tenant-admin-acme', namespace: 'pragmatic-system' }])
+        assert.deepEqual(binding.roleRef, { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: 'pragmatic-tenant-admin-acme-configuration' })
     })
 })
 
@@ -173,7 +211,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin IdP injection', () =>
         const dep = TenantAdminFixture.Of('Deployment')
         const c = dep.spec.template.spec.containers[0]
         assert.equal(c.env.filter((e: any) => e.name.startsWith('PRAGMATIC_IDP_')).length, 0)
-        assert.equal(dep.spec.template.spec.volumes.length, 3)
+        assert.deepEqual(dep.spec.template.spec.volumes.map((v: any) => v.name), ['data', 'seed', 'tmp', 'release-descriptors', 'cfg-tenant-admin', 'cfgstore-tenant-admin', 'cfgrun-tenant-admin'])
     })
 
     it('injects PRAGMATIC_IDP_* env and read-only Secret mounts by ref, never inline bytes', () =>
@@ -195,8 +233,8 @@ describe('K8sManifestBuilder.RenderTenantAdmin IdP injection', () =>
         const mounts = c.volumeMounts.filter((m: any) => m.mountPath.startsWith('/idp/'))
         assert.equal(mounts.length, 2)
         assert.ok(mounts.every((m: any) => m.readOnly === true))
-        // The pod only REFERENCES Secrets by name — it never embeds a Secret object (no bytes to leak).
-        assert.ok(!JSON.parse(text).items.some((i: any) => i.kind === 'Secret'))
+        // The pod only REFERENCES Secrets by name; the only Secret object is the empty configuration one (no bytes to leak).
+        assert.ok(!JSON.parse(text).items.some((i: any) => i.kind === 'Secret' && (i.data !== undefined || i.metadata.name !== 'pragmatic-secrets-pragmatic-tenant-admin')))
         // SERVER-KEY SAFETY: the CA/token volumes project ONLY ca.crt / admin-token via `items`, so mounting a
         // Secret that also held server.key could still never expose it.
         const vol = (name: string): any => pod.volumes.find((v: any) => v.name === name)
@@ -260,6 +298,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
     {
         assert.deepEqual(ConsoleFixture.Items(ConsoleFixture.Spec(ConsoleFixture.ExistingSecret)).map(i => i.kind), [
             'Namespace', 'ServiceAccount', 'ClusterRole', 'ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding', 'ClusterRoleBinding', 'ClusterRole', 'Role', 'RoleBinding',
+            'ConfigMap', 'Secret', 'Role', 'RoleBinding',
             'PersistentVolumeClaim', 'Deployment', 'Service', 'Ingress', 'NetworkPolicy',
         ])
     })
@@ -269,10 +308,11 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
         const items = ConsoleFixture.Items()
         const policy = items.find(i => i.kind === 'NetworkPolicy')
         const pod = items.find(i => i.kind === 'Deployment').spec.template.metadata.labels
+        // The policy selects the pods by the stable selector label only, not by the configuration labels the pod also carries.
         assert.equal(policy.apiVersion, 'networking.k8s.io/v1')
         assert.deepEqual(policy.metadata, { name: 'pragmatic-tenant-admin-acme', namespace: 'pragmatic-system', labels: { 'pragmatic/hive': 'hive-a' } })
         assert.deepEqual(policy.spec, {
-            podSelector: { matchLabels: pod },
+            podSelector: { matchLabels: { 'pragmatic/app': pod['pragmatic/app'] } },
             policyTypes: ['Ingress'],
             ingress: [{
                 from: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'ingress-nginx' } } }],
@@ -344,7 +384,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
     {
         const items = TenantAdminFixture.Items()
         assert.ok(!items.some(i => i.kind === 'Ingress'))
-        assert.ok(!items.some(i => i.kind === 'Role' || i.kind === 'RoleBinding'))
+        assert.ok(!items.some(i => (i.kind === 'Role' || i.kind === 'RoleBinding') && i.metadata.name === 'pragmatic-tenant-admin-acme-tls'))
         const spec = TenantAdminFixture.Spec()
         assert.equal(ConsoleFixture.Env(spec, 'PRAGMATIC_TENANT_ADMIN_CONSOLE_HOST'), undefined)
         assert.equal(ConsoleFixture.Env(spec, 'PRAGMATIC_TENANT_ADMIN_TRUSTED_PROXY'), undefined)
@@ -358,7 +398,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
         assert.equal(ingress.metadata.name, 'pragmatic-tenant-admin-acme')
         assert.equal(ingress.metadata.namespace, 'pragmatic-system')
         assert.equal(ingress.metadata.labels['pragmatic/hive'], 'hive-a')
-        assert.equal(ingress.metadata.annotations, undefined)
+        assert.deepEqual(ingress.metadata.annotations, { 'nginx.ingress.kubernetes.io/proxy-read-timeout': '180' })
         assert.equal(ingress.spec.ingressClassName, 'nginx')
         assert.deepEqual(ingress.spec.tls, [{ hosts: [ConsoleFixture.Host], secretName: 'pragmatic-tenant-admin-acme-dev-tls' }])
         assert.equal(ingress.spec.rules[0].host, ConsoleFixture.Host)
@@ -374,9 +414,9 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
     {
         const items = ConsoleFixture.Items(ConsoleFixture.Spec({ source: IngressTlsSource.CertManager, clusterIssuer: 'letsencrypt' }))
         const ingress = items.find(i => i.kind === 'Ingress')
-        assert.deepEqual(ingress.metadata.annotations, { 'cert-manager.io/cluster-issuer': 'letsencrypt' })
+        assert.deepEqual(ingress.metadata.annotations, { 'cert-manager.io/cluster-issuer': 'letsencrypt', 'nginx.ingress.kubernetes.io/proxy-read-timeout': '180' })
         assert.equal(ingress.spec.tls[0].secretName, 'pragmatic-tenant-admin-acme-ingress-tls')
-        assert.ok(!items.some(i => i.kind === 'Role' || i.kind === 'RoleBinding'))
+        assert.ok(!items.some(i => (i.kind === 'Role' || i.kind === 'RoleBinding') && i.metadata.name === 'pragmatic-tenant-admin-acme-tls'))
     })
 
     it('existing-secret renders a get-only Role on that one Secret', () =>
@@ -438,6 +478,10 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
             'ClusterRole/-/pragmatic-tenant-admin-acme-env',
             'Role/pragmatic-system/pragmatic-tenant-admin-acme-tls',
             'RoleBinding/pragmatic-system/pragmatic-tenant-admin-acme-tls',
+            'Role/pragmatic-system/pragmatic-tenant-admin-acme-configuration',
+            'RoleBinding/pragmatic-system/pragmatic-tenant-admin-acme-configuration',
+            'ConfigMap/pragmatic-system/pragmatic-config-pragmatic-tenant-admin',
+            'Secret/pragmatic-system/pragmatic-secrets-pragmatic-tenant-admin',
             'Deployment/pragmatic-system/pragmatic-tenant-admin-acme',
             'Service/pragmatic-system/pragmatic-tenant-admin-acme',
             'Ingress/pragmatic-system/pragmatic-tenant-admin-acme',
@@ -451,6 +495,8 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
             'Deployment/pragmatic-idp-acme/pragmatic-idp-acme',
             'Service/pragmatic-idp-acme/pragmatic-idp-acme',
             'Ingress/pragmatic-idp-acme/pragmatic-idp-acme',
+            'Role/pragmatic-idp-acme/pragmatic-tenant-admin-acme-configuration',
+            'RoleBinding/pragmatic-idp-acme/pragmatic-tenant-admin-acme-configuration',
         ])
         for (const item of doc.items)
         {
@@ -474,7 +520,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
         const removal = ConsoleFixture.Removal()
         const idp = K8sManifestBuilder.IdpNameOf('acme')
         const inIdp = removal.filter((i: any) => i.metadata.namespace === idp).map((i: any) => i.kind).sort()
-        assert.deepEqual(inIdp, ['Deployment', 'Ingress', 'Service'])
+        assert.deepEqual(inIdp, ['Deployment', 'Ingress', 'Role', 'RoleBinding', 'Service'])
         const text = JSON.stringify(removal)
         for (const kept of [K8sManifestBuilder.IdpClaimNameOf('acme'), InClusterIdpSeedSource.TlsSecretNameOf('acme'), InClusterIdpSeedSource.AdminSecretNameOf('acme')])
         {
@@ -496,7 +542,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
     it('credential removal shares the console Secret identity list', () =>
     {
         const credential = K8sManifestBuilder.TenantConsoleCredentialIdentitiesOf('acme')
-        const consoleSecrets = ConsoleFixture.Removal().filter((i: any) => i.kind === 'Secret' && i.metadata.name !== K8sManifestBuilder.TenantConsoleDevTlsSecretNameOf('acme'))
+        const consoleSecrets = ConsoleFixture.Removal().filter((i: any) => i.kind === 'Secret' && i.metadata.name !== K8sManifestBuilder.TenantConsoleDevTlsSecretNameOf('acme') && i.metadata.name !== 'pragmatic-secrets-pragmatic-tenant-admin')
         assert.deepEqual(credential, consoleSecrets)
     })
 
@@ -519,6 +565,8 @@ class AdmissionFixture
     public static readonly BindingRole = "request.resource.resource != 'rolebindings' || (object.roleRef.apiGroup == 'rbac.authorization.k8s.io' && object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'pragmatic-tenant-admin-acme-env')"
     public static readonly BindingSubjects = "request.resource.resource != 'rolebindings' || (has(object.subjects) && size(object.subjects) == 1 && object.subjects[0].kind == 'ServiceAccount' && object.subjects[0].namespace == 'pragmatic-system' && object.subjects[0].name == 'pragmatic-tenant-admin-acme')"
 
+    public static readonly DeploymentsPrefix = "request.resource.resource != 'deployments' || request.namespace.startsWith('pragmatic-env-') || ("
+
     public static Of(kind: string): any
     {
         return TenantAdminFixture.Items().find(i => i.kind === kind)
@@ -539,6 +587,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin admission fence', () =>
             resourceRules: [
                 { apiGroups: [''], apiVersions: ['v1'], operations: ['CREATE', 'UPDATE', 'DELETE'], resources: ['namespaces'] },
                 { apiGroups: ['rbac.authorization.k8s.io'], apiVersions: ['v1'], operations: ['CREATE', 'UPDATE'], resources: ['rolebindings'] },
+                { apiGroups: ['apps'], apiVersions: ['v1'], operations: ['UPDATE'], resources: ['deployments'] },
             ],
         })
         assert.deepEqual(policy.spec.matchConditions, [{ name: 'console-service-account', expression: AdmissionFixture.User }])
@@ -547,7 +596,8 @@ describe('K8sManifestBuilder.RenderTenantAdmin admission fence', () =>
     it('validates namespaces by prefix and hive label, and role bindings by namespace, name, role and exact subject', () =>
     {
         const expressions = AdmissionFixture.Of('ValidatingAdmissionPolicy').spec.validations.map((v: any) => v.expression)
-        assert.deepEqual(expressions, [
+        assert.equal(expressions.length, 7)
+        assert.deepEqual(expressions.slice(0, 6), [
             AdmissionFixture.NamespaceCreate,
             AdmissionFixture.NamespaceChange,
             AdmissionFixture.BindingNamespace,
@@ -555,6 +605,11 @@ describe('K8sManifestBuilder.RenderTenantAdmin admission fence', () =>
             AdmissionFixture.BindingRole,
             AdmissionFixture.BindingSubjects,
         ])
+        // Outside the environment namespaces the console may change a Deployment only by its configuration-hash / secrets-revision annotations.
+        const deployments: string = expressions[6]
+        assert.ok(deployments.startsWith(AdmissionFixture.DeploymentsPrefix))
+        assert.ok(deployments.includes("k == 'pragmatic-tech.ai/configuration-hash'"))
+        assert.ok(deployments.includes("k == 'pragmatic-tech.ai/secrets-revision'"))
         for (const v of AdmissionFixture.Of('ValidatingAdmissionPolicy').spec.validations)
         {
             assert.equal(typeof v.message, 'string')
@@ -602,7 +657,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin database (the pragmatic-postgres 
     it('renders no sidecar, ConfigMap or database URL without a database', () =>
     {
         const items = TenantAdminFixture.Items()
-        assert.equal(items.some(i => i.kind === 'ConfigMap'), false)
+        assert.equal(items.some(i => i.kind === 'ConfigMap' && i.metadata.name === 'pragmatic-tenant-admin-acme-postgres'), false)
         const pod = items.find(i => i.kind === 'Deployment').spec.template.spec
         assert.equal(pod.containers.length, 1)
         assert.equal(pod.containers[0].env.some((e: { name: string }) => e.name === 'PRAGMATIC_TENANT_ADMIN_DATABASE_URL_FILE'), false)
@@ -611,10 +666,9 @@ describe('K8sManifestBuilder.RenderTenantAdmin database (the pragmatic-postgres 
     it('runs pragmatic-postgres beside the console: hardened, its data in the console volume, its passwords and applications file mounted', () =>
     {
         const items = TenantAdminFixture.Items(spec())
-        const config = items.find(i => i.kind === 'ConfigMap')
-        assert.equal(config.metadata.name, 'pragmatic-tenant-admin-acme-postgres')
+        const config = items.find(i => i.kind === 'ConfigMap' && i.metadata.name === 'pragmatic-tenant-admin-acme-postgres')
         assert.deepEqual(config.data, { 'applications.conf': 'pragmatic-tenant-admin pragmatic_tenant_admin pragmatic_tenant_admin\n' })
-        assert.ok(items.findIndex(i => i.kind === 'ConfigMap') < items.findIndex(i => i.kind === 'Deployment'))
+        assert.ok(items.indexOf(config) < items.findIndex(i => i.kind === 'Deployment'))
         const pod = items.find(i => i.kind === 'Deployment').spec.template.spec
         const postgres = pod.containers.find((c: { name: string }) => c.name === 'postgres')
         assert.equal(postgres.image, spec().database?.image)

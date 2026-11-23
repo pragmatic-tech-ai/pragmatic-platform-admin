@@ -14,6 +14,7 @@ class FakeKubectl implements IKubectl
 {
     public Applied: string[] = []
     public ServerApplied: string[] = []
+    public Created: string[] = []
 
     public async Apply(manifestJson: string): Promise<void>
     {
@@ -26,6 +27,12 @@ class FakeKubectl implements IKubectl
     public async ScaleStatefulSet(): Promise<void> { }
     public async RolloutRestart(): Promise<void> { }
     public async RolloutRestartSelector(): Promise<void> { }
+    public async Create(manifestJson: string): Promise<boolean>
+    {
+        this.Created.push(manifestJson)
+        return true
+    }
+
     public async ApplyServerSide(manifestJson: string): Promise<void>
     {
         this.ServerApplied.push(manifestJson)
@@ -77,7 +84,7 @@ describe('InClusterIdpSeedSource', () =>
         assert.equal(kubectl.ServerApplied.length, 1)
         const seedNames = [...Secrets(kubectl.Applied[1]!), ...Secrets(kubectl.ServerApplied[0]!)].map(s => s.metadata.name)
         const mounted = [...new Set<string>((JSON.parse(kubectl.Applied[0]!).items as any[]).find(o => o.kind === 'Deployment').spec.template.spec.volumes
-            .filter((v: any) => v.secret !== undefined).map((v: any) => v.secret.secretName))]
+            .filter((v: any) => v.secret !== undefined && !v.name.startsWith('cfgstore-')).map((v: any) => v.secret.secretName))]
         assert.deepEqual(seedNames.sort(), mounted.sort())
         const seed = source.SeedFor(Tenant)
         assert.deepEqual(mounted.sort(), [seed.adminTokenSecretName, seed.tlsSecretName, IdpDatabaseSecret.NameOf(Tenant)].sort())
@@ -158,7 +165,10 @@ describe('InClusterIdpSeedSource', () =>
         const kubectl = new FakeKubectl()
         await new InClusterIdpDriver(kubectl, new K8sManifestBuilder(), source, 'hive-a', 'img').EnsureRunning({ tenantId: Tenant, displayName: 'T', takenPorts: [] })
         assert.ok(!kubectl.Applied[0]!.includes(source.SeedFor(Tenant).adminToken))
-        assert.ok(!kubectl.Applied[0]!.includes('"kind":"Secret"'))
+        // The workload manifest carries only the component's EMPTY configuration Secret, never a Secret with data.
+        const objects = (JSON.parse(kubectl.Applied[0]!).items as any[])
+        assert.deepEqual(objects.filter(o => o.kind === 'Secret').map(o => o.metadata.name), ['pragmatic-secrets-pragmatic-tenant-idp'])
+        assert.ok(objects.filter(o => o.kind === 'Secret').every(o => o.data === undefined))
         assert.equal(source.SeedFor(Tenant), source.SeedFor(Tenant))
     })
 

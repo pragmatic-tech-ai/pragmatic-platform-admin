@@ -16,12 +16,15 @@ describe('HiveBootstrapBundle', () =>
         assert.equal(bundle.hiveSelector, 'pragmatic/hive=acme-hive')
         // The selector picks the agent: its Deployment carries that label.
         assert.ok(bundle.manifest.includes('"pragmatic/hive": "acme-hive"'))
-        const list = JSON.parse(bundle.manifest) as { kind: string; items: { kind: string }[] }
+        const list = JSON.parse(bundle.manifest) as { kind: string; items: { kind: string; metadata: { name: string }; data?: unknown }[] }
         assert.equal(list.kind, 'List')
-        assert.deepEqual(list.items.map(i => i.kind), ['Namespace', 'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Deployment'])
+        assert.deepEqual(list.items.map(i => i.kind), ['Namespace', 'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Deployment', 'ConfigMap', 'Secret'])
+        // Only the agent's empty configuration ConfigMap/Secret are rendered; the token Secret is named, never filled.
+        assert.deepEqual(list.items.filter(i => i.kind === 'ConfigMap' || i.kind === 'Secret').map(i => i.metadata.name), ['pragmatic-config-pragmatic-hive-agent', 'pragmatic-secrets-pragmatic-hive-agent'])
+        assert.ok(list.items.every(i => i.data === undefined))
         assert.ok(bundle.manifest.includes('http://host.docker.internal:7001'))
         assert.ok(bundle.manifest.includes(bundle.tokenSecretName))
-        assert.ok(!list.items.some(i => i.kind === 'Secret'))
+        assert.ok(!list.items.some(i => i.metadata.name === bundle.tokenSecretName))
         assert.equal(bundle.autoInstall, false)
     })
 
@@ -37,7 +40,7 @@ describe('HiveBootstrapBundle', () =>
             ...rendered,
             { apiVersion: 'v1', kind: 'Secret', metadata: { name: bundle.tokenSecretName, namespace: bundle.namespace } },
         ])
-        assert.deepEqual(removal.items.map(i => i.kind), ['ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Deployment', 'Secret'])
+        assert.deepEqual(removal.items.map(i => i.kind), ['ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'Deployment', 'ConfigMap', 'Secret', 'Secret'])
         assert.ok(!HiveBootstrapBundle.RemovalManifest('acme-hive').includes('"spec"'))
     })
 

@@ -20,8 +20,11 @@ class PlatformAdminComponentFixture
      * not ship (declaring it would change the signed descriptor).
      */
     public static readonly Undeclared: readonly string[] = ['PRAGMATIC_ADMIN_OPERATOR_PASSWORD', 'PRAGMATIC_AGENT_CHANNEL_PORT', 'PRAGMATIC_TENANT_PORTAL_DIR']
-    /** The co-hosted tenant plane reads its trusted-proxy flag through TenantAdminEnv.TrustedProxy. */
-    public static readonly ReadThrough: readonly string[] = [TenantAdminEnv.TrustedProxy]
+    /**
+     * The co-hosted tenant plane reads its trusted-proxy flag through TenantAdminEnv.TrustedProxy and its desktop realm
+     * sign-in switch through TenantAdminEnv.DesktopRealmSignIn (server.ts).
+     */
+    public static readonly ReadThrough: readonly string[] = [TenantAdminEnv.TrustedProxy, TenantAdminEnv.DesktopRealmSignIn]
 }
 
 describe('PlatformAdminComponent', () =>

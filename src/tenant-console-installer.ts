@@ -8,7 +8,11 @@ import { DevCaHostOutsideDomainError, DevCaKeyMissingError, type IDevCertificate
 import { SystemInstallClock, type IInstallClock, KubectlError, PortForwardError, type IKubectl } from '@pragmatic-tech-ai/pragmatic-kube'
 import { type IInstallOrchestratorSource } from './hive-agent-installer.js'
 import { HiveConsoleSpecs, InvalidHiveConsoleError } from './hive-console-spec.js'
-import { ImageVerificationError, type IImageVerifier, type IKeyStore, type VerifiedImage, ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { ComponentAssetUnavailableError, ImageVerificationError, type IImageVerifier, type IKeyStore, type VerifiedImage, ReleaseApp, ReleaseDescriptorMismatchError, ReleaseDescriptorUnverifiedError } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import type { ConsoleReleaseDescriptors } from './console-release-descriptors.js'
+import { ReleaseManifestUnavailableError } from './release/github-release-manifest-source.js'
+import { ReleaseDescriptorsUnavailableError } from './release/release-descriptor-source.js'
+import { ReleaseDescriptorsConfigMap } from './release-descriptors-config-map.js'
 import { IdpSecretSet, InClusterIdpSeedSource } from './in-cluster-idp-seed.js'
 import { InHiveIdpUnavailableError, type IInHiveIdpAdmin, type InHiveOwnerPassword } from './in-hive-idp-admin.js'
 import type { PlatformImageSigner } from './platform-signing-key.js'
@@ -142,7 +146,7 @@ export class PlatformConsoleImageApproval implements IConsoleImageApproval
 }
 
 /** The images one console install runs: the tenant-admin pod (with its pragmatic-postgres sidecar) and the in-hive IdP. */
-type ConsoleImages = { tenantAdmin: string; idp: string; postgres: string }
+type ConsoleImages = { tenantAdmin: string; idp: string; postgres: string; release: string | undefined }
 
 /** The IdP's CA + admin token for the bootstrap, and the seed Secrets to apply (undefined when the running IdP's are reused). */
 type IdpMaterial = { ca: Buffer; adminToken: string; secretsManifest: string | undefined; scrub: string[] }
@@ -228,7 +232,8 @@ export class TenantConsoleInstaller
     private static readonly ShowableErrors: ReadonlyArray<abstract new (...args: never[]) => Error> = [
         KubectlError, PortForwardError, IdpAdminError, IdpAdminTransportError, InHiveIdpUnavailableError, OwnerNotRecordedError,
         OwnerAccountMissingError, OwnerIdpRefusedError, IdpUnreachableError, ImageVerificationError, DevCaKeyMissingError,
-        DevCaHostOutsideDomainError, InvalidHiveConsoleError, DevCaError,
+        DevCaHostOutsideDomainError, InvalidHiveConsoleError, DevCaError, ReleaseDescriptorsUnavailableError, ReleaseDescriptorMismatchError,
+        ReleaseDescriptorUnverifiedError, ReleaseManifestUnavailableError, ComponentAssetUnavailableError,
     ]
     private static readonly HttpsScheme = 'https'
     private static readonly HttpsPrefix = 'https://'
@@ -297,7 +302,8 @@ export class TenantConsoleInstaller
         private readonly clock: IInstallClock = new SystemInstallClock(),
         private readonly adverts?: IConsoleAdvertLookup,
         private readonly ownerResets?: IOwnerResetRecorder,
-        private readonly platformImages: IPlatformImages = new DevPlatformImages())
+        private readonly platformImages: IPlatformImages = new DevPlatformImages(),
+        private readonly releaseDescriptors?: ConsoleReleaseDescriptors)
     {
     }
 
@@ -353,9 +359,11 @@ export class TenantConsoleInstaller
         {
             throw new UnknownTenantError(hive.tenantId)
         }
+        // Read beside the images, so the descriptors delivered are those of the release the console's image comes from.
+        const release = this.releaseDescriptors?.ReleaseOfConsole()
         const run = new ConsoleInstallRun(hiveId, new Date(this.clock.Now()).toISOString())
         this.runs.set(hiveId, run)
-        run.settled = this.Run(run, hive, tenant, spec, channelUrl, { tenantAdmin: tenantAdminImage, idp: idpImage, postgres: postgresImage })
+        run.settled = this.Run(run, hive, tenant, spec, channelUrl, { tenantAdmin: tenantAdminImage, idp: idpImage, postgres: postgresImage, release })
         return run.Snapshot()
     }
 
@@ -440,6 +448,7 @@ export class TenantConsoleInstaller
             return { retained: [] }
         }
         await kubectl.DeleteManifest(this.manifests.TenantConsoleRemovalManifest(hive.tenantId, hive.id, await TenantConsoleAdmission.ServedBy(kubectl)))
+        await C.RemoveDescriptors(kubectl, hive.id)
         // The IdP Ingress is gone, so the private-key copies it served are swept too.
         await kubectl.DeleteBySelector(K8sManifestBuilder.IdpNameOf(hive.tenantId), C.SecretResource, C.TlsCopySelectorOf(hive.id))
         try
@@ -573,6 +582,11 @@ export class TenantConsoleInstaller
             {
                 approved.push(await this.images.Approve(hive, images.idp))
             }
+            // The release's component descriptors, each checked against the digest its signature binds (fail closed: the console
+            // validates every component's configuration against them).
+            const descriptors = images.release === undefined || this.releaseDescriptors === undefined
+                ? undefined
+                : await this.releaseDescriptors.ManifestFor(images.release, hive.id)
             const fingerprintKey = await this.fingerprints.Ensure(hive.id)
             C.Remember(run, fingerprintKey)
             // Minted here on a first install (not inside the bootstrap), so it is in the scrub list either way.
@@ -618,6 +632,8 @@ export class TenantConsoleInstaller
             {
                 await kubectl.DeleteManifest(stale)
             }
+            // Before the console's Deployment, so its (re)started pod mounts this release's descriptors.
+            await C.DeliverDescriptors(kubectl, hive.id, descriptors)
             await kubectl.Apply(bootstrap.manifest)
             this.Enter(run, ConsoleInstallStep.StoringSecrets)
             await kubectl.ApplyServerSide(bootstrap.secrets.RenderManifest())
@@ -672,6 +688,31 @@ export class TenantConsoleInstaller
         finally
         {
             run.secrets.splice(0)
+        }
+    }
+
+    /**
+     * Writes the release descriptors ConfigMap on every install (a server-side apply of the whole object, so a key an earlier
+     * release carried is dropped); with nothing to deliver, removes one this hive's earlier install wrote, so the console never
+     * validates against the descriptors of a release it does not run.
+     */
+    private static async DeliverDescriptors(kubectl: IKubectl, hiveId: string, manifest: string | undefined): Promise<void>
+    {
+        if (manifest !== undefined)
+        {
+            await kubectl.ApplyServerSide(manifest)
+            return
+        }
+        await TenantConsoleInstaller.RemoveDescriptors(kubectl, hiveId)
+    }
+
+    /** Deletes the release descriptors ConfigMap when this hive's install wrote it (never another hive's). */
+    private static async RemoveDescriptors(kubectl: IKubectl, hiveId: string): Promise<void>
+    {
+        const existing = await kubectl.Find(ReleaseDescriptorsConfigMap.Namespace, ReleaseDescriptorsConfigMap.Resource())
+        if (ReleaseDescriptorsConfigMap.BelongsTo(existing, hiveId))
+        {
+            await kubectl.DeleteManifest(ReleaseDescriptorsConfigMap.IdentityManifest())
         }
     }
 

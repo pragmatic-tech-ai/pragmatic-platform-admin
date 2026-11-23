@@ -8,6 +8,7 @@ class FakeKubectl implements IKubectl
 {
     public Applied: string[] = []
     public ServerApplied: string[] = []
+    public Created: string[] = []
     public Rollouts: string[] = []
     public FailApply = false
     public readonly Objects = new Map<string, string>()
@@ -31,6 +32,12 @@ class FakeKubectl implements IKubectl
     public async ScaleStatefulSet(): Promise<void> { }
     public async RolloutRestart(): Promise<void> { }
     public async RolloutRestartSelector(): Promise<void> { }
+    public async Create(manifestJson: string): Promise<boolean>
+    {
+        this.Created.push(manifestJson)
+        return true
+    }
+
     public async ApplyServerSide(manifestJson: string): Promise<void>
     {
         this.ServerApplied.push(manifestJson)

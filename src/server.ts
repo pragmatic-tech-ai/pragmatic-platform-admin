@@ -79,6 +79,7 @@ import { AuditTrail, OidcRelyingParty, type IAuditRepository } from '@pragmatic-
 import { InProcessRolloutClient } from './tenant-api/in-process-rollout-client.js'
 import { ControlPlaneRoles, ControlPlaneStart, type IControlPlaneListenerStarts } from './control-plane-role.js'
 import { ReleaseCatalogConfig, type IReleaseServices } from './release/release-catalog-config.js'
+import { ConsoleReleaseDescriptors } from './console-release-descriptors.js'
 import { PlatformReleaseCountersigner, type IReleaseCountersigner } from './release/release-countersigner.js'
 import type { ReleasePoll } from './release/release-poll.js'
 
@@ -373,7 +374,7 @@ export class ControlPlaneServer
         const consoleInstaller = new TenantConsoleInstaller(directory, orchestrators, new TenantAdminBootstrap(deployments), fingerprintKeys,
             new DevCertificateAuthority(join(dataRoot, DevCertificateAuthority.DirName), sealed), new InHiveIdpAdmin(orchestrators, sealed),
             new PlatformConsoleImageApproval(signing.PlatformSigner, PlatformHiveOrchestratorFactory.VerifierFor(dataRoot, digests, signatures)),
-            keys, agentChannelUrl, new SystemInstallClock(), adverts, ownerResets, platformImages)
+            keys, agentChannelUrl, new SystemInstallClock(), adverts, ownerResets, platformImages, ControlPlaneServer.ConsoleDescriptorsOf(platformImages, releases))
         // Daily DNS re-check of verified domains (after approvals.Load; its interval timer is unref'd, so no shutdown hook).
         new DomainVerificationRechecker(approvals, domainVerifier).Start()
         const host = new ControlPlaneHost({
@@ -489,6 +490,16 @@ export class ControlPlaneServer
     }
 
     /**
+     * What a console install delivers as the release's component descriptors: those of the release the console's images come
+     * from, read through the release catalogue's registry. None on a development box (its images are no release's) or without
+     * a catalogue (no registry credential): the console then configures itself only.
+     */
+    public static ConsoleDescriptorsOf(images: IPlatformImages, releases: IReleaseServices | undefined): ConsoleReleaseDescriptors | undefined
+    {
+        return releases === undefined || !(images instanceof ReleasePlatformImages) ? undefined : new ConsoleReleaseDescriptors(images, releases.Descriptors)
+    }
+
+    /**
      * Where the platform's own images come from. Only `local` runs the locally built dev images; `none` and `hosted` offer
      * the newest verified release by digest (so a bundle or install before any release refuses instead of naming an image
      * no other cluster can pull), under the registry host the catalogue reads.
@@ -583,7 +594,9 @@ export class ControlPlaneServer
         const externalPort = TenantPlaneComposer.TenantExternalPort(env[C.TenantExternalPortEnvVar])
         const resolver = new TenantHostResolver(baseDomain, scheme, parts.Directory, externalPort)
         const trustedProxy = TenantPlaneComposer.ReadsTrue(env[TenantAdminEnv.TrustedProxy])
-        const plane = TenantPlaneComposer.BuildTenantPlane({ ...parts, Resolver: resolver, TrustedProxy: trustedProxy, Desktop: true })
+        // Realm sign-in for desktops (E.s S4-S5) is off on the co-hosted plane unless the setting turns it on (the live loop).
+        const desktopRealmSignIn = TenantPlaneComposer.DesktopRealmSignInOf(env[TenantAdminEnv.DesktopRealmSignIn], false)
+        const plane = TenantPlaneComposer.BuildTenantPlane({ ...parts, Resolver: resolver, TrustedProxy: trustedProxy, Desktop: true, DesktopRealmSignIn: desktopRealmSignIn })
         const probeMs = TenantPlaneComposer.ParseHealthProbeMs(env[C.HealthProbeMsEnvVar])
         const probeTimeoutMs = TenantPlaneComposer.ParseHealthProbeTimeoutMs(env[C.HealthProbeTimeoutMsEnvVar])
         const monitor = probeMs > 0

@@ -8,6 +8,13 @@ export interface IPlatformImages
     ImageOf(app: ReleaseApp): string | undefined
 }
 
+/** Which platform release an offered image comes from (a released platform; a development box has none). */
+export interface IPlatformRelease
+{
+    /** The version of the release whose image ImageOf offers for the app; undefined when that image is not from a release. */
+    ReleaseOf(app: ReleaseApp): string | undefined
+}
+
 /** The copy every install path refuses with while no verified, non-withdrawn platform release exists. */
 export class PlatformImages
 {
@@ -56,7 +63,7 @@ export class DevPlatformImages implements IPlatformImages
  * The newest verified, non-withdrawn release in the manifest catalogue (by publishedAt), named by digest under the registry
  * host the catalogue was read from. Locally published and rejected records are never offered.
  */
-export class ReleasePlatformImages implements IPlatformImages
+export class ReleasePlatformImages implements IPlatformImages, IPlatformRelease
 {
     public constructor(private readonly manifests: ManifestRegistry, private readonly imageHost: string)
     {
@@ -66,6 +73,11 @@ export class ReleasePlatformImages implements IPlatformImages
     {
         const image = this.NewestWith(app)?.release?.images?.[app]
         return image === undefined ? undefined : ReleaseRegistry.DigestReference(this.imageHost, image.repository, image.digest)
+    }
+
+    public ReleaseOf(app: ReleaseApp): string | undefined
+    {
+        return this.NewestWith(app)?.id
     }
 
     /** The newest verified, non-withdrawn record that carries an image for the app (a release may predate an app). */
