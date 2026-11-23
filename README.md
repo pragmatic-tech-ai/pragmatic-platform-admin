@@ -81,7 +81,7 @@ production `node_modules` and the kubectl, kind and docker CLIs. CI and the imag
 `package.json`'s version) run pragmatic-shared's reusable container workflows. The build files are rendered by
 `pragmatic-container-template` (`@pragmatic-tech-ai/pragmatic-release-toolkit`):
 
-    npx pragmatic-container-template render --app pragmatic-platform-admin --entry src/server.ts --ui portal --copy release-keys --out .
+    npx pragmatic-container-template render --app pragmatic-platform-admin --entry src/server.ts --ui portal --copy release-keys --writable dist/data --out .
 
 ## License
 
