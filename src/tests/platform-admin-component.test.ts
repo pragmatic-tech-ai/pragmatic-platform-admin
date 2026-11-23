@@ -5,14 +5,12 @@ import { fileURLToPath } from 'node:url'
 import { PlatformAdminComponent } from '../platform-admin-component.js'
 import { TenantAdminEnv } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { ComponentGolden } from './component-golden.js'
+import { PlatformAdminGolden } from './platform-admin-golden.js'
 import { ComponentSources } from './component-sources.js'
 
 class PlatformAdminComponentFixture
 {
     public static readonly Here = dirname(fileURLToPath(import.meta.url))
-    public static readonly Golden = join(PlatformAdminComponentFixture.Here, 'fixtures', 'pragmatic-platform-admin.component.json')
-    /** The golden descriptor digest at 0.1.1 (the pragmatic-server pin `sha256:bc19deb0…` with only the version changed). */
-    public static readonly Digest = 'sha256:0a71493f54c0f31867ab4dc7079fea4bca3b3d4b415819a9e65bf71385fa20a0'
     public static readonly Readers = [['..', 'server.ts'], ['..', 'key-stores.ts'], ['..', 'infra-target-mode.ts'], ['..', 'hosted-kubeconfig.ts'], ['..', 'release', 'release-catalog-config.ts'], ['..', 'platform-admin-database.ts']].map(path => join(PlatformAdminComponentFixture.Here, ...path))
         .concat([join(dirname(fileURLToPath(import.meta.resolve('@pragmatic-tech-ai/pragmatic-platform-link'))), 'internal-api-link.js')])
     /**
@@ -30,7 +28,7 @@ describe('PlatformAdminComponent', () =>
 {
     it('pins the descriptor: golden JSON and content digest', () =>
     {
-        ComponentGolden.Check(PlatformAdminComponent.Descriptor(), PlatformAdminComponentFixture.Golden, PlatformAdminComponentFixture.Digest)
+        ComponentGolden.Check(PlatformAdminComponent.Descriptor(), PlatformAdminGolden.Fixture, PlatformAdminGolden.Digest)
     })
 
     it('declares exactly the variables its configuration readers read', () =>
