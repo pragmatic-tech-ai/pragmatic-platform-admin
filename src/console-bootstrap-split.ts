@@ -1,7 +1,7 @@
 import { AppliedConfigurationKeys } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
 import { ComponentConfigurationMounts, K8sManifestBuilder } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 
-type ManifestItem = { apiVersion?: string; kind?: string; metadata?: { name?: string; namespace?: string; labels?: Record<string, string> }; data?: unknown; stringData?: unknown }
+type ManifestItem = { apiVersion?: string; kind?: string; metadata?: { name?: string; namespace?: string; labels?: Record<string, string> }; spec?: Record<string, unknown>; data?: unknown; stringData?: unknown }
 
 /**
  * A console bootstrap manifest split by when each part may land (C3.1 upgrade path, step 3):
@@ -12,8 +12,9 @@ type ManifestItem = { apiVersion?: string; kind?: string; metadata?: { name?: st
  *   Secrets the manifests render so the console never needs `create` beside them. They go server-side: a client-side
  *   apply of an object with no `data` deletes the data its last client-side apply recorded (a hand-built configuration).
  * - `IdpDeployment`: the realm sign-in service's Deployment, which carries the release's IdP image, applied only once
- *   its configuration is prepared for that image's descriptor (applying it rolls the IdP). `IdpLabels` is its metadata
- *   alone, applied first to a running IdP so the console finds it as a configuration target without anything rolling.
+ *   its configuration is prepared for that image's descriptor (applying it rolls the IdP). `IdpHold` is that Deployment
+ *   with the running IdP's own pod template and replica count, applied first (server-side) so the IdP gets the labels the
+ *   console finds its configuration target by while nothing rolls (a labels-only object fails kubectl's validation).
  */
 export class ConsoleBootstrapSplit
 {
@@ -22,12 +23,14 @@ export class ConsoleBootstrapSplit
     private static readonly SecretKind = 'Secret'
     private static readonly ListKind = 'List'
     private static readonly ApiVersionCore = 'v1'
+    private static readonly TemplateKey = 'template'
+    private static readonly ReplicasKey = 'replicas'
 
     private constructor(
         public readonly Console: string,
         public readonly ConfigurationObjects: string | undefined,
         public readonly IdpDeployment: string | undefined,
-        public readonly IdpLabels: string | undefined,
+        private readonly idp: ManifestItem | undefined,
     )
     {
         Object.freeze(this)
@@ -43,8 +46,19 @@ export class ConsoleBootstrapSplit
         const deployment = items.find(isIdp)
         const objects = items.filter(i => S.IsConfigurationObject(i))
         const rest = items.filter(i => !isIdp(i) && !S.IsConfigurationObject(i))
-        const labels = deployment === undefined ? undefined : S.List([{ apiVersion: deployment.apiVersion, kind: deployment.kind, metadata: { name: deployment.metadata?.name, namespace: deployment.metadata?.namespace, labels: deployment.metadata?.labels ?? {} } }])
-        return new ConsoleBootstrapSplit(S.List(rest), objects.length === 0 ? undefined : S.List(objects), deployment === undefined ? undefined : S.List([deployment]), labels)
+        return new ConsoleBootstrapSplit(S.List(rest), objects.length === 0 ? undefined : S.List(objects), deployment === undefined ? undefined : S.List([deployment]), deployment)
+    }
+
+    /** The rendered IdP Deployment holding the running one's pod template and replicas (`live`, as kubectl returns it), so
+     *  applying it changes labels and nothing that rolls; undefined without a rendered or a running one with a template. */
+    public IdpHold(live: string | undefined): string | undefined
+    {
+        const S = ConsoleBootstrapSplit
+        if (this.idp === undefined || live === undefined) return undefined
+        const running = (JSON.parse(live) as ManifestItem).spec
+        if (running?.[S.TemplateKey] === undefined) return undefined
+        const spec = { ...this.idp.spec, [S.TemplateKey]: running[S.TemplateKey], [S.ReplicasKey]: running[S.ReplicasKey] ?? this.idp.spec?.[S.ReplicasKey] }
+        return S.List([{ ...this.idp, spec }])
     }
 
     // An empty configuration object (no data): the console writes into it by name.

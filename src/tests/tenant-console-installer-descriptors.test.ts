@@ -10,6 +10,7 @@ import { ConsoleInstallState, ConsoleInstallStep, ConsoleInstallUnavailableError
 import { AppliedConfiguration, AppliedConfigurationCodec, AppliedConfigurationEntries, AppliedConfigurationKeys, ConfigurationPreparationRefusal, ConfigurationPreparationStatus } from '@pragmatic-tech-ai/pragmatic-configuration-runtime'
 import type { ComponentDescriptorSet } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ConsoleFakeKubectl, ConsoleInstallFixture } from './console-install-fakes.js'
+import { ConsoleBootstrapSplit } from '../console-bootstrap-split.js'
 import { FakeAssets, FakeComponentsArtifact, FakeManifestSource, FakeReleaseRecords, ReleaseDescriptorFixtures as F } from './release-descriptor-fixtures.js'
 
 type K8sItem = {
@@ -416,6 +417,7 @@ class PreparedInstall
     public static readonly OldDigest = `sha256:${'0'.repeat(64)}`
     public static readonly RefusedSetting = 'core.databaseUrl'
     public static readonly RefusedRule = '/options/core/databaseUrl is not a setting of this option'
+    public static readonly RunningTemplate = { metadata: { labels: { 'pragmatic/app': 'pragmatic-idp-acme' } }, spec: { containers: [{ name: 'idp', image: 'ghcr.io/x/pragmatic-tenant-idp@sha256:' + '1'.repeat(64) }] } }
 
     /** The digest of the release's tenant-idp descriptor (what the new pods will carry). */
     public static ReleaseDigest(d: DescriptorInstall): string
@@ -458,7 +460,7 @@ class PreparedInstall
     public static Cluster(fx: ConsoleInstallFixture, answers: Array<string | undefined>, last: string | undefined): void
     {
         const P = PreparedInstall
-        fx.Kubectl.Put(P.Idp, 'deployment/' + P.Idp, { kind: 'Deployment', metadata: { name: P.Idp, namespace: P.Idp } })
+        fx.Kubectl.Put(P.Idp, 'deployment/' + P.Idp, { kind: 'Deployment', metadata: { name: P.Idp, namespace: P.Idp }, spec: { replicas: 1, template: P.RunningTemplate } })
         if (last !== undefined) fx.Kubectl.Objects.set(ConsoleFakeKubectl.Key(P.Idp, P.ConfigResource), last)
         fx.Kubectl.FindAnswers.set(ConsoleFakeKubectl.Key(P.Idp, P.ConfigResource), answers)
     }
@@ -504,13 +506,15 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         assert.ok(lastConfigRead < idpApply, 'the IdP image is applied only after the configuration was prepared')
         assert.ok(idpApply < calls.findIndex(c => c[0] === 'RolloutRestart' && c[1] === P.Idp))
         assert.ok(calls.findIndex(c => c[0] === 'RolloutRestart' && c[1] === P.Idp) < calls.findIndex(c => c[0] === 'RolloutStatus' && c[1] === P.Idp))
-        // The first apply carries no IdP pod template; the IdP's labels go on by themselves (the console finds its target by them).
+        // The first apply carries no IdP Deployment; the IdP gets its new labels on its own running template (nothing rolls).
         const first = D.Items(fx.Kubectl.Applied[0] as string)
         assert.equal(first.some(i => P.IsIdpDeployment(i)), false)
-        const labelled = fx.Kubectl.ServerApplied.flatMap(m => D.Items(m)).find(i => P.IsIdpDeployment(i))
-        assert.ok(labelled !== undefined)
-        assert.equal((labelled as unknown as { spec?: unknown }).spec, undefined, 'labels only: nothing rolls')
-        assert.equal(labelled.metadata.labels?.[ComponentConfigurationMounts.ManagedByLabel], ComponentConfigurationMounts.ManagedBy)
+        const held = fx.Kubectl.ServerApplied.flatMap(m => D.Items(m)).find(i => P.IsIdpDeployment(i))
+        assert.ok(held !== undefined)
+        assert.deepEqual((held.spec as { template?: unknown }).template, P.RunningTemplate, 'the running pod template: nothing rolls')
+        assert.equal(held.metadata.labels?.[ComponentConfigurationMounts.ManagedByLabel], ComponentConfigurationMounts.ManagedBy)
+        const idpItem = D.Items(fx.Kubectl.Applied[1] as string).find(i => P.IsIdpDeployment(i))
+        assert.notDeepEqual((idpItem?.spec as { template?: unknown }).template, P.RunningTemplate, 'the later apply carries the release template')
         assert.ok(calls.indexOf(calls.find(c => c[0] === 'ApplyServerSide') as string[]) < consoleReady)
     })
 
@@ -567,5 +571,20 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
         const server = fx.Kubectl.ServerApplied.flatMap(m => D.Items(m)).filter(isConfigurationObject)
         assert.ok(server.some(i => i.metadata.namespace === P.Idp && i.metadata.name === AppliedConfigurationKeys.ObjectNamePrefix + ReleaseApp.TenantIdp))
         assert.ok(server.every(i => (i as unknown as { data?: unknown }).data === undefined))
+    })
+})
+
+describe('ConsoleBootstrapSplit', () =>
+{
+    it('holds a running IdP only when it has a pod template, keeping its replicas', () =>
+    {
+        const idp = K8sManifestBuilder.IdpNameOf('acme')
+        const manifest = JSON.stringify({ kind: 'List', items: [{ apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: idp, namespace: idp, labels: { a: 'b' } }, spec: { replicas: 1, template: { spec: { containers: [{ name: 'idp', image: 'new' }] } } } }] })
+        const split = ConsoleBootstrapSplit.Of(manifest, 'acme')
+        assert.equal(split.IdpHold(undefined), undefined)
+        assert.equal(split.IdpHold(JSON.stringify({ metadata: {} })), undefined)
+        const hold = JSON.parse(split.IdpHold(JSON.stringify({ spec: { replicas: 0, template: { spec: { containers: [{ name: 'idp', image: 'old' }] } } } })) as string).items[0]
+        assert.deepEqual([hold.metadata.labels, hold.spec.replicas, hold.spec.template.spec.containers[0].image], [{ a: 'b' }, 0, 'old'])
+        assert.equal(JSON.parse(split.Console).items.length, 0)
     })
 })

@@ -699,15 +699,16 @@ export class TenantConsoleInstaller
             await this.idpAdmin.RememberOwner(t, hive.id)
             // Last before the restarts: a step that failed earlier leaves the running console the descriptors of the release it runs
             // (a mounted ConfigMap updates in place), and the restarted console reads this release's.
-            // Before the console restarts: the empty configuration objects it writes into, and a running IdP's labels alone (so
-            // the console finds it as a configuration target; its pod template, and so the IdP, does not change).
+            // Before the console restarts: the empty configuration objects it writes into, and a running IdP's new labels on its
+            // own pod template (so the console finds it as a configuration target while the IdP does not roll).
             if (parts.ConfigurationObjects !== undefined)
             {
                 await kubectl.ApplyServerSide(parts.ConfigurationObjects)
             }
-            if (parts.IdpLabels !== undefined && await kubectl.Find(idpName, C.DeploymentPrefix + idpName) !== undefined)
+            const hold = parts.IdpHold(await kubectl.Find(idpName, C.DeploymentPrefix + idpName))
+            if (hold !== undefined)
             {
-                await kubectl.ApplyServerSide(parts.IdpLabels)
+                await kubectl.ApplyServerSide(hold)
             }
             await C.DeliverDescriptors(kubectl, hive.id, descriptors)
             // The console first: it restarts onto the release (and its new Secrets), and once ready prepares every configuration
