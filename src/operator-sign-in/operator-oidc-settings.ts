@@ -36,6 +36,8 @@ export class OperatorOidcSettings
     private static readonly HttpProtocol = 'http:'
     private static readonly LoopbackHosts: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '[::1]'])
     private static readonly TrailingSlashes = /\/+$/
+    private static readonly RootPath = '/'
+    private static readonly OriginSuffix = ' must be an origin (the console is served at its root), without a path'
     private static readonly TrailingNewline = /\r?\n$/
     private static readonly LineBreak = /[\r\n]/
     private static readonly Utf8 = 'utf8'
@@ -81,12 +83,12 @@ export class OperatorOidcSettings
         }
         const clientId = S.Required(env, S.ClientIdEnvVar)
         const secretFile = S.Required(env, S.ClientSecretFileEnvVar)
-        // The public URL is an origin the callback path is appended to: its trailing slashes go.
-        const publicUrl = S.Url(S.Required(env, S.PublicUrlEnvVar), S.PublicUrlEnvVar).replace(S.TrailingSlashes, S.NoText)
-        const trimmedIssuer = S.Url(issuer, S.IssuerEnvVar)
+        // The public URL is the console's origin (it is served at the root): the callback path is appended to it.
+        const publicUrl = S.Origin(S.Url(S.Required(env, S.PublicUrlEnvVar), S.PublicUrlEnvVar), S.PublicUrlEnvVar)
+        const verbatimIssuer = S.Url(issuer, S.IssuerEnvVar)
         const discovery = S.Value(env, S.DiscoveryUrlEnvVar)
-        const discoveryUrl = discovery === undefined ? trimmedIssuer.replace(S.TrailingSlashes, S.NoText) + S.WellKnownSuffix : S.Url(discovery, S.DiscoveryUrlEnvVar)
-        return new OperatorOidcSettings(trimmedIssuer, discoveryUrl, clientId, S.ReadSecret(secretFile), publicUrl, S.Value(env, S.CaBundleFileEnvVar))
+        const discoveryUrl = discovery === undefined ? verbatimIssuer.replace(S.TrailingSlashes, S.NoText) + S.WellKnownSuffix : S.Url(discovery, S.DiscoveryUrlEnvVar)
+        return new OperatorOidcSettings(verbatimIssuer, discoveryUrl, clientId, S.ReadSecret(secretFile), publicUrl, S.Value(env, S.CaBundleFileEnvVar))
     }
 
     private static Value(env: NodeJS.ProcessEnv, name: string): string | undefined
@@ -125,6 +127,18 @@ export class OperatorOidcSettings
             throw new OperatorOidcSettingsError(name + S.UrlSuffix)
         }
         return text
+    }
+
+    /** An origin only (no path but `/`): the console's routes and sign-in page sit at its root. */
+    private static Origin(text: string, name: string): string
+    {
+        const S = OperatorOidcSettings
+        const url = new URL(text)
+        if (url.pathname !== S.RootPath)
+        {
+            throw new OperatorOidcSettingsError(name + S.OriginSuffix)
+        }
+        return url.origin
     }
 
     private static ReadSecret(file: string): string

@@ -17,6 +17,23 @@ class SlowRecordMap extends MemoryRecordMap<StaffOperatorRecord>
     }
 }
 
+/** A memory record map whose first load fails. */
+class FlakyLoadMap extends MemoryRecordMap<StaffOperatorRecord>
+{
+    private static readonly FailedMessage = 'not yet'
+    public Loads = 0
+
+    public override async Load(): Promise<ReadonlyMap<string, StaffOperatorRecord>>
+    {
+        this.Loads++
+        if (this.Loads === 1)
+        {
+            throw new Error(FlakyLoadMap.FailedMessage)
+        }
+        return await super.Load()
+    }
+}
+
 class DirectoryFixture
 {
     public static readonly Principal = 'oidc:https://realm.test/realms/r#account-1'
@@ -74,6 +91,15 @@ describe('OperatorDirectory', () =>
         assert.ok(stored.has(F.Other))
         const reread = new OperatorDirectory(map)
         assert.equal(await reread.IsDisabled(F.Principal), true)
+    })
+
+    it('a failed load is retried by the next call, not remembered', async () =>
+    {
+        const map = new FlakyLoadMap()
+        const directory = new OperatorDirectory(map)
+        await assert.rejects(directory.IsDisabled(F.Principal))
+        assert.equal(await directory.IsDisabled(F.Principal), false)
+        assert.equal(map.Loads, 2)
     })
 
     it('lists the newest sign-in first', async () =>

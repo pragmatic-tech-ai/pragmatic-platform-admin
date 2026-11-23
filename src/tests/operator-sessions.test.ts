@@ -57,7 +57,7 @@ describe('OperatorRoleClaims', () =>
     it('carries the email and the console role in app_roles, and reads them back (ReadOnly unless Full)', () =>
     {
         const full = OperatorRoleClaims.Of({ email: LiveOperators.Email, principalId: 'p1', role: OperatorRole.Full })
-        assert.deepEqual(full.ToJson(), { email: [LiveOperators.Email], app_roles: ['operator.full'], amr: ['pwd'] })
+        assert.deepEqual(full.ToJson(), { email: [LiveOperators.Email], actor: [LiveOperators.Email], app_roles: ['operator.full'], amr: ['pwd'] })
         const ro = OperatorRoleClaims.Of({ email: LiveOperators.Email, principalId: 'p1', role: OperatorRole.ReadOnly })
         assert.deepEqual(ro.Values('app_roles'), ['operator.read-only'])
         assert.deepEqual(OperatorRoleClaims.Any, ['operator.full', 'operator.read-only'])

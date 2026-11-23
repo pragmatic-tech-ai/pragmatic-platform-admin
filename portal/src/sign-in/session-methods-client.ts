@@ -9,6 +9,8 @@ export class SessionMethodsClient implements ISessionMethodsSource
     private static readonly GetMethod = 'GET'
     private static readonly SameOrigin: RequestCredentials = 'same-origin'
     private static readonly FailedPrefix = 'session methods: HTTP '
+    /** The sign-in page waits at most this long before it shows the password form alone. */
+    private static readonly TimeoutMs = 5000
 
     public constructor(private readonly fetcher: FetchFunction = (url, init) => fetch(url, init))
     {
@@ -17,7 +19,7 @@ export class SessionMethodsClient implements ISessionMethodsSource
     public async StaffSignInOffered(): Promise<boolean>
     {
         const S = SessionMethodsClient
-        const reply = await this.fetcher(S.MethodsPath, { method: S.GetMethod, credentials: S.SameOrigin })
+        const reply = await this.fetcher(S.MethodsPath, { method: S.GetMethod, credentials: S.SameOrigin, signal: AbortSignal.timeout(S.TimeoutMs) })
         if (!reply.ok)
         {
             throw new Error(S.FailedPrefix + reply.status)

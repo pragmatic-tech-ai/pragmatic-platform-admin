@@ -125,6 +125,17 @@ describe('OperatorSignInViewModel', () =>
         assert.deepEqual(f.Browser.Assigned, [])
     })
 
+    it('back from the back/forward cache the page is live again (Resume)', async () =>
+    {
+        const f = await SignInFixture.Loaded(true)
+        f.Page.BeginStaffSignIn()
+        assert.equal(f.Page.StaffSignInCommand.CanExecute(undefined), false)
+        assert.equal(f.Page.ToggleBreakGlassCommand.CanExecute(undefined), true, 'break-glass stays reachable while leaving')
+        f.Page.Resume()
+        assert.equal(f.Page.IsBusy, false)
+        assert.equal(f.Page.StaffSignInCommand.CanExecute(undefined), true)
+    })
+
     it('a console that cannot say shows the password form', async () =>
     {
         const f = await SignInFixture.Loaded(new Error('down'))

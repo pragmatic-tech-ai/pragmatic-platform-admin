@@ -71,6 +71,22 @@ class BreakGlassOperator implements IOperatorIdentity
 
 type Reply = { status: number; location: string | undefined; cookies: string[]; text: string }
 
+/** A memory record map whose saves can be made to fail (a database that went away mid sign-in). */
+class FailingRecordMap extends MemoryRecordMap<StaffOperatorRecord>
+{
+    private static readonly FailedMessage = 'the database went away'
+    public FailSaves = false
+
+    public override async Save(all: ReadonlyMap<string, StaffOperatorRecord>, changed: ReadonlySet<string>): Promise<void>
+    {
+        if (this.FailSaves)
+        {
+            throw new Error(FailingRecordMap.FailedMessage)
+        }
+        await super.Save(all, changed)
+    }
+}
+
 /** How a fixture's console is set up: staff sign-in on or off, and whether the realm's discovery answers. */
 enum RealmMode
 {
@@ -112,7 +128,7 @@ class StaffSignInFixture
 
     public readonly Root: string
     public readonly Audit = new InMemoryAuditRepository()
-    public readonly Map = new MemoryRecordMap<StaffOperatorRecord>()
+    public readonly Map = new FailingRecordMap()
     public readonly Directory: OperatorDirectory
     public readonly Logged: string[] = []
     public Sessions!: OperatorSessions
@@ -458,14 +474,49 @@ describe('operator staff sign-in (OIDC) against the realm', () =>
         assert.equal(fixture.Logged[0]?.includes(F.Code), false)
     })
 
-    it('begins are rate-limited per client address', async () =>
+    it('begins and callbacks are rate-limited per client address; over the limit the browser lands on the failed page', async () =>
     {
-        let last = 0
-        for (let i = 0; i < 21; i++)
+        // 20 a minute: the 21st is refused.
+        for (let i = 0; i < 20; i++)
         {
-            last = (await fixture.Send(F.Get, F.Begin)).status
+            assert.notEqual((await fixture.Send(F.Get, F.Begin)).location, F.FailedLocation, 'begin ' + i)
         }
-        assert.equal(last, 429)
+        const refused = await fixture.Send(F.Get, F.Begin)
+        assert.equal(refused.status, 302)
+        assert.equal(refused.location, F.FailedLocation)
+        assert.equal(F.CookieValue(refused, F.FlowCookie), undefined)
+        assert.equal((await fixture.Callback('any', 'any')).location, F.FailedLocation)
+    })
+
+    it('a role the realm took away and gave back never revives the old session', async () =>
+    {
+        const old = F.TokenOf((await fixture.SignIn(F.AppRoles(app, OperatorRoleClaims.Full))).reply)
+        assert.equal((await fixture.SignIn(F.AppRoles(app))).reply.location, F.ForbiddenLocation)
+        const fresh = F.TokenOf((await fixture.SignIn(F.AppRoles(app, OperatorRoleClaims.Full))).reply)
+        assert.equal((await fixture.Send(F.Get, F.Session, old)).status, 401)
+        assert.equal((await fixture.Send(F.Get, F.Session, fresh)).status, 200)
+    })
+
+    it('a store that fails after the code exchange answers the failed page and leaves no session', async () =>
+    {
+        fixture.Map.FailSaves = true
+        const { reply } = await fixture.SignIn(F.AppRoles(app, OperatorRoleClaims.Full))
+        assert.equal(reply.location, F.FailedLocation)
+        assert.equal(F.CookieValue(reply, F.SessionCookie), undefined)
+        assert.equal(fixture.Logged.length, 1)
+    })
+
+    it('break-glass accounts are managed from a break-glass session only', async () =>
+    {
+        const staff = F.TokenOf((await fixture.SignIn(F.AppRoles(app, OperatorRoleClaims.Full))).reply)
+        for (const path of [F.Operators, F.Operators + '/disabled', F.Operators + '/password-reset', F.Operators + '/role', F.Operators + '/revoke-sessions'])
+        {
+            const reply = await fixture.Send(F.Post, path, staff, JSON.stringify({ email: BreakGlassOperator.Email, disabled: true, role: 'readonly', password: 'a-long-password-1' }))
+            assert.equal(reply.status, 403, path)
+            assert.match(reply.text, /break-glass/)
+        }
+        const glass = F.TokenOf(await fixture.BreakGlass())
+        assert.equal((await fixture.Send(F.Post, F.Operators + '/revoke-sessions', glass, JSON.stringify({ email: 'someone@pragmatic.test' }))).status, 200)
     })
 })
 

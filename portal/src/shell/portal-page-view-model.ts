@@ -240,6 +240,21 @@ export abstract class PortalPageViewModel extends Observable
         return command
     }
 
+    // A mutating command whose body takes the command parameter (a table row's command forwards itself): the same
+    // lock, Guard and enablement as MutatingCommand.
+    protected MutatingRowCommand(run: (row: unknown) => Promise<void>): RelayCommand
+    {
+        const can = (): boolean => this.Session.CanMutate && !this.mutating
+        const command = new RelayCommand(row => {
+            if (can())
+            {
+                void this.RunMutating(() => run(row))
+            }
+        }, can)
+        this.mutatingCommands.push(command)
+        return command
+    }
+
     // Opens a create dialog (loading its choices first); when it produces a
     // result, hands it to onCreated. Run it inside a command's Guard: a
     // missing DialogService or a failure is reported in CommandErrorText.

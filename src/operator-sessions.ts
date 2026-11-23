@@ -141,7 +141,7 @@ export class OperatorSessionGate extends SessionGate
     /**
      * The session with its claims as the operator's account says now; null when the operator is gone or disabled, or when
      * it is not an operator session at all (a session of the co-hosted tenant plane, which shares the session table, names
-     * its tenant: it never authenticates here). A staff session as issued, unless its operator is disabled here.
+     * its tenant: it never authenticates here). A staff session as StaffSessionPolicy rebuilds it from the directory.
      */
     public async Refreshed(session: SessionRecord): Promise<SessionRecord | null>
     {

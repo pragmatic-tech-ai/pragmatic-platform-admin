@@ -724,7 +724,7 @@ describe('ControlPlaneHost', () =>
     {
         const ok = await Harness.Anon(host, 'GET', '/api/session', undefined, { cookie: Harness.AuthCookie })
         assert.equal(ok.status, 200)
-        assert.deepEqual(JSON.parse(ok.body), { subject: 'p1', claims: { amr: ['pwd'], app_roles: ['operator.full'], email: [FakeOperator.Email] } })
+        assert.deepEqual(JSON.parse(ok.body), { subject: 'p1', claims: { actor: [FakeOperator.Email], amr: ['pwd'], app_roles: ['operator.full'], email: [FakeOperator.Email] } })
         assert.equal((await Harness.Anon(host, 'GET', '/api/session')).status, 401)
     })
 
@@ -735,7 +735,7 @@ describe('ControlPlaneHost', () =>
         const ok = await Harness.Anon(host, 'GET', '/api/session', undefined, { cookie: Harness.AuthCookie })
         assert.equal(ok.status, 200)
         const body = JSON.parse(ok.body)
-        assert.deepEqual(body, { subject: 'p2', claims: { amr: ['pwd'], app_roles: ['operator.read-only'], email: [FakeOperator.Email] } })
+        assert.deepEqual(body, { subject: 'p2', claims: { actor: [FakeOperator.Email], amr: ['pwd'], app_roles: ['operator.read-only'], email: [FakeOperator.Email] } })
         assert.ok(!('token' in body))
         assert.ok(!('password' in body))
     })

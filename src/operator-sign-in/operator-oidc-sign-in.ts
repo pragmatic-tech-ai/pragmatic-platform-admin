@@ -78,10 +78,7 @@ export class OperatorOidcSignIn
     private static readonly StatusFound = 302
     private static readonly StatusOk = 200
     private static readonly StatusForbidden = 403
-    private static readonly StatusTooManyRequests = 429
     private static readonly MsPerSecond = 1000
-    private static readonly TooManyMessage = 'Too many sign-in attempts'
-    private static readonly ErrorField = 'error'
     private static readonly AuditAction = HttpMethod.Get
     private static readonly RefusedNote = OperatorSignInMethod.Staff + ' sign-in refused: '
     private static readonly LogPrefix = '[operator-sign-in] staff sign-in failed: '
@@ -157,8 +154,12 @@ export class OperatorOidcSignIn
                 : granted.includes(StaffOperatorRole.ReadOnly) ? StaffOperatorRole.ReadOnly : StaffOperatorRole.None
             if (role === StaffOperatorRole.None)
             {
-                // A recorded operator whose realm took the role away: their role is none here too (their sessions end).
-                await this.directory.RecordSignIn(principal, email, StaffOperatorRole.None, this.now())
+                // A recorded operator whose realm took the role away: their role is none here too, and their sessions
+                // end for good (a role given back later does not revive them).
+                if (await this.directory.RecordSignIn(principal, email, StaffOperatorRole.None, this.now()) !== undefined)
+                {
+                    await this.sessions.Store.RevokeSubject(principal)
+                }
                 await this.Audit(email, O.StatusForbidden, O.RefusedNote + OperatorSignInOutcome.NoOperatorRole)
                 return OperatorSignInResult.Refused(OperatorSignInOutcome.NoOperatorRole)
             }
@@ -168,8 +169,9 @@ export class OperatorOidcSignIn
                 return OperatorSignInResult.Refused(OperatorSignInOutcome.Disabled)
             }
             await this.directory.RecordSignIn(principal, email, role, this.now())
-            const issued = await this.sessions.Store.Issue(principal, OperatorRoleClaims.OfStaff(email, role))
+            // Audited first: a failed audit write leaves no session behind.
             await this.Audit(email, O.StatusOk, OperatorSignInMethod.Staff)
+            const issued = await this.sessions.Store.Issue(principal, OperatorRoleClaims.OfStaff(email, role))
             return OperatorSignInResult.SignedIn(issued.Token, issued.Session.ExpiresAt)
         }
         catch (err)
@@ -183,11 +185,8 @@ export class OperatorOidcSignIn
     {
         const O = OperatorOidcSignIn
         CacheControl.NoStore(ctx.Response)
-        const allowed = await this.sessions.StaffBegins.Hit(ctx.ClientAddress)
-        if (!allowed.Allowed)
+        if (!(await this.Admitted(ctx)))
         {
-            ctx.Response.setHeader(O.RetryAfterHeader, String(Math.ceil(allowed.RetryAfterMs / O.MsPerSecond)))
-            ctx.WriteJson(O.StatusTooManyRequests, { [O.ErrorField]: O.TooManyMessage })
             return
         }
         let begun: OperatorSignInBegun
@@ -209,6 +208,10 @@ export class OperatorOidcSignIn
     {
         const O = OperatorOidcSignIn
         CacheControl.NoStore(ctx.Response)
+        if (!(await this.Admitted(ctx)))
+        {
+            return
+        }
         const code = ctx.Query.get(O.CodeParam) ?? O.NoText
         const state = ctx.Query.get(O.StateParam) ?? O.NoText
         const bound = state.length > 0 && this.binding.Matches(ctx.Request, state)
@@ -231,6 +234,21 @@ export class OperatorOidcSignIn
         }
         ctx.Response.setHeader(O.SetCookieHeader, cookies)
         this.Redirect(ctx, location)
+    }
+
+    /** Both routes count against the per-address limit; over it the browser lands on the failed sign-in page (a
+     *  navigation, so no bare JSON), with Retry-After. */
+    private async Admitted(ctx: RequestContext): Promise<boolean>
+    {
+        const O = OperatorOidcSignIn
+        const decision = await this.sessions.StaffBegins.Hit(ctx.ClientAddress)
+        if (decision.Allowed)
+        {
+            return true
+        }
+        ctx.Response.setHeader(O.RetryAfterHeader, String(Math.ceil(decision.RetryAfterMs / O.MsPerSecond)))
+        this.Redirect(ctx, O.SignInPageWith(O.FailedMarker))
+        return false
     }
 
     private Redirect(ctx: RequestContext, location: string): void

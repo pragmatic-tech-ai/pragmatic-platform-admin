@@ -99,6 +99,11 @@ describe('OperatorOidcSettings', () =>
         assert.equal(S.Of(F.Env(secretFile, { [S.PublicUrlEnvVar]: 'http://127.0.0.1:7000' }))?.RedirectUri, 'http://127.0.0.1:7000/auth/oidc/callback')
     })
 
+    it('refuses a public URL with a path (the console sits at its origin\'s root)', () =>
+    {
+        F.Refuses(F.Env(secretFile, { [S.PublicUrlEnvVar]: F.PublicUrl + '/admin' }), S.PublicUrlEnvVar)
+    })
+
     it('refuses an unreadable or blank or multi-line secret file without naming its content', () =>
     {
         F.Refuses(F.Env(join(root, 'missing')), S.ClientSecretFileEnvVar)

@@ -1,16 +1,14 @@
 import { RelayCommand } from '@pragmatic-tech-ai/mural/runtime'
 import { Observable } from '@pragmatic-tech-ai/todl-runtime'
+import { OperatorContext } from '../../operator-context.js'
 import { PortalDates } from '../../portal-dates.js'
 import type { StaffOperatorDto } from '../../portal-types.js'
 
 // One staff operator (signed in through the Pragmatic staff realm): email, the operator role the realm last gave, the
-// last sign-in, whether they are disabled here, and Disable / Enable (the page runs it; full operators only).
+// last sign-in, whether they are disabled here, and Disable / Enable (the page runs it; full operators only; never on
+// the signed-in operator's own row, which the console refuses).
 export class StaffOperatorRowViewModel extends Observable
 {
-    private static readonly FullRole = 'operator.full'
-    private static readonly ReadOnlyRole = 'operator.read-only'
-    private static readonly OperatorLabel = 'Operator'
-    private static readonly ObserverLabel = 'Observer'
     private static readonly NoRoleLabel = 'No operator role'
     private static readonly ActiveLabel = 'Active'
     private static readonly DisabledLabel = 'Disabled'
@@ -19,10 +17,16 @@ export class StaffOperatorRowViewModel extends Observable
 
     private readonly toggleCommand: RelayCommand
 
-    public constructor(public readonly Record: StaffOperatorDto, toggle: RelayCommand)
+    public constructor(public readonly Record: StaffOperatorDto, toggle: RelayCommand, private readonly isSelf: boolean)
     {
         super()
-        this.toggleCommand = new RelayCommand(() => toggle.Execute(this), () => toggle.CanExecute(this))
+        this.toggleCommand = new RelayCommand(() => toggle.Execute(this), () => !isSelf && toggle.CanExecute(this))
+    }
+
+    // The signed-in operator's own row: no Disable.
+    public get ShowsToggle(): boolean
+    {
+        return !this.isSelf
     }
 
     public get Email(): string
@@ -32,15 +36,13 @@ export class StaffOperatorRowViewModel extends Observable
 
     public get RoleLabel(): string
     {
-        const R = StaffOperatorRowViewModel
         switch (this.Record.role)
         {
-            case R.FullRole:
-                return R.OperatorLabel
-            case R.ReadOnlyRole:
-                return R.ObserverLabel
+            case OperatorContext.FullAppRole:
+            case OperatorContext.ReadOnlyAppRole:
+                return OperatorContext.FromAppRoles([this.Record.role]).RoleLabel
             default:
-                return R.NoRoleLabel
+                return StaffOperatorRowViewModel.NoRoleLabel
         }
     }
 

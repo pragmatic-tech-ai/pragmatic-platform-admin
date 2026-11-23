@@ -151,7 +151,7 @@ resources SettingsResources {
             TextBlock [ Grid.Column = 1, Text = $RoleLabel, Foreground = @Fg1, VerticalAlignment = Center ]
             TextBlock [ Grid.Column = 2, Text = $LastSignInLabel, Foreground = @Fg1, VerticalAlignment = Center ]
             TextBlock [ Grid.Column = 3, Text = $StatusLabel, Foreground = @Fg1, VerticalAlignment = Center ]
-            Button [ Grid.Column = 4, Variant = Secondary, Command = $ToggleCommand ] {
+            Button [ Grid.Column = 4, Variant = Secondary, Command = $ToggleCommand, Visibility = $ShowsToggle << ToVisibility ] {
                 TextBlock [ Text = $ToggleText ]
             }
         }

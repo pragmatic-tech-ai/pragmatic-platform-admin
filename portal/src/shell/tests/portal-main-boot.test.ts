@@ -1,10 +1,11 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { ServiceProvider, type IServiceProvider } from '@pragmatic-tech-ai/mural/runtime'
+import { ServiceProvider, type Application, type IServiceProvider } from '@pragmatic-tech-ai/mural/runtime'
 import { ContentHostService } from '@pragmatic-tech-ai/mural/framework/shell/services/content-host-service.js'
 import { ApiError, type ControlPlaneClient } from '../../api-client.js'
 import { OperatorContext } from '../../operator-context.js'
 import { OperatorSignInHost } from '../../sign-in/operator-sign-in-host.js'
+import { OperatorSignInViewModel } from '../../sign-in/operator-sign-in-view-model.js'
 import { PortalApplications } from '../portal-boot.js'
 import { PageState, PortalPageViewModel } from '../portal-page-view-model.js'
 import { PortalSectionService } from '../portal-section-service.js'
@@ -138,6 +139,15 @@ describe('PortalApplications.ShowSignInError', () =>
         provider.register(OperatorSignInHost.Key, (p) => new OperatorSignInHost(p))
         PortalApplications.ShowSignInError(provider, "Can't reach Platform Admin: boom")
         assert.equal(provider.getRequired(OperatorSignInHost.Key).Page.NoticeText, "Can't reach Platform Admin: boom")
+    })
+
+    it('back from a staff sign-in that did not complete, the page shows its own failed notice', () =>
+    {
+        const provider = new ServiceProvider()
+        provider.register(OperatorSignInHost.Key, (p) => new OperatorSignInHost(p))
+        const app = { Services: provider } as unknown as Application
+        new PortalApplications({} as ControlPlaneClient, new FakeReloader()).ShowSignInFailed(app, 'the shell text')
+        assert.equal(provider.getRequired(OperatorSignInHost.Key).Page.NoticeText, OperatorSignInViewModel.FailedText)
     })
 
     it('the break-glass form inside the sign-in page offers password sign-in only', () =>

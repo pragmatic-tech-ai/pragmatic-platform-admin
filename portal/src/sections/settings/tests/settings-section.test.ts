@@ -102,6 +102,17 @@ describe('Settings section', () =>
         assert.deepEqual([again.StatusLabel, again.ToggleText], ['Disabled', 'Enable'])
     })
 
+    it('the signed-in operator\'s own staff row offers no Disable', async () =>
+    {
+        const fx = new SettingsFixture()
+        const own = fx.Host.Session.Subject
+        fx.Api.StaffOperators = [{ principal: own, email: 'me@example.test', method: 'staff', role: 'operator.full', firstSignInAt: '2026-11-23T10:00:00.000Z', lastSignInAt: '2026-11-23T10:00:00.000Z', disabled: false }]
+        const page = await fx.Page()
+        const row = page.StaffOperators.ToArray()[0]!
+        assert.equal(row.ShowsToggle, false)
+        assert.equal(row.ToggleCommand.CanExecute(), false)
+    })
+
     it('Observer: the staff toggle is disabled', async () =>
     {
         const fx = new SettingsFixture(OperatorContext.ReadOnlyWireRole)

@@ -227,6 +227,7 @@ export class ControlPlaneHost
     private static readonly StaffOperatorDisabledPath = '/api/operators/staff/disabled'
     private static readonly StaffField = 'staff'
     private static readonly StaffPrincipalMessage = 'principal (non-empty string) and disabled (boolean) are required'
+    private static readonly BreakGlassOnlyMessage = 'Break-glass operator accounts are managed from a break-glass (password) session.'
     private static readonly StaffPasswordMessage = 'Staff operators change their password at the Pragmatic staff realm, not here.'
     private static readonly StaffUnknownMessage = 'No staff operator with that principal was recorded'
     private static readonly DiscoverPath = '/api/desktop/discover'
@@ -862,6 +863,10 @@ export class ControlPlaneHost
     private async HandleCreateOperator(ctx: RequestContext): Promise<void>
     {
         const C = ControlPlaneHost
+        if (this.RefusesStaff(ctx))
+        {
+            return
+        }
         const body = await this.ReadJsonObject(ctx)
         if (body === undefined)
         {
@@ -882,6 +887,10 @@ export class ControlPlaneHost
     private async HandleOperatorMutation(ctx: RequestContext): Promise<void>
     {
         const C = ControlPlaneHost
+        if (this.RefusesStaff(ctx))
+        {
+            return
+        }
         const mutation = ctx.Param(C.MutationParam)
         if (!(Object.values(OperatorMutation) as string[]).includes(mutation))
         {
@@ -942,6 +951,21 @@ export class ControlPlaneHost
                 ctx.WriteJson(C.StatusOk, {})
                 return
         }
+    }
+
+    /**
+     * Break-glass accounts are managed from a break-glass session only (403 for a staff session): a staff account taken
+     * over at the realm can then never create, demote, disable or reset the accounts that recover the console.
+     */
+    private RefusesStaff(ctx: RequestContext): boolean
+    {
+        if (!OperatorRoleClaims.IsStaffSession(ctx.RequireSession()))
+        {
+            return false
+        }
+        JsonApi.Drain(ctx.Request)
+        ctx.WriteJson(ControlPlaneHost.StatusForbidden, { error: ControlPlaneHost.BreakGlassOnlyMessage })
+        return true
     }
 
     /** Minimal shape check: exactly one '@' with a non-empty local part and domain. */

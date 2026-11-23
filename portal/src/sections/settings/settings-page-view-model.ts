@@ -64,7 +64,7 @@ export class SettingsPageViewModel extends PortalPageViewModel
         super(session)
         this.inviteCommand = this.MutatingCommand(() => this.Invite())
         this.openCommand = new RelayCommand(row => this.Open(row))
-        this.toggleStaffCommand = new RelayCommand(row => { void this.ToggleStaff(row) }, () => this.Session.CanMutate)
+        this.toggleStaffCommand = this.MutatingRowCommand(row => this.ToggleStaff(row))
     }
 
     // The operators who signed in through the Pragmatic staff realm (their roles come from the realm; Disable here
@@ -131,8 +131,7 @@ export class SettingsPageViewModel extends PortalPageViewModel
             return true
         }
         const generation = this.LoadGeneration
-        const summaries = await this.Session.Client.ListOperators()
-        const staff = await this.Session.Client.ListStaffOperators()
+        const [summaries, staff] = await Promise.all([this.Session.Client.ListOperators(), this.Session.Client.ListStaffOperators()])
         if (generation !== this.LoadGeneration)
         {
             return false
@@ -149,7 +148,7 @@ export class SettingsPageViewModel extends PortalPageViewModel
         this.staffOperators.Clear()
         for (const record of staff)
         {
-            this.staffOperators.Add(new StaffOperatorRowViewModel(record, this.toggleStaffCommand))
+            this.staffOperators.Add(new StaffOperatorRowViewModel(record, this.toggleStaffCommand, record.principal === this.Session.Subject))
         }
         this.RaisePropertyChanged(SettingsPageViewModel.HasStaffOperatorsProperty, hadStaff, this.HasStaffOperators)
         this.RaisePropertyChanged(SettingsPageViewModel.HasOperatorsProperty, had, this.HasOperators)
@@ -168,14 +167,12 @@ export class SettingsPageViewModel extends PortalPageViewModel
     // Disables an active staff operator or enables a disabled one, then reloads the roster.
     private async ToggleStaff(row: unknown): Promise<void>
     {
-        if (!(row instanceof StaffOperatorRowViewModel) || !this.Session.CanMutate)
+        if (!(row instanceof StaffOperatorRowViewModel))
         {
             return
         }
-        await this.Guard(async () => {
-            await this.Session.Client.SetStaffOperatorDisabled(row.Record.principal, !row.Record.disabled)
-            await this.Refresh()
-        })
+        await this.Session.Client.SetStaffOperatorDisabled(row.Record.principal, !row.Record.disabled)
+        await this.Refresh()
     }
 
     private Invite(): Promise<void>
