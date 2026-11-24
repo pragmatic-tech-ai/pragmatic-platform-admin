@@ -683,7 +683,7 @@ describe('TenantConsoleInstaller: configurations prepared before the IdP rolls',
     {
         const C = ReleaseDescriptorsConfigMap
         const manifest = JSON.stringify({ apiVersion: 'v1', kind: D.ConfigMapKind, metadata: { name: C.Name, namespace: C.Namespace, labels: K8sManifestBuilder.HiveLabelsOf(D.Hive) }, data: { [C.DigestsKey]: '{}' } })
-        const delivery = { IsMixed: () => false, ReleaseOfConsole: () => F.Version, ManifestFor: async () => manifest }
+        const delivery = { IsMixed: () => false, SameRelease: () => true, ReleaseOfConsole: () => F.Version, ManifestFor: async () => manifest }
         fx = await ConsoleInstallFixture.Create({ descriptors: delivery as unknown as ConsoleReleaseDescriptors })
         fx.Installer.Start(D.Hive)
         const status = await fx.Installer.WhenSettled(D.Hive)

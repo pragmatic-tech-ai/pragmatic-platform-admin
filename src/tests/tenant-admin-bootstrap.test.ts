@@ -361,9 +361,11 @@ describe('TenantAdminBootstrap as the in-hive console renderer', () =>
         const b = await new TenantAdminBootstrap(registrar).GenerateBootstrap(ConsoleFixture.Input())
         assert.equal(registrar.registered.length, 0)
         assert.ok(!b.secrets.Names().includes(K8sManifestBuilder.AgentTokenSecretNameOf('hive-a')))
-        const env = BootstrapFixture.AdminDeployment(b.manifest).spec.template.spec.containers[0].env as any[]
-        const tokenEnv = env.find(e => e.valueFrom?.secretKeyRef?.key === 'token')
-        assert.equal(tokenEnv.valueFrom.secretKeyRef.name, K8sManifestBuilder.AgentTokenSecretNameOf('hive-a'))
+        // The console reads the agent's own token, as a mounted file of its Secret.
+        const pod = BootstrapFixture.AdminDeployment(b.manifest).spec.template.spec
+        const tokenVolume = (pod.volumes as any[]).find(v => v.secret?.items?.some((i: any) => i.key === 'token'))
+        assert.equal(tokenVolume.secret.secretName, K8sManifestBuilder.AgentTokenSecretNameOf('hive-a'))
+        assert.ok((pod.containers[0].env as any[]).some(e => e.name === 'PRAGMATIC_TENANT_ADMIN_ROLLOUT_TOKEN_FILE'))
         assert.equal(b.agentTokenSecretName, K8sManifestBuilder.AgentTokenSecretNameOf('hive-a'))
     })
 

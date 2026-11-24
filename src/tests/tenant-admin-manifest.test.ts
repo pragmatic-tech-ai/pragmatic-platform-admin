@@ -90,9 +90,12 @@ describe('K8sManifestBuilder.RenderTenantAdmin', () =>
         assert.equal(literal('PRAGMATIC_TENANT_ADMIN_SECURE_COOKIE'), 'true')
         assert.equal(literal('PRAGMATIC_TENANT_ADMIN_ROLLOUT_URL'), 'http://channel.example:7000')
         assert.equal(literal('PRAGMATIC_TENANT_ADMIN_ROLLOUT_HIVE_ID'), 'hive-a')
-        const token = c.env.find((e: any) => e.name === 'PRAGMATIC_TENANT_ADMIN_ROLLOUT_TOKEN')
-        assert.equal(token.value, undefined)
-        assert.deepEqual(token.valueFrom, { secretKeyRef: { name: 'agent-token-secret', key: 'token' } })
+        assert.equal(c.env.find((e: any) => e.name === 'PRAGMATIC_TENANT_ADMIN_ROLLOUT_TOKEN'), undefined, 'never in the process environment')
+        const file = c.env.find((e: any) => e.name === 'PRAGMATIC_TENANT_ADMIN_ROLLOUT_TOKEN_FILE').value as string
+        const mount = c.volumeMounts.find((m: any) => file.startsWith(m.mountPath + '/'))
+        const pod = TenantAdminFixture.Items(TenantAdminFixture.Spec()).find(i => i.kind === 'Deployment').spec.template.spec
+        assert.deepEqual(pod.volumes.find((v: any) => v.name === mount.name).secret.items, [{ key: 'token', path: 'token' }])
+        assert.equal(pod.volumes.find((v: any) => v.name === mount.name).secret.secretName, 'agent-token-secret')
     })
 
     it('secure cookie is off for a plain-http scheme', () =>
@@ -211,7 +214,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin IdP injection', () =>
         const dep = TenantAdminFixture.Of('Deployment')
         const c = dep.spec.template.spec.containers[0]
         assert.equal(c.env.filter((e: any) => e.name.startsWith('PRAGMATIC_IDP_')).length, 0)
-        assert.deepEqual(dep.spec.template.spec.volumes.map((v: any) => v.name), ['data', 'seed', 'tmp', 'release-descriptors', 'cfg-tenant-admin', 'cfgstore-tenant-admin', 'cfgrun-tenant-admin'])
+        assert.deepEqual(dep.spec.template.spec.volumes.map((v: any) => v.name), ['data', 'seed', 'tmp', 'agent-token', 'release-descriptors', 'cfg-tenant-admin', 'cfgstore-tenant-admin', 'cfgrun-tenant-admin'])
     })
 
     it('injects PRAGMATIC_IDP_* env and read-only Secret mounts by ref, never inline bytes', () =>

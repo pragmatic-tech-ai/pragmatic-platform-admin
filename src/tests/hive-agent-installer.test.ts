@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { type IInstallClock, KubectlError, type IKubectl } from '@pragmatic-tech-ai/pragmatic-kube'
 import { AgentInstallInProgressError, AgentInstallUnavailableError, HiveAgentInstaller, InstallState, InstallStep } from '../hive-agent-installer.js'
-import { type IHiveOrchestrator, type WorkloadHealth, type EnvironmentWorkload, HiveBackend, InfraMode, type HiveRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { type IHiveOrchestrator, type WorkloadHealth, type EnvironmentWorkload, HiveBackend, InfraMode, K8sManifestBuilder, type HiveRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { DevPlatformImages, type IPlatformImages, PlatformImages } from '../platform-images.js'
 import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
@@ -81,7 +81,10 @@ class FakeKubectl implements IKubectl
     }
 
     public async DeleteManifest(_m: string): Promise<void> { }
-    public async Find(_n: string, _r: string): Promise<string | undefined> { return undefined }
+    /** The running agent Deployment a Find answers (by kubectl resource), when one runs. */
+    public readonly Live = new Map<string, string>()
+
+    public async Find(_n: string, r: string): Promise<string | undefined> { return this.Live.get(r) }
     public async DeleteBySelector(_n: string, _r: string, _s: string): Promise<void> { }
     public async DeleteNamespacesBySelector(_s: string, _p: string): Promise<string[]> { return [] }
     public async ListNamespacesBySelector(_s: string, _p: string): Promise<string[]> { return [] }
@@ -276,6 +279,23 @@ describe('HiveAgentInstaller', () =>
         const items = (JSON.parse(fx.Kubectl.Applied[0]) as { items: Array<{ kind: string; spec?: { template?: { spec?: { containers?: Array<{ image: string }> } } } }> }).items
         const deployment = items.find(i => i.kind === 'Deployment')
         assert.equal(deployment?.spec?.template?.spec?.containers?.[0].image, ref)
+    })
+
+    it('an install over an agent whose template carries an applied configuration keeps it (hash and secrets revision)', async () =>
+    {
+        const ref = 'ghcr.io/pragmatic-tech-ai/pragmatic-hive-agent@sha256:' + 'd'.repeat(64)
+        const fx = new Fixture(true, new FixedImages(ref))
+        const hash = 'sha256:' + '9'.repeat(64)
+        const annotations = { 'pragmatic-tech.ai/configuration-hash': hash, 'pragmatic-tech.ai/secrets-revision': '12', other: 'x' }
+        fx.Kubectl.Live.set('deployment/' + K8sManifestBuilder.HiveAgentNameOf('h1'), JSON.stringify({ kind: 'Deployment', spec: { template: { metadata: { annotations } } } }))
+        fx.CheckInAfter(1)
+        fx.Installer.Start('h1')
+        await fx.Installer.WhenSettled('h1')
+        const items = (JSON.parse(fx.Kubectl.Applied[0]) as { items: Array<{ kind: string; spec?: { template?: { metadata?: { annotations?: Record<string, string> } } } }> }).items
+        const kept = items.find(i => i.kind === 'Deployment')?.spec?.template?.metadata?.annotations ?? {}
+        assert.equal(kept['pragmatic-tech.ai/configuration-hash'], hash)
+        assert.equal(kept['pragmatic-tech.ai/secrets-revision'], '12')
+        assert.equal(kept.other, undefined, 'only the console annotations are kept')
     })
 
     it('runs every step in order and ends Connected once a check-in newer than the restart arrives', async () =>

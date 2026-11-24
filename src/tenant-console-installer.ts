@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { AgentConfigurationHold } from './agent-configuration-hold.js'
 import { DevCaError } from '@pragmatic-tech-ai/pragmatic-identity-source-oidc'
 import { ConsoleAdvertRegistry, type ConsoleAdvertRecord, type IConsoleAdvertLookup } from './console-advert-registry.js'
 import { type ConsoleFingerprintKeys, EffectiveRegistry, type HiveConsoleSpec, IdpAdminError, IdpAdminTransportError, IdpDatabaseSecret, IngressTlsPolicy, IngressTlsSource, K8sManifestBuilder, HiveBackend, type HiveRecord, type TenantRecord, TenantConsoleAdmission } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
@@ -48,6 +49,8 @@ export enum ConsoleInstallStep
     WaitingForRollout = 'waiting-for-rollout',
     /** The console prepares the configurations for the release's descriptors; the install waits on their status. */
     PreparingConfiguration = 'preparing-configuration',
+    /** The hive agent rolls onto the release's agent image (surge: the old one serves until the new one is ready). */
+    RollingOutAgent = 'rolling-out-agent',
     /** The realm sign-in service rolls onto the release's image and becomes ready. */
     RollingOutIdp = 'rolling-out-idp',
     SeedingOwner = 'seeding-owner',
@@ -156,7 +159,7 @@ export class PlatformConsoleImageApproval implements IConsoleImageApproval
 }
 
 /** The images one console install runs: the tenant-admin pod (with its pragmatic-postgres sidecar) and the in-hive IdP. */
-type ConsoleImages = { tenantAdmin: string; idp: string; postgres: string; release: string | undefined }
+type ConsoleImages = { tenantAdmin: string; idp: string; postgres: string; release: string | undefined; agent: string | undefined }
 
 /** The IdP's CA + admin token for the bootstrap, and the seed Secrets to apply (undefined when the running IdP's are reused). */
 type IdpMaterial = { ca: Buffer; adminToken: string; secretsManifest: string | undefined; scrub: string[] }
@@ -249,6 +252,11 @@ export class TenantConsoleInstaller
     private static readonly SettingsSeparator = ', '
     private static readonly NotPreparedPrefix = "The tenant admin console did not prepare the realm sign-in service's configuration for this release within "
     private static readonly NotPreparedSuffix = " minutes. The identity provider was not changed. The console prepares it when it starts: its Configuration page for " + ReleaseApp.TenantIdp + " shows a refusal or an error; it prepares nothing when this release's identity provider is not newer than the configured one, when the configuration was applied for another realm, when the configuration object's hash annotation does not match its file, or when the identity provider's Deployment is not one the console may configure. Then install again."
+    private static readonly AgentRefusedPrefix = "The hive agent's configuration does not validate for version "
+    private static readonly AgentRefusedWhere = ' in the tenant admin console (Configuration, ' + ReleaseApp.HiveAgent + '), then install again. The hive agent was not moved onto this release and the identity provider was not changed. ('
+    private static readonly AgentNotPreparedPrefix = "The tenant admin console did not prepare the hive agent's configuration for this release within "
+    private static readonly AgentNotPreparedSuffix = ' minutes. The hive agent was not moved onto this release and the identity provider was not changed. The console prepares it when it starts: its Configuration page for ' + ReleaseApp.HiveAgent + ' shows a refusal or an error. Then install again.'
+    private static readonly AgentNotRolledMessage = 'The hive agent did not finish rolling onto this release; its previous pod keeps serving (it surges), and the identity provider was not changed. Check the agent in the cluster, then install again.'
     private static readonly NoIdpDigestMessage = "The release's component descriptors name no descriptor for the identity provider, so its configuration cannot be prepared; the identity provider was not changed. Publish a complete release."
     private static readonly MinuteMs = 60_000
     private static readonly IdpPutBackMessage = 'The identity provider did not start on this release; its previous version was put back and runs again. Why the new one stopped:'
@@ -267,6 +275,7 @@ export class TenantConsoleInstaller
         [ConsoleInstallStep.StoringSecrets]: "Could not store the console's Secrets or the release descriptors in the cluster.",
         [ConsoleInstallStep.WaitingForRollout]: 'The console did not roll out.',
         [ConsoleInstallStep.PreparingConfiguration]: "Could not read whether the console prepared the identity provider's configuration for this release.",
+        [ConsoleInstallStep.RollingOutAgent]: 'The hive agent did not roll out.',
         [ConsoleInstallStep.RollingOutIdp]: 'The identity provider did not roll out.',
         [ConsoleInstallStep.SeedingOwner]: "Could not seed the tenant's Owner in the in-hive identity provider.",
     }
@@ -409,7 +418,10 @@ export class TenantConsoleInstaller
         const release = this.releaseDescriptors?.ReleaseOfConsole()
         const run = new ConsoleInstallRun(hiveId, new Date(this.clock.Now()).toISOString())
         this.runs.set(hiveId, run)
-        run.settled = this.Run(run, hive, tenant, spec, channelUrl, { tenantAdmin: tenantAdminImage, idp: idpImage, postgres: postgresImage, release })
+        // The hive agent moves onto the same release (the console install is the hive's upgrade to it); none offered, or one
+        // from another release than the delivered descriptors (its configuration is prepared for those): held, not rolled.
+        const agent = this.releaseDescriptors === undefined || this.releaseDescriptors.SameRelease(ReleaseApp.HiveAgent) ? this.platformImages.ImageOf(ReleaseApp.HiveAgent) : undefined
+        run.settled = this.Run(run, hive, tenant, spec, channelUrl, { tenantAdmin: tenantAdminImage, idp: idpImage, postgres: postgresImage, release, agent })
         return run.Snapshot()
     }
 
@@ -687,6 +699,10 @@ export class TenantConsoleInstaller
             {
                 await kubectl.Create(item)
             }
+            // The hive agent an earlier bundle rendered becomes a configuration target too: its empty objects created when
+            // missing, its own Deployment held (image, environment, template annotations) with the configuration attached.
+            // Neither its RBAC nor its token is touched.
+            await this.HoldAgent(kubectl, hive.id)
             // A running IdP gets the new labels on its own pod template, so the restarted console finds it as a configuration
             // target while the IdP does not roll.
             const live = await kubectl.Find(idpName, C.DeploymentPrefix + idpName)
@@ -745,8 +761,20 @@ export class TenantConsoleInstaller
                 {
                     throw new ConsoleInstallStepError(C.NoIdpDigestMessage)
                 }
-                await this.AwaitPrepared(kubectl, idpName, idpDigest)
+                await this.AwaitPrepared(kubectl, idpName, idpDigest, ReleaseApp.TenantIdp)
             }
+            // Then the hive agent onto the release (its token reused, its applied configuration kept), once its configuration is
+            // prepared for the release's agent descriptor: a surge roll, so the old agent serves until the new one is ready.
+            if (descriptors !== undefined && images.agent !== undefined)
+            {
+                const agentDigest = ReleaseDescriptorsConfigMap.DigestOf(descriptors, ReleaseApp.HiveAgent)
+                if (agentDigest !== undefined)
+                {
+                    await this.AwaitPrepared(kubectl, system, agentDigest, ReleaseApp.HiveAgent)
+                }
+            }
+            this.Enter(run, ConsoleInstallStep.RollingOutAgent)
+            await this.RollOutAgent(kubectl, hive.id, channelUrl, images.agent)
             // Then the IdP: its Deployment with the release's image, restarted for the new Secrets.
             this.Enter(run, ConsoleInstallStep.RollingOutIdp)
             await this.RollOutIdp(kubectl, idpName, parts, live, putBack)
@@ -788,7 +816,16 @@ export class TenantConsoleInstaller
             await kubectl.RolloutStatus(idpName, idpName)
             return
         }
-        await kubectl.Apply(parts.IdpDeploymentRestartedAt(new Date(this.clock.Now()).toISOString(), live))
+        const rolled = parts.IdpDeploymentRestartedAt(new Date(this.clock.Now()).toISOString(), live)
+        // A configuration volume the running template carries but no container mounts (a hand-built template's) is owned by
+        // the hold's field manager, which a client-side apply never releases: the roll is applied server-side first, in the
+        // same revision, then client-side as always (the same template: no second revision; it records what a put-back
+        // removes).
+        if (ConsoleBootstrapSplit.StaleConfigurationVolumes(live).length > 0)
+        {
+            await kubectl.ApplyServerSide(rolled)
+        }
+        await kubectl.Apply(rolled)
         try
         {
             await kubectl.RolloutStatus(idpName, idpName)
@@ -813,6 +850,19 @@ export class TenantConsoleInstaller
         }
         const back = await kubectl.RolloutStatus(idpName, idpName).then(() => true, () => false)
         throw new ConsoleInstallStepError(C.WithDetail(back ? C.IdpPutBackMessage : C.IdpPutBackPendingMessage, reason))
+    }
+
+    // The running agent with the configuration attached (AgentConfigurationHold); nothing when no agent Deployment runs.
+    private async HoldAgent(kubectl: IKubectl, hiveId: string): Promise<void>
+    {
+        const C = TenantConsoleInstaller
+        const hold = AgentConfigurationHold.Of(await kubectl.Find(K8sManifestBuilder.SystemNamespace, C.DeploymentPrefix + K8sManifestBuilder.HiveAgentNameOf(hiveId)))
+        if (hold === undefined) return
+        for (const item of AgentConfigurationHold.ConfigurationObjects(hiveId))
+        {
+            await kubectl.Create(item)
+        }
+        await kubectl.ApplyServerSide(hold)
     }
 
     // The Deployment's own verdict once kubectl's wait ended without one.
@@ -843,10 +893,11 @@ export class TenantConsoleInstaller
      * (ComponentConfigurationReadiness over the status it records). A refusal stops the install naming the settings that
      * must change; no answer in PreparationTimeoutMs stops it too. Either way the IdP has not been touched.
      */
-    private async AwaitPrepared(kubectl: IKubectl, namespace: string, digest: string): Promise<void>
+    private async AwaitPrepared(kubectl: IKubectl, namespace: string, digest: string, component: ReleaseApp.TenantIdp | ReleaseApp.HiveAgent): Promise<void>
     {
         const C = TenantConsoleInstaller
-        const resource = C.ConfigMapPrefix + AppliedConfigurationKeys.ObjectNamePrefix + ReleaseApp.TenantIdp
+        const agent = component === ReleaseApp.HiveAgent
+        const resource = C.ConfigMapPrefix + AppliedConfigurationKeys.ObjectNamePrefix + component
         for (let attempt = 0; ; attempt += 1)
         {
             const readiness = ComponentConfigurationReadiness.Of(await kubectl.Find(namespace, resource), digest)
@@ -854,10 +905,40 @@ export class TenantConsoleInstaller
             if (readiness.State === ConfigurationReadinessState.Refused && readiness.Refusal !== undefined)
             {
                 const r = readiness.Refusal
-                throw new ConsoleInstallStepError(C.RefusedPrefix + r.ComponentVersion + C.RefusedChange + r.Settings.join(C.SettingsSeparator) + C.RefusedWhere + r.Reason + C.RefusedEnd)
+                const [prefix, where] = agent ? [C.AgentRefusedPrefix, C.AgentRefusedWhere] : [C.RefusedPrefix, C.RefusedWhere]
+                throw new ConsoleInstallStepError(prefix + r.ComponentVersion + C.RefusedChange + r.Settings.join(C.SettingsSeparator) + where + r.Reason + C.RefusedEnd)
             }
-            if (attempt * C.PreparationPollMs >= C.PreparationTimeoutMs) throw new ConsoleInstallStepError(C.NotPreparedPrefix + String(C.PreparationTimeoutMs / C.MinuteMs) + C.NotPreparedSuffix)
+            if (attempt * C.PreparationPollMs >= C.PreparationTimeoutMs)
+            {
+                const minutes = String(C.PreparationTimeoutMs / C.MinuteMs)
+                throw new ConsoleInstallStepError(agent ? C.AgentNotPreparedPrefix + minutes + C.AgentNotPreparedSuffix : C.NotPreparedPrefix + minutes + C.NotPreparedSuffix)
+            }
             await this.clock.Delay(C.PreparationPollMs)
+        }
+    }
+
+    /**
+     * The hive agent onto the release's agent image (AgentConfigurationHold.ReleaseRoll: the hive's token Secret reused, the
+     * running template's configuration annotations kept), applied client-side and awaited. The agent surges with a readiness
+     * gate, so a new agent that does not start leaves the old one serving; the install then stops before the IdP is
+     * touched, saying so. Nothing to roll without an agent Deployment or a release agent image.
+     */
+    private async RollOutAgent(kubectl: IKubectl, hiveId: string, channelUrl: string, image: string | undefined): Promise<void>
+    {
+        const C = TenantConsoleInstaller
+        if (image === undefined) return
+        const system = K8sManifestBuilder.SystemNamespace
+        const name = K8sManifestBuilder.HiveAgentNameOf(hiveId)
+        const roll = AgentConfigurationHold.ReleaseRoll(await kubectl.Find(system, C.DeploymentPrefix + name), hiveId, channelUrl, image)
+        if (roll === undefined) return
+        await kubectl.Apply(roll)
+        try
+        {
+            await kubectl.RolloutStatus(system, name)
+        }
+        catch (waited)
+        {
+            throw new ConsoleInstallStepError(C.WithDetail(C.AgentNotRolledMessage, C.KubectlText(waited)))
         }
     }
 

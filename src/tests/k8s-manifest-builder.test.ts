@@ -279,7 +279,7 @@ describe('K8sManifestBuilder.RenderHiveAgent', () =>
         assert.equal(role.metadata.name, K8sManifestBuilder.HiveAgentNameOf(HiveId))
     })
 
-    it('deployment env has hive id, registry url, secret token and no env name', () =>
+    it('deployment env has hive id, registry url, the token as a mounted file and no env name', () =>
     {
         const dep = HiveFixture.Of('Deployment')
         const pod = dep.spec.template.spec
@@ -290,9 +290,10 @@ describe('K8sManifestBuilder.RenderHiveAgent', () =>
         assert.equal(byName('PRAGMATIC_AGENT_HIVE_ID').value, HiveId)
         assert.equal(byName('PRAGMATIC_AGENT_REGISTRY_URL').value, Registry)
         assert.equal(byName('PRAGMATIC_AGENT_ENV_NAME'), undefined)
-        const token = byName('PRAGMATIC_AGENT_TOKEN')
-        assert.equal(token.value, undefined)
-        assert.equal(token.valueFrom.secretKeyRef.name, TokenSecret)
+        assert.equal(byName('PRAGMATIC_AGENT_TOKEN'), undefined, 'never in the process environment')
+        const file = byName('PRAGMATIC_AGENT_TOKEN_FILE').value as string
+        const mount = c.volumeMounts.find((m: any) => file.startsWith(m.mountPath + '/'))
+        assert.equal(pod.volumes.find((v: any) => v.name === mount.name).secret.secretName, TokenSecret)
     })
 
     it('env server deployment carries the hive and environment labels on its metadata', () =>

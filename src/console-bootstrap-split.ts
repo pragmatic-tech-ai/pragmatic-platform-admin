@@ -125,6 +125,22 @@ export class ConsoleBootstrapSplit
         return S.List([{ ...this.idp, spec }])
     }
 
+    /**
+     * The volumes of the running template (`live`, as kubectl returns it) whose ConfigMap is a `pragmatic-config-<component>`
+     * and that no container or init container mounts: left by a hand-built template (the staff IdP's b6 `configuration`),
+     * held by every install since, and dropped by the roll that applies them server-side (C3.1 final review M3).
+     */
+    public static StaleConfigurationVolumes(live: string | undefined): string[]
+    {
+        if (live === undefined) return []
+        type Pod = { volumes?: Array<{ name?: string; configMap?: { name?: string } }>; containers?: Array<{ volumeMounts?: Array<{ name?: string }> }>; initContainers?: Array<{ volumeMounts?: Array<{ name?: string }> }> }
+        const pod = ((JSON.parse(live) as { spec?: { template?: { spec?: Pod } } }).spec?.template?.spec) ?? {}
+        const mounted = new Set([...(pod.containers ?? []), ...(pod.initContainers ?? [])].flatMap(c => (c.volumeMounts ?? []).map(m => m.name)))
+        return (pod.volumes ?? [])
+            .filter(v => v.configMap?.name?.startsWith(AppliedConfigurationKeys.ObjectNamePrefix) === true && !mounted.has(v.name))
+            .map(v => v.name as string)
+    }
+
     // An empty configuration object (no data): the console writes into it by name.
     private static IsConfigurationObject(item: ManifestItem): boolean
     {

@@ -1,4 +1,5 @@
 import { HiveBootstrapBundle, type HiveBootstrapDto } from './hive-bootstrap-bundle.js'
+import { AgentConfigurationHold } from './agent-configuration-hold.js'
 import { type IHiveOrchestrator, K8sManifestBuilder, HiveBackend, type HiveRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { KubectlError, SystemInstallClock, type IInstallClock } from '@pragmatic-tech-ai/pragmatic-kube'
 import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
@@ -139,6 +140,7 @@ export class HiveAgentInstaller
 {
     public static readonly DefaultTiming: InstallTiming = { pollIntervalMs: 2000, timeoutMs: 15 * 60 * 1000 }
 
+    private static readonly DeploymentPrefix = 'deployment/'
     private static readonly NotLocalMessage = 'Automatic install is not available for this hive: the control plane does not manage its cluster. Install the agent manually.'
     private static readonly ChannelOffMessage = 'Automatic install is not available: the agent channel is not configured (set PRAGMATIC_AGENT_CHANNEL_PORT or PRAGMATIC_AGENT_CHANNEL_URL to the channel of the platform edge).'
     private static readonly TimeoutMessage = 'The agent did not check in in time. On a fresh cluster its image may still be loading: check its pod with `kubectl -n pragmatic-system get pods`, then retry.'
@@ -266,7 +268,9 @@ export class HiveAgentInstaller
             this.Enter(run, InstallStep.PreparingCluster)
             await orchestrator.PrepareAgent(agentImage)
             this.Enter(run, InstallStep.ApplyingAgent)
-            await orchestrator.Kubectl.Apply(bundle.manifest)
+            // The running agent's applied configuration stays on its pod template (a console install recorded it there).
+            const live = await orchestrator.Kubectl.Find(K8sManifestBuilder.SystemNamespace, HiveAgentInstaller.DeploymentPrefix + K8sManifestBuilder.HiveAgentNameOf(hive.id))
+            await orchestrator.Kubectl.Apply(AgentConfigurationHold.KeepingAnnotations(bundle.manifest, live))
             this.Enter(run, InstallStep.StoringToken)
             // Store first, commit after: a failed store leaves the hive's previous token valid.
             token = this.tokens.NewAgentToken()

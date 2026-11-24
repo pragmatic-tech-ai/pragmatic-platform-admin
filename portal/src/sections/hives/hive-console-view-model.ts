@@ -46,6 +46,7 @@ export class HiveConsoleViewModel extends Observable
         [ConsoleInstallStep.StoringSecrets, 'Store its secrets'],
         [ConsoleInstallStep.WaitingForRollout, 'Wait for the console to start'],
         [ConsoleInstallStep.PreparingConfiguration, 'Prepare the configurations for this release'],
+        [ConsoleInstallStep.RollingOutAgent, 'Update the hive agent'],
         [ConsoleInstallStep.RollingOutIdp, 'Start the identity provider'],
         [ConsoleInstallStep.SeedingOwner, 'Create the Owner account'],
     ]

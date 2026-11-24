@@ -24,6 +24,13 @@ export class ConsoleReleaseDescriptors
         return this.releases.ReleaseOf(ReleaseApp.TenantAdmin)
     }
 
+    /** Whether `app`'s offered image comes from the release whose descriptors the console install delivers (the hive agent
+     *  is rolled with the console only then: its configuration is prepared for that release's descriptor). */
+    public SameRelease(app: ReleaseApp): boolean
+    {
+        return this.releases.ReleaseOf(app) === this.ReleaseOfConsole()
+    }
+
     /**
      * Whether the console's images (tenant-admin, the IdP, pragmatic-postgres) come from different releases (the newest
      * release per app differs when the newest one lacks an app): then no one release's descriptors describe what runs.

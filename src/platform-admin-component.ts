@@ -11,7 +11,7 @@ export class PlatformAdminComponent
 {
     public static readonly Name = 'pragmatic-platform-admin'
     /** The descriptor version: this application's package version (the release test pins it to package.json). */
-    public static readonly Version = '0.1.5'
+    public static readonly Version = '0.1.6'
 
     private static readonly Declaration: ComponentDeclaration = {
         name: PlatformAdminComponent.Name,
