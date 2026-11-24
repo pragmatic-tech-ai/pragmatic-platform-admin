@@ -1,7 +1,7 @@
 import { ApiError, AppSessionClient, type FetchFunction } from '@pragmatic-tech-ai/pragmatic-app-shell'
 import { BrowserEventSockets, type IEventSocket, type IEventSocketFactory } from './shell/event-sockets.js'
 import { PlatformShell } from './shell/platform-shell.js'
-import type { HostDto, HostCodeDto, StaffOperatorDto, ClientDto, CreatedTenantDto, EnvironmentDto, HiveDto, FleetHiveDto, ManifestDto, OperatorSummaryDto, GatingDto, SelectionDto, HiveRolloutDto, TenantDto, GraphDto, GraphLoadedDto, PromotionResultDto, ProvisionInputDto, ProvisionResultDto, PolicyDto, ActivityDto, ObservationDto, LedgerDto, HiveBootstrapDto, RolloutRegistrationDto, AgentInstallStatusDto, HiveDeleteOutcomeDto, OwnerPasswordResetDto, HiveConsoleSpecDto, ConsoleInstallStatusDto, ConsoleRemovalDto, InHiveOwnerPasswordDto, ReleaseRefreshDto, TenantEmailDomainsDto, ProvisionRollbackDto } from './portal-types.js'
+import type { HostDto, HostCodeDto, StaffOperatorDto, ClientDto, CreatedTenantDto, EnvironmentDto, HiveDto, FleetHiveDto, ManifestDto, OperatorSummaryDto, GatingDto, SelectionDto, HiveRolloutDto, TenantDto, GraphDto, GraphLoadedDto, PromotionResultDto, ProvisionInputDto, ProvisionResultDto, PolicyDto, ActivityDto, ObservationDto, LedgerDto, HiveBootstrapDto, RolloutRegistrationDto, AgentInstallStatusDto, HiveDeleteOutcomeDto, OwnerPasswordResetDto, HiveConsoleSpecDto, ConsoleInstallStatusDto, ConsoleRemovalDto, InHiveOwnerPasswordDto, ReleaseRefreshDto, TenantEmailDomainsDto, ProvisionRollbackDto, IntentDto } from './portal-types.js'
 
 // The shell's error type: thrown for every non-2xx control-plane answer, its message the server's error text, its
 // Code the server's machine-readable code and its Body the whole error reply (a provision's rollback).
@@ -90,6 +90,12 @@ export class ControlPlaneClient extends AppSessionClient
     private static readonly LimitParam = 'limit'
     private static readonly PoliciesRoute = '/api/policies'
     private static readonly PolicySegment = 'policy'
+    private static readonly IntentsSegment = 'intents'
+    private static readonly IntentsRoute = '/api/intents'
+    private static readonly ReissueSegment = 'reissue'
+    private static readonly ReleaseSegment = 'release'
+    private static readonly ActionKey = 'action'
+    private static readonly LifetimeDaysKey = 'lifetimeDays'
     private static readonly ChannelsSegment = 'channels'
     private static readonly MinVersionSegment = 'min-version'
     private static readonly HoldSegment = 'hold'
@@ -449,6 +455,31 @@ export class ControlPlaneClient extends AppSessionClient
     public async ClearHiveHold(hiveId: string): Promise<PolicyDto>
     {
         return await this.Delete<PolicyDto>(this.HivePolicyRoute(hiveId, ControlPlaneClient.HoldSegment))
+    }
+
+    // The hive's intents (C3.4: hives managed by pulls), newest first.
+    public async ListHiveIntents(hiveId: string): Promise<IntentDto[]>
+    {
+        const reply = await this.Get<{ intents: IntentDto[] }>(this.HiveSubRoute(hiveId, ControlPlaneClient.IntentsSegment))
+        return reply.intents
+    }
+
+    // Publishes a signed intent for the hive; refused 409 `hive-takes-no-intents` for a hive the platform pushes to.
+    public async PublishHiveIntent(hiveId: string, action: Record<string, unknown>, lifetimeDays: number): Promise<IntentDto>
+    {
+        return await this.Post<IntentDto>(this.HiveSubRoute(hiveId, ControlPlaneClient.IntentsSegment), { [ControlPlaneClient.ActionKey]: action, [ControlPlaneClient.LifetimeDaysKey]: lifetimeDays })
+    }
+
+    // Reissues an intent (an expired or failed one) under a new id; the old one is marked superseded.
+    public async ReissueIntent(intentId: string): Promise<IntentDto>
+    {
+        return await this.Post<IntentDto>(this.ItemRoute(ControlPlaneClient.IntentsRoute, intentId) + ControlPlaneClient.PathSeparator + ControlPlaneClient.ReissueSegment)
+    }
+
+    // Moves a pulling hive to a release: one component-at-version intent per changed engine component.
+    public async SelectHiveRelease(hiveId: string, version: string): Promise<void>
+    {
+        await this.Post<unknown>(this.HiveSubRoute(hiveId, ControlPlaneClient.ReleaseSegment), { [ControlPlaneClient.VersionKey]: version })
     }
 
     private HiveSubRoute(hiveId: string, segment: string): string

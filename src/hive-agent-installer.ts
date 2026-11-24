@@ -5,6 +5,7 @@ import { KubectlError, SystemInstallClock, type IInstallClock } from '@pragmatic
 import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { DevPlatformImages, PlatformImages, type IPlatformImages } from './platform-images.js'
 import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { HiveReach } from './hive-reach.js'
 
 /** Where an automatic agent install stands. Values are the wire strings. */
 export enum InstallState
@@ -198,6 +199,7 @@ export class HiveAgentInstaller
         {
             throw new UnknownHiveError(hiveId)
         }
+        HiveReach.Require(hive)
         if (hive.cluster.backend !== HiveBackend.Local)
         {
             throw new AgentInstallUnavailableError(HiveAgentInstaller.NotLocalMessage)

@@ -119,7 +119,7 @@ describe('AgentExchangeRoute', () =>
     {
         const warnings: string[] = []
         const composed = await HiveChannel.Compose({
-            Session: undefined as never, Hives: world.Directory, Codes: world.Codes, Observations: world.Observations, Keys: undefined as never, KeyRef: 'platform-signing',
+            Session: undefined as never, Hives: world.Directory, Intents: world.Intents, Sequences: world.Sequences, Codes: world.Codes, Observations: world.Observations, Keys: undefined as never, KeyRef: 'platform-signing',
             ChannelUrl: 'http://agent.pragmatic.test', Warn: line => warnings.push(line),
         })
         assert.equal(composed, undefined)

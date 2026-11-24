@@ -11,7 +11,7 @@ import { ApiError, type ControlPlaneClient } from '../../api-client.js'
 import { PlatformShell } from '../platform-shell.js'
 import { OperatorContext } from '../../operator-context.js'
 import { AgentInstallState, AgentInstallStep, ConsoleInstallState, ConsoleInstallStep, DomainApprovalState, EmailDomainSource, type AgentInstallStatusDto, type ConsoleInstallStatusDto, type TenantEmailDomainsDto, type ClientEntitlementDto } from '../../portal-types.js'
-import type { ConsoleRemovalDto, HiveConsoleSpecDto, HiveDeleteOutcomeDto, InHiveOwnerPasswordDto, OwnerPasswordResetDto } from '../../portal-types.js'
+import type { IntentDto, ConsoleRemovalDto, HiveConsoleSpecDto, HiveDeleteOutcomeDto, InHiveOwnerPasswordDto, OwnerPasswordResetDto } from '../../portal-types.js'
 import type { ActivityDto, HostCodeDto, HostDto, ClientDto, CreatedTenantDto, FleetHiveDto, GatingDto, HiveBootstrapDto, HiveDto, HiveRolloutDto, LedgerDto, ManifestDto, ObservationDto, OperatorSummaryDto, StaffOperatorDto, PolicyDto, ProvisionInputDto, ProvisionResultDto, ReleaseRefreshDto, SelectionDto, TenantDto } from '../../portal-types.js'
 import { DownloadService } from '../download-service.js'
 import { PollScheduling, type IPollScheduler } from '../poll-scheduler.js'
@@ -979,6 +979,55 @@ export class FakeControlPlane
         const next = change(this.Hives[at] as HiveDto)
         this.Hives[at] = next
         return { ...next }
+    }
+
+    // The intents of hives managed by pulls (C3.4): listed newest first; publishes, reissues and release selections recorded.
+    public Intents: IntentDto[] = []
+    public readonly PublishedIntents: Array<[string, Record<string, unknown>, number]> = []
+    public readonly SelectedReleases: Array<[string, string]> = []
+    public IntentFailure: Error | undefined
+
+    public async ListHiveIntents(_hiveId: string): Promise<IntentDto[]>
+    {
+        return this.Intents.map(intent => ({ ...intent }))
+    }
+
+    public async PublishHiveIntent(hiveId: string, action: Record<string, unknown>, lifetimeDays: number): Promise<IntentDto>
+    {
+        if (this.IntentFailure !== undefined)
+        {
+            throw this.IntentFailure
+        }
+        this.PublishedIntents.push([hiveId, action, lifetimeDays])
+        const intent = FakeControlPlane.Intent('in' + String(this.Intents.length).padStart(12, 'a'), action)
+        this.Intents.unshift(intent)
+        return { ...intent }
+    }
+
+    public async ReissueIntent(intentId: string): Promise<IntentDto>
+    {
+        const old = this.Intents.find(intent => intent.id === intentId)
+        if (old === undefined)
+        {
+            throw new ApiError(ApiError.NotFoundStatus, 'not found')
+        }
+        const fresh = { ...FakeControlPlane.Intent(intentId + 'r', old.action), reissues: intentId }
+        old.supersededBy = fresh.id
+        this.Intents.unshift(fresh)
+        return { ...fresh }
+    }
+
+    public async SelectHiveRelease(hiveId: string, version: string): Promise<void>
+    {
+        this.SelectedReleases.push([hiveId, version])
+    }
+
+    public static Intent(id: string, action: Record<string, unknown>, progress: string | null = null, expired: boolean = false): IntentDto
+    {
+        return {
+            id, sequence: 1, level: 'enrolled', action, issuedAt: '2026-11-24T10:00:00.000Z', expiresAt: '2026-12-01T10:00:00.000Z', expired, progress, failure: null,
+            decision: null, supersededBy: null, reissues: null, publishedBy: 'operator:op@example.test',
+        }
     }
 
     public AsClient(): ControlPlaneClient

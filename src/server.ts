@@ -8,6 +8,12 @@ import { LocalDesktopDiscoveryBackend } from './desktop-discovery-backend.js'
 import { DesktopDiscoveryEndpoint } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { InternalHost } from './internal/internal-host.js'
 import { HiveChannel } from './hive-channel/hive-channel.js'
+import { IntentOutbox } from './intents/intent-outbox.js'
+import { IntentPublisher } from './intents/intent-publisher.js'
+import { IntentStore } from './intents/intent-record.js'
+import { OperatorIntentRoutes } from './intents/operator-intent-routes.js'
+import { RolloutIntents } from './intents/rollout-intents.js'
+import { SqlIntentSequences } from './intents/sql-intent-sequences.js'
 import { InternalSettings } from './internal/internal-settings.js'
 import { ClientProjection } from './entitlements/client-projection.js'
 import { SqlEntitlementSink } from './entitlements/sql-entitlement-sink.js'
@@ -335,7 +341,13 @@ export class ControlPlaneServer
         const ownerResets = new ConsoleOwnerResets(await database.Map(PlatformAdminRegistry.ConsoleOwnerResets))
         await Promise.all([manifests.Load(), desktopAudit.Load(), graphAudit.Load(), gating.Load(), selections.Load(), observations.Load(), registrations.Load(), policies.Load(), ledger.Load(), adminClientRegistry.Load(), accountIndex.Load(), adverts.Load(), approvals.Load(), ownerResets.Load()])
         await accountIndex.BackfillFrom(directory)
-        const deployments = new PlatformDeploymentRegistry(manifests, gating, selections, registrations, directory, orchestrators, registry, placement, observations, ControlPlaneServer.ManifestSignerOf(signing.PlatformSigner.KeyRef, signing.ImageSigner, digests, signatures), policies, ledger)
+        // Each pulling hive's signed intents (C3.4), signed under the platform signing key (the trust root hives adopted).
+        const intentStore = new IntentStore(await database.Map(PlatformAdminRegistry.HiveIntents))
+        await intentStore.Load()
+        const intents = new IntentOutbox(intentStore)
+        const intentSequences = await SqlIntentSequences.Open(database.Session)
+        const intentPublisher = new IntentPublisher(intents, directory, await HiveChannel.SignerOf(keys, signing.PlatformSigner.KeyRef), intentSequences)
+        const deployments = new PlatformDeploymentRegistry(manifests, gating, selections, registrations, directory, orchestrators, registry, placement, observations, ControlPlaneServer.ManifestSignerOf(signing.PlatformSigner.KeyRef, signing.ImageSigner, digests, signatures), policies, ledger, new RolloutIntents(intentPublisher, intents))
         // The release catalogue and its poll are operator-side: composed (and their settings validated) before any listener
         // starts, and never by the edge.
         // Release images are countersigned by their registry digest (never a local docker id), into the same signature store.
@@ -375,7 +387,7 @@ export class ControlPlaneServer
         const clientLock = new ClientLock()
         const customerApi = new PlatformCustomerApiService({
             Statements: entitlements, Directory: directory, Domains: emailDomains, Usage: usage, Lock: clientLock, Codes: codes, Placements: hostedPlacements,
-            Releases: deployments, Registrations: deployments, Reports: observations, Adverts: adverts,
+            Releases: deployments, Registrations: deployments, Reports: observations, Adverts: adverts, Intents: intentPublisher,
             Activity: new AuditTrail(audit, { MaxTargetLength: ControlPlaneHost.MaxAuditTargetLength }),
         })
         const agentBackend = ControlPlaneServer.AgentChannelBackendOf(deployments, directory, adverts, ownerResets, emailDomains)
@@ -395,7 +407,7 @@ export class ControlPlaneServer
         // The signed agent exchange (C3.3): enrolment by one-time code and signed reports, answered under the platform
         // signing key (the trust root every enrolled hive adopts).
         const exchange = internalSettings === undefined ? undefined : await HiveChannel.Compose({
-            Session: database.Session, Hives: directory, Codes: codes, Observations: observations, Keys: keys, KeyRef: signing.PlatformSigner.KeyRef, ChannelUrl: agentChannelUrl,
+            Session: database.Session, Hives: directory, Intents: intents, Sequences: intentSequences, Codes: codes, Observations: observations, Keys: keys, KeyRef: signing.PlatformSigner.KeyRef, ChannelUrl: agentChannelUrl,
             Hosts: hostChannel,
         })
         const internalStart = internalSettings === undefined ? undefined
@@ -419,6 +431,7 @@ export class ControlPlaneServer
             OperatorSignIn: staffSignIn?.SignIn, StaffOperators: staffSignIn?.Directory,
             Entitlements: new OperatorEntitlementGate(entitlements, usage, clientLock),
             Hosts: new HostRoutes(hostRegistry, hostedPlacements, codes),
+            Intents: new OperatorIntentRoutes(intentPublisher, intents, deployments),
         })
         const port = ControlPlaneServer.ResolvePort(process.env[ControlPlaneServer.PortEnvVar])
         // Resolve (and validate) the tenant port + bind BEFORE binding the operator listener, so a misconfigured

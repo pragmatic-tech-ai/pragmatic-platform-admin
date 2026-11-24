@@ -5,7 +5,7 @@ import { SelectionRegistry } from '../selection-record.js'
 import { HiveObservationRegistry } from '../hive-observation-record.js'
 import { RolloutRegistrationRegistry } from '../rollout-registration-record.js'
 import { ReleasePolicyRegistry } from '../release-policy-record.js'
-import { PlatformDeploymentRegistry } from '../platform-deployment-registry.js'
+import { PlatformDeploymentRegistry, type IReleaseIntents } from '../platform-deployment-registry.js'
 import type { PlatformDirectory } from '../platform-directory.js'
 
 /** Test support: composes a real PlatformDeploymentRegistry over JSON files under a temp directory. */
@@ -32,7 +32,7 @@ export class RolloutFixture
         return new HiveObservationRegistry(join(dir, RolloutFixture.ObservationsFile))
     }
 
-    public static async Create(dir: string, directory: PlatformDirectory, orchestrators: HiveOrchestratorFactory): Promise<PlatformDeploymentRegistry>
+    public static async Create(dir: string, directory: PlatformDirectory, orchestrators: HiveOrchestratorFactory, releaseIntents?: IReleaseIntents): Promise<PlatformDeploymentRegistry>
     {
         const manifests = new ManifestRegistry(join(dir, RolloutFixture.ManifestsFile))
         const gating = new GatingRegistry(join(dir, RolloutFixture.GatingFile))
@@ -42,6 +42,6 @@ export class RolloutFixture
         const policies = new ReleasePolicyRegistry(join(dir, RolloutFixture.ReleasePoliciesFile))
         const ledger = RolloutFixture.Ledger(dir)
         await Promise.all([ledger.Load(), manifests.Load(), gating.Load(), selections.Load(), observations.Load(), registrations.Load(), policies.Load()])
-        return new PlatformDeploymentRegistry(manifests, gating, selections, registrations, directory, orchestrators, { List: () => [] }, new EnvironmentPlacement(directory), observations, undefined, policies, ledger)
+        return new PlatformDeploymentRegistry(manifests, gating, selections, registrations, directory, orchestrators, { List: () => [] }, new EnvironmentPlacement(directory), observations, undefined, policies, ledger, releaseIntents)
     }
 }

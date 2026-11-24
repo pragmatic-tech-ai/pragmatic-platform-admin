@@ -64,6 +64,12 @@ export type PlatformHiveRecord = HiveRecord & {
     enrolledBy?: string
     /** The hosted placement the hive was placed by (C5.1), once its host placed it. */
     placementId?: string
+    /** When the hive last rotated its key (C3.4); absent until it first does. */
+    keyRotatedAt?: string
+    /** The key a rotation replaced, kept until the hive first uses its new key (or the grace ends), so a hive whose
+     *  acknowledgement was lost can ask again under it. */
+    previousPublicKey?: string
+    previousKeyId?: string
 }
 
 /** An enrolled hive's console address (the hive protocol's ConsoleAddress, kept in the record's own casing). */
@@ -91,6 +97,22 @@ export class PlatformHiveRecords
     public static IsEnrolled(hive: PlatformHiveRecord): boolean
     {
         return hive.publicKey !== undefined
+    }
+
+    /**
+     * Whether the hive is managed by pulled intents (C3.4): enrolled by its own key at Enrolled or Delegated, and not left.
+     * Standalone never enrols; Hosted hives and those without a level (all on our machines) are managed by push.
+     */
+    public static TakesIntents(hive: PlatformHiveRecord): boolean
+    {
+        const level = hive.level
+        return (level === HiveLevel.Enrolled || level === HiveLevel.Delegated) && PlatformHiveRecords.IsEnrolled(hive) && !PlatformHiveRecords.HasLeft(hive)
+    }
+
+    /** Whether the platform may push to the hive (C3.4): only Hosted hives and records without a level (all on our machines). */
+    public static Pushable(hive: PlatformHiveRecord): boolean
+    {
+        return hive.level === undefined || hive.level === HiveLevel.Hosted
     }
 
     /** Whether the hive serves its tenant's console: one the operator configured, or the engine console it enrolled from. */

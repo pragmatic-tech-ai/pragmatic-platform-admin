@@ -31,6 +31,8 @@ import { type DesktopDiscoveryEndpoint, ReleaseRegistryUnavailableError } from '
 import { Channel, ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { OperatorSocketRegistry } from './operator-socket-registry.js'
 import type { HostRoutes } from './hosts/host-routes.js'
+import type { OperatorIntentRoutes } from './intents/operator-intent-routes.js'
+import { HiveReach } from './hive-reach.js'
 import type { PlatformDirectory } from './platform-directory.js'
 import { HiveBootstrapBundle } from './hive-bootstrap-bundle.js'
 import { DevPlatformImages, PlatformImages, type IPlatformImages } from './platform-images.js'
@@ -201,6 +203,8 @@ export interface ControlPlaneHostOptions
     Entitlements?: OperatorEntitlementGate
     /** The hosts' operator routes (C5.1: issue a host code, list hosts); absent, the routes are absent. */
     Hosts?: HostRoutes
+    /** The intents of hives managed by pulls (C3.4: list, publish, reissue, release selection); undefined leaves them unmounted. */
+    Intents?: OperatorIntentRoutes
 }
 
 /**
@@ -594,6 +598,7 @@ export class ControlPlaneHost
         write(HttpMethod.Delete, C.HiveConsolePath, ctx => this.HandleRemoveHiveConsole(ctx))
         // Hosts (C5.1).
         this.options.Hosts?.Register((pattern, handler) => read(pattern, handler), (method, pattern, handler) => write(method, pattern, handler))
+        this.options.Intents?.Register(table)
         // Environments and graphs.
         read(C.EnvironmentsPath, async ctx => ctx.WriteJson(C.StatusOk, (await this.options.Service.ListReconciled()).map(r => EnvironmentDtoMapper.ToDto(r))))
         read(C.LoadedGraphPath, async ctx => ctx.WriteJson(C.StatusOk, await this.options.Graphs.GetLoaded(ctx.Param(C.EnvParam))))
@@ -1896,8 +1901,11 @@ export class ControlPlaneHost
         const agentUninstaller = this.options.AgentUninstaller
         directory.AssertHiveDeletable(id)
         const hive = directory.GetHive(id)
-        const uninstalls = hive !== undefined && agentUninstaller?.Covers(hive) === true
-        const removesConsole = hive?.console !== undefined && consoleInstaller?.CanUninstall(hive) === true
+        // A hive managed by pulled intents is the customer's: the platform never reaches into its cluster, so deleting the
+        // record skips every cluster step (the customer uninstalls the engine).
+        const reaches = hive === undefined || HiveReach.Pushable(hive)
+        const uninstalls = reaches && hive !== undefined && agentUninstaller?.Covers(hive) === true
+        const removesConsole = reaches && hive?.console !== undefined && consoleInstaller?.CanUninstall(hive) === true
         const outcome: HiveDeleteOutcome = { retained: [], failed: [] }
         const notices: string[] = []
         if (removesConsole && !force)
@@ -1932,7 +1940,7 @@ export class ControlPlaneHost
         {
             notices.push(C.AgentLeftNotice)
         }
-        if (!force)
+        if (!force && reaches)
         {
             try
             {

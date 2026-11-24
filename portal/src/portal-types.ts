@@ -379,3 +379,20 @@ export type ConsoleRemovalDto = { hive: HiveDto; retained: string[]; notice?: st
 
 // A freshly minted one-time agent token (the rollout-registration route's reply).
 export type RolloutRegistrationDto = { token: string }
+
+// One intent of a hive managed by pulls (C3.4), as GET /api/hives/ID/intents lists it: never its envelope.
+export type IntentDto = {
+    id: string
+    sequence: number
+    level: string
+    action: Record<string, unknown>
+    issuedAt: string
+    expiresAt: string
+    expired: boolean
+    progress: string | null
+    failure: string | null
+    decision: { decision: string; realm: string; subject: string; decidedAt: string } | null
+    supersededBy: string | null
+    reissues: string | null
+    publishedBy: string
+}

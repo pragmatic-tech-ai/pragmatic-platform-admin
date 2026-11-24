@@ -206,6 +206,7 @@
     "placements": {},
     "hosts": {},
     "placement_queue": {},
+    "hive_intents": {},
     "entitlements": {}
   },
   "audit": [

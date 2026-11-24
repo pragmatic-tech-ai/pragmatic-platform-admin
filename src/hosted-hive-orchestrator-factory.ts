@@ -4,6 +4,7 @@ import { ClusterCredentialHandover } from '@pragmatic-tech-ai/pragmatic-hive-pro
 import { CredentialKubeconfigExec, HostedClusterKubectl, type IClusterCredentialSource } from './hosted-cluster-kubectl.js'
 import { NoInfraTargetBackendError } from './no-infra-target.js'
 import { PlatformHiveOrchestratorFactory } from './platform-hive-orchestrator-factory.js'
+import { HiveReach } from './hive-reach.js'
 
 /** A hosted hive was registered without the kubeconfig context of its cluster, so there is nothing to drive. Maps to 400. */
 export class HostedClusterRefMissingError extends UnsupportedBackendError
@@ -39,6 +40,7 @@ export class HostedHiveOrchestratorFactory extends PlatformHiveOrchestratorFacto
 
     public override For(hive: HiveRecord): IHiveOrchestrator
     {
+        HiveReach.Require(hive)
         const { backend, mode, configRef } = hive.cluster
         if (backend === HiveBackend.Local && mode === InfraMode.Attach)
         {

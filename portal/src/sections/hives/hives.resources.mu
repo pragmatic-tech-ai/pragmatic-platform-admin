@@ -51,6 +51,8 @@ import AgentTokenRevealPageViewModel from "./agent-token-reveal-page-view-model.
 import HiveAgentInstallViewModel from "./hive-agent-install-view-model.js"
 import AgentInstallStepViewModel from "./hive-agent-install-view-model.js"
 import HiveConsoleViewModel from "./hive-console-view-model.js"
+import HiveIntentsViewModel from "./hive-intents-view-model.js"
+import HiveIntentRowViewModel from "./hive-intents-view-model.js"
 
 resources HivesResources {
     DataTemplate [ DataType = HivesPageViewModel ] {
@@ -278,6 +280,9 @@ resources HivesResources {
                         }
                     }
 
+                    // Intents: a hive managed by pulls is told what to do by signed intents it pulls (C3.4).
+                    ContentControl [ Content = $Intents, Visibility = $TakesIntents << ToVisibility, Margin = (0,0,0,16) ]
+
                     // Credentials: referenced by name; values are never shown.
                     TextBlock [ Text = "Credentials", Style = @UiLabel, Foreground = @Fg1, Margin = (0,0,0,4) ]
                     TextBlock [ Text = "Referenced by name. No secret value is shown here.",
@@ -350,6 +355,57 @@ resources HivesResources {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // HiveIntentsViewModel: the hive's intents in plain words, a form that publishes one, reissue, a release move.
+    DataTemplate [ DataType = HiveIntentsViewModel ] {
+        StackPanel [ Orientation = Vertical ] {
+            TextBlock [ Text = "Intents", Style = @UiLabel, Foreground = @Fg1, Margin = (0,0,0,4) ]
+            TextBlock [ Text = "The platform never pushes to this hive. It publishes signed intents the hive pulls; an Enrolled hive waits for its customer's approval.",
+                        Style = @UiCaption, Foreground = @Fg2, TextWrapping = Wrap, Margin = (0,0,0,6) ]
+            Border [ Fill = @Bg1, Stroke = Pen [ Brush = @Border ], Padding = (12,10,12,10) ] {
+                StackPanel [ Orientation = Vertical ] {
+                    TextBlock [ Text = $ErrorText, Foreground = @StateDangerInk, TextWrapping = Wrap, Visibility = $HasError << ToVisibility, Margin = (0,0,0,8) ]
+                    TextBlock [ Text = $NoticeText, Foreground = @StateSuccessInk, TextWrapping = Wrap, Visibility = $HasNotice << ToVisibility, Margin = (0,0,0,8) ]
+                    TextBlock [ Text = "No intents published yet.", Foreground = @Fg2, Visibility = $HasNoIntents << ToVisibility, Margin = (0,0,0,8) ]
+                    ListBox [ Style = @PortalTableList, HorizontalAlignment = Stretch, ItemsSource = $Rows, ItemTemplate = @HiveIntentRowTemplate,
+                              Visibility = $HasIntents << ToVisibility, Margin = (0,0,0,12) ]
+                    TextBlock [ Text = "Publish an intent", Style = @UiCaption, Foreground = @Fg2 ]
+                    ComboBox [ ItemsSource = $Choices, SelectedItem = $SelectedChoice, HorizontalAlignment = Stretch, Margin = (0,0,0,8) ]
+                    TextBox [ UsesNativeInput = true, Text = $EnvironmentName, Placeholder = "Environment name, e.g. prod", Visibility = $NeedsEnvironment << ToVisibility, Margin = (0,0,0,8) ]
+                    ComboBox [ ItemsSource = $Purposes, SelectedItem = $SelectedPurpose, HorizontalAlignment = Stretch, Visibility = $NeedsPurpose << ToVisibility, Margin = (0,0,0,8) ]
+                    TextBox [ UsesNativeInput = true, Text = $Version, Placeholder = "Version, e.g. 0.1.0-early.20", Visibility = $NeedsVersion << ToVisibility, Margin = (0,0,0,8) ]
+                    TextBox [ UsesNativeInput = true, Text = $ComponentName, Placeholder = "Component, e.g. pragmatic-tenant-admin", Visibility = $NeedsComponent << ToVisibility, Margin = (0,0,0,8) ]
+                    TextBlock [ Text = "Valid for (days, 1 to 30)", Style = @UiCaption, Foreground = @Fg2 ]
+                    TextBox [ UsesNativeInput = true, Text = $LifetimeDays, Margin = (0,0,0,8) ]
+                    Button [ Variant = Primary, Command = $PublishCommand, HorizontalAlignment = Left, Margin = (0,0,0,12) ] {
+                        TextBlock [ Text = "Publish" ]
+                    }
+                    TextBlock [ Text = "Move to a release", Style = @UiCaption, Foreground = @Fg2 ]
+                    TextBox [ UsesNativeInput = true, Text = $ReleaseVersion, Placeholder = "Release, e.g. 0.1.0-early.20", Margin = (0,0,0,8) ]
+                    Button [ Variant = Secondary, Command = $SelectReleaseCommand, HorizontalAlignment = Left ] {
+                        TextBlock [ Text = "Select release" ]
+                    }
+                }
+            }
+        }
+    }
+
+    DataTemplate x:key="HiveIntentRowTemplate" [ DataType = HiveIntentRowViewModel ] {
+        Grid [ Margin = (0,2,0,2) ] {
+            ColumnDefinitions {
+                ColumnDefinition [ Width = GridLength.Star ]
+                ColumnDefinition [ Width = GridLength.Star ]
+                ColumnDefinition [ Width = GridLength.Star ]
+                ColumnDefinition [ Width = GridLength.Auto ]
+            }
+            TextBlock [ Grid.Column = 0, Text = $Sentence, Foreground = @Fg0, TextWrapping = Wrap ]
+            TextBlock [ Grid.Column = 1, Text = $StatusLabel, Foreground = @Fg1, TextWrapping = Wrap ]
+            TextBlock [ Grid.Column = 2, Text = $ExpiryLabel, Foreground = @Fg2 ]
+            Button [ Grid.Column = 3, Variant = Ghost, Command = $ReissueCommand, Visibility = $CanReissue << ToVisibility ] {
+                TextBlock [ Text = "Reissue" ]
             }
         }
     }

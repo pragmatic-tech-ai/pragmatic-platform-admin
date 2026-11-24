@@ -9,7 +9,7 @@ import { InternalApiCredential, JsonPostClient } from '@pragmatic-tech-ai/pragma
 import { CustomerCallAuthenticator, EntitlementSender, EntitlementsLink, ReceiptOutcome } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import type { CentralLoginSubject, EntitlementStatement, ICentralLoginVerifier, IEntitlementSink } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import { CustomerApiError, CustomerApiLink, CustomerErrorCode, CustomerOperation, TenantView } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
-import type { CreateTenantRequest, DomainVerification, DomainVerificationRequest, EnrolmentStart, HiveView, ICustomerApiService, LeaveHiveRequest, ListHivesRequest, ListTenantsRequest, StartEnrolmentRequest } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import type { CreateTenantRequest, DomainVerification, DomainVerificationRequest, EnrolmentStart, EnvironmentRequest, HiveView, ICustomerApiService, LeaveHiveRequest, ListHivesRequest, ListTenantsRequest, RequestEnvironmentRequest, StartEnrolmentRequest } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
 import { InternalHost, InternalLink } from '../internal-host.js'
 import { InternalSettings } from '../internal-settings.js'
 import { CentralLoginSettings } from '../../customer/central-login-settings.js'
@@ -100,6 +100,11 @@ class ListOnlyService implements ICustomerApiService
     }
 
     public LeaveHive(_customer: CentralLoginSubject, _request: LeaveHiveRequest): Promise<HiveView>
+    {
+        return ListOnlyService.Refuse()
+    }
+
+    public RequestEnvironment(_customer: CentralLoginSubject, _request: RequestEnvironmentRequest): Promise<EnvironmentRequest>
     {
         return ListOnlyService.Refuse()
     }

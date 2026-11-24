@@ -18,6 +18,17 @@ import { HiveIdAllocator } from '../hive-id-allocator.js'
 import { HiveReportHandler } from '../hive-report-handler.js'
 import { AgentExchangeRefusedError, PlatformAgentExchange } from '../platform-agent-exchange.js'
 import { PlatformKeyDirectory } from '../platform-key-directory.js'
+import { HiveKeyRotationHandler } from '../hive-key-rotation-handler.js'
+import { IntentOutbox } from '../../intents/intent-outbox.js'
+import { IntentPublisher } from '../../intents/intent-publisher.js'
+import { IntentStore, type IntentRecord } from '../../intents/intent-record.js'
+import { IntentDecisionHandler } from '../../intents/intent-decision-handler.js'
+import { HiveIntentPulls, PullHandler } from '../../intents/pull-handler.js'
+import { SqlIntentSequences } from '../../intents/sql-intent-sequences.js'
+import { PreviousKeyGrace } from '../previous-key-grace.js'
+import { PreviousKeyGraceVerifier } from '../platform-agent-exchange.js'
+import { PgSession } from '@pragmatic-tech-ai/pragmatic-realm-adapters'
+import { SqlTestSessions } from '@pragmatic-tech-ai/pragmatic-realm-adapters/testing'
 
 /** A refusal as the agent sees it through the channel: the code only. */
 export class WorldRefusalError extends Error
@@ -96,6 +107,10 @@ export class HiveChannelWorld
     public Exchange!: PlatformAgentExchange
     public Channel!: WorldChannel
     public Nonces!: INonceLedger
+    public Intents!: IntentOutbox
+    public Publisher!: IntentPublisher
+    public Sequences!: SqlIntentSequences
+    public IntentStore!: IntentStore
 
     public static async Create(nonces?: INonceLedger): Promise<HiveChannelWorld>
     {
@@ -118,7 +133,7 @@ export class HiveChannelWorld
     {
         const W = HiveChannelWorld
         const clients = new ClientRegistry(new MemoryRecordMap<ClientRecord>())
-        this.Directory = new PlatformDirectory(clients, new TenantRegistry(new MemoryRecordMap<PlatformTenantRecord>()), new HiveRegistry(new MemoryRecordMap()), { List: () => [] })
+        this.Directory = new PlatformDirectory(clients, new TenantRegistry(new MemoryRecordMap<PlatformTenantRecord>()), new HiveRegistry(new MemoryRecordMap()), { List: () => [] }, () => this.Clock.Now())
         await this.Directory.Load()
         await this.Directory.RecordClient({ id: W.ClientId, displayName: 'Acme' })
         await this.Directory.CreateTenant({ id: W.TenantA, clientId: W.ClientId, displayName: 'Acme' })
@@ -132,10 +147,19 @@ export class HiveChannelWorld
         const verifier = new EnvelopeVerifier({ Self: Participant.Platform, Keys: new PlatformKeyDirectory(this.Directory), Nonces: this.Nonces, Clock: this.Clock })
         const signer = new EnvelopeSigner(this.TrustRoot, Participant.Platform, this.Clock)
         const ids = new HiveIdAllocator(id => this.Directory.GetHive(id) !== undefined)
+        this.IntentStore = new IntentStore(new MemoryRecordMap<IntentRecord>())
+        await this.IntentStore.Load()
+        this.Intents = new IntentOutbox(this.IntentStore, () => this.Clock.Now())
+        this.Sequences = await SqlIntentSequences.Open(new PgSession(SqlTestSessions.MemPool()))
+        this.Publisher = new IntentPublisher(this.Intents, this.Directory, signer, this.Sequences)
+        const grace = new PreviousKeyGrace(this.Directory, () => this.Clock.Now())
         this.Exchange = new PlatformAgentExchange(verifier, signer, [
             new HiveEnrolmentHandler({ Codes: this.Codes, Hives: this.Directory, Reports: this.Observations, Ids: ids, TrustRoot: this.TrustRoot.PublicKey, ChannelUrl: W.ChannelUrl }),
-            new HiveReportHandler(this.Directory, this.Observations),
-        ])
+            new HiveReportHandler(this.Directory, this.Observations, this.Intents),
+            new PullHandler([new HiveIntentPulls(this.Directory, this.Intents, this.Sequences)]),
+            new IntentDecisionHandler(this.Directory, this.Intents),
+            new HiveKeyRotationHandler(this.Directory),
+        ], new PreviousKeyGraceVerifier(grace, new EnvelopeVerifier({ Self: Participant.Platform, Keys: grace, Nonces: this.Nonces, Clock: this.Clock })))
         this.Channel = new WorldChannel(this.Exchange)
     }
 }

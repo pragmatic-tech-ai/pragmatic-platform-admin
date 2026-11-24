@@ -1,8 +1,10 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { SqlTestSessions } from '@pragmatic-tech-ai/pragmatic-realm-adapters/testing'
-import { EntitlementState } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
-import { CreateTenantRequest, CustomerApiError, CustomerErrorCode, HiveHealth, HiveLevel, LeaveHiveRequest, ListHivesRequest, NotEntitledReason, StartEnrolmentRequest } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import { CentralLoginSubject, EntitlementState } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
+import { CreateTenantRequest, CustomerApiError, CustomerErrorCode, HiveHealth, HiveLevel, LeaveHiveRequest, ListHivesRequest, NotEntitledReason, RequestEnvironmentRequest, RequestedEnvironmentPurpose, StartEnrolmentRequest } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import { CreateEnvironment, Intent, SignedEnvelope } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { IntentPublisher } from '../../intents/intent-publisher.js'
 import { EntitlementSamples } from '../../entitlements/tests/entitlement-samples.js'
 import { EnrolmentCodeIssuer } from '../../enrolment/enrolment-code-issuer.js'
 import { EnrolmentAgentKind } from '../../enrolment/enrolment-code-record.js'
@@ -221,6 +223,52 @@ describe('PlatformCustomerApiService: enrolment, hives, leave', () =>
             assert.equal((await C.Code(f.Service().LeaveHive(S.Admin(), new LeaveHiveRequest(S.ClientId, C.HiveId)))).code, CustomerErrorCode.UnknownHive)
             assert.equal((await C.Code(f.Service().ListHives(S.Admin(), new ListHivesRequest(S.ClientId, C.OtherTenant)))).code, CustomerErrorCode.UnknownTenant)
             assert.equal((await C.Code(f.Service().StartEnrolment(S.Admin(), new StartEnrolmentRequest(S.ClientId, C.OtherTenant, HiveLevel.Hosted)))).code, CustomerErrorCode.UnknownTenant)
+        })
+
+        it(`${backend}: request-environment records a create-environment intent at the hive's level for its customer admin`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await C.Ready(f)
+            await f.EnrolledHive(C.HiveId, C.TenantId, HiveLevel.Delegated)
+            const answer = await f.Service().RequestEnvironment(S.Admin(), new RequestEnvironmentRequest(S.ClientId, C.HiveId, 'prod', RequestedEnvironmentPurpose.Runtime))
+            assert.match(answer.IntentId, /^in[a-z2-7]{12}$/)
+            assert.equal(answer.Level, HiveLevel.Delegated)
+            const record = f.Intents.Get(answer.IntentId)
+            assert.equal(record?.publishedBy, 'customer:' + S.Admin().Key)
+            const action = Intent.Parse(SignedEnvelope.Decode(record?.envelope as string).Body).Action as CreateEnvironment
+            assert.deepEqual([action.Environment, action.Purpose, action.Version], ['prod', 'runtime', null])
+            const again = await f.Service().RequestEnvironment(S.Admin(), new RequestEnvironmentRequest(S.ClientId, C.HiveId, 'prod', RequestedEnvironmentPurpose.Runtime))
+            assert.equal(again.IntentId, answer.IntentId, 'a repeated request answers the open intent')
+            assert.equal(f.Intents.ForHive(C.HiveId).length, 1)
+            const other = new RequestEnvironmentRequest(S.ClientId, C.HiveId, 'prod', RequestedEnvironmentPurpose.Development)
+            assert.equal((await C.Code(f.Service().RequestEnvironment(S.Admin(), other))).code, CustomerErrorCode.InvalidRequest, 'another purpose for an open request')
+        })
+
+        it(`${backend}: request-environment past the open-intent cap is rate-limited`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await C.Ready(f)
+            await f.EnrolledHive(C.HiveId, C.TenantId, HiveLevel.Enrolled)
+            for (let i = 0; i < IntentPublisher.MaxOpen; i++)
+            {
+                await f.Service().RequestEnvironment(S.Admin(), new RequestEnvironmentRequest(S.ClientId, C.HiveId, 'env-' + i, RequestedEnvironmentPurpose.Runtime))
+            }
+            const over = new RequestEnvironmentRequest(S.ClientId, C.HiveId, 'one-more', RequestedEnvironmentPurpose.Runtime)
+            assert.equal((await C.Code(f.Service().RequestEnvironment(S.Admin(), over))).code, CustomerErrorCode.RateLimited)
+        })
+
+        it(`${backend}: request-environment refuses a hive that takes no intents, another client's hive, and a non-admin`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await C.Ready(f, C.TwoHives)
+            await f.Hive(C.HiveId, C.TenantId)
+            const request = new RequestEnvironmentRequest(S.ClientId, C.HiveId, 'prod', RequestedEnvironmentPurpose.Development)
+            assert.equal((await C.Code(f.Service().RequestEnvironment(S.Admin(), request))).code, CustomerErrorCode.HiveTakesNoIntents)
+            await f.State(S.Statement(1, { ClientId: C.OtherClient }))
+            await f.Service().CreateTenant(S.Admin(), new CreateTenantRequest(C.OtherClient, C.OtherTenant, C.OtherTenant))
+            await f.EnrolledHive(C.OtherHive, C.OtherTenant, HiveLevel.Enrolled)
+            assert.equal((await C.Code(f.Service().RequestEnvironment(S.Admin(), new RequestEnvironmentRequest(S.ClientId, C.OtherHive, 'prod', RequestedEnvironmentPurpose.Runtime)))).code, CustomerErrorCode.UnknownHive)
+            assert.equal((await C.Code(f.Service().RequestEnvironment(CentralLoginSubject.Of(S.Issuer, 'gip-stranger', 'stranger@other.test'), request))).code, CustomerErrorCode.NotAdminOfClient)
         })
     })
 })

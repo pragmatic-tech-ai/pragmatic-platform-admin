@@ -1,7 +1,10 @@
 import { EntitledOperation } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import type { CentralLoginSubject, EntitlementStatement } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
-import { CustomerApiError, CustomerApiGate, CustomerErrorCode, EnrolmentStart, HiveLevel, TenantView } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
-import type { CreateTenantRequest, DomainVerification, DomainVerificationRequest, HiveView, ICustomerApiService, LeaveHiveRequest, ListHivesRequest, ListTenantsRequest, StartEnrolmentRequest } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import { CustomerApiError, CustomerApiGate, CustomerErrorCode, EnrolmentStart, EnvironmentRequest, HiveLevel, TenantView } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import type { CreateTenantRequest, DomainVerification, DomainVerificationRequest, HiveView, ICustomerApiService, LeaveHiveRequest, ListHivesRequest, ListTenantsRequest, RequestEnvironmentRequest, StartEnrolmentRequest } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import { CreateEnvironment, type EnvironmentPurpose, type IntentAction } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { IntentRefusal, IntentRefusedError } from '../intents/intent-publisher.js'
+import type { IntentRecord } from '../intents/intent-record.js'
 import { DomainNotClaimedError, DomainVerificationUnavailableError, DomainVerifyThrottledError, EmailDomainsNotEditableError, InvalidEmailDomainError, InvalidRecordIdError, type TenantRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import type { IClientStatements } from '../entitlements/client-statements.js'
 import { RecordExistsError, UnknownClientError, UnknownTenantError, type PlatformDirectory } from '../platform-directory.js'
@@ -41,6 +44,19 @@ export interface IHiveAdverts
     ForgetHive(hiveId: string): Promise<void>
 }
 
+/** Where a requested environment is recorded as a signed intent (IntentPublisher, C3.4). */
+export interface IEnvironmentIntents
+{
+    Publish(hiveId: string, action: IntentAction, publishedBy: string): Promise<IntentRecord>
+    /** The hive's open create-environment intent for `environment`, when there is one (a repeated request answers it;
+     *  one for another purpose throws IntentRefusedError conflicting-request). */
+    OpenCreateOf(hiveId: string, environment: string, purpose: string): IntentRecord | undefined
+    /** Runs `work` alone among the hive's publishes (the dedupe and its publish in one turn). */
+    ForHive<T>(hiveId: string, work: () => Promise<T>): Promise<T>
+    /** Publish for a caller inside ForHive. */
+    PublishInTurn(hiveId: string, action: IntentAction, publishedBy: string): Promise<IntentRecord>
+}
+
 /** The operator activity log (the console's AuditTrail): what operators must follow up is recorded there. */
 export interface IOperatorActivity
 {
@@ -62,6 +78,7 @@ export interface CustomerApiServiceParts
     Registrations: IHiveRegistrations
     Reports: IHiveReports
     Adverts: IHiveAdverts
+    Intents: IEnvironmentIntents
     /** Without it nothing is recorded for operators (tests). */
     Activity?: IOperatorActivity
     Now?: () => Date
@@ -85,6 +102,12 @@ export class PlatformCustomerApiService implements ICustomerApiService
     private static readonly HostedLeftPrefix = 'customer left hosted hive '
     private static readonly HostedLeftSuffix = ': cluster still placed, remove it (C5.1 automates this)'
     private static readonly StatusOk = 200
+    private static readonly CustomerPrefix = 'customer:'
+    private static readonly RefusalCodes: ReadonlyMap<IntentRefusal, CustomerErrorCode> = new Map([
+        [IntentRefusal.HiveTakesNoIntents, CustomerErrorCode.HiveTakesNoIntents],
+        [IntentRefusal.TooManyOpen, CustomerErrorCode.RateLimited],
+        [IntentRefusal.ConflictingRequest, CustomerErrorCode.InvalidRequest],
+    ])
 
     public constructor(protected readonly parts: CustomerApiServiceParts)
     {
@@ -241,6 +264,42 @@ export class PlatformCustomerApiService implements ICustomerApiService
     private async Withdraw(placement: PlacementRecord): Promise<PlacementRecord>
     {
         return placement.state === PlacementState.Requested ? await this.parts.Placements.Cancel(placement.id) : await this.parts.Placements.BeginRemoval(placement.id)
+    }
+
+    /**
+     * An environment on one of the client's Enrolled or Delegated hives (C3.4): recorded as a signed create-environment
+     * intent at the hive's level, at the engine's version. A repeated request for an environment still open answers the
+     * same intent (one for another purpose is `invalid-request`), and a hive with the most open intents it keeps is
+     * refused `rate-limited`. Admin only (no plan limit counts environments); a hive of another client reads as unknown;
+     * a hive that takes no intents is refused `hive-takes-no-intents`.
+     */
+    public async RequestEnvironment(customer: CentralLoginSubject, request: RequestEnvironmentRequest): Promise<EnvironmentRequest>
+    {
+        const S = PlatformCustomerApiService
+        await this.RequireAdmin(customer, request.ClientId)
+        const directory = this.parts.Directory
+        const hive = directory.GetHive(request.HiveId) as PlatformHiveRecord | undefined
+        const tenant = hive === undefined ? undefined : directory.GetTenant(hive.tenantId)
+        if (hive === undefined || tenant === undefined || tenant.clientId !== request.ClientId)
+        {
+            throw new CustomerApiError(CustomerErrorCode.UnknownHive)
+        }
+        const action = new CreateEnvironment(request.Environment, request.Purpose as string as EnvironmentPurpose, null)
+        let record: IntentRecord
+        try
+        {
+            const intents = this.parts.Intents
+            record = await intents.ForHive(hive.id, async () => intents.OpenCreateOf(hive.id, request.Environment, request.Purpose) ?? await intents.PublishInTurn(hive.id, action, S.CustomerPrefix + customer.Key))
+        }
+        catch (err)
+        {
+            if (err instanceof IntentRefusedError)
+            {
+                throw new CustomerApiError(S.RefusalCodes.get(err.Code) ?? CustomerErrorCode.InvalidRequest)
+            }
+            throw err
+        }
+        return new EnvironmentRequest(record.id, hive.id, PlatformHiveRecords.LevelOf(hive), new Date(record.expiresAt))
     }
 
     /** The statement, when the customer administers the client. */

@@ -2,6 +2,7 @@ import {
     AgentExchangeRefusal, EnvelopeSigner, EnvelopeVerifier, MessageKind, ProtocolDecodeError, ProtocolVerificationError, VerificationFailure, type ParticipantRole,
     type IAgentChannel, type IBodyDecoder, type IMessageBody, type SignedEnvelope, type SigningPublicKey, type VerifiedMessage,
 } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import type { PreviousKeyGrace } from './previous-key-grace.js'
 
 /** A message the platform turns away, with the code it answers (never text from the message). */
 export class AgentExchangeRefusedError extends Error
@@ -43,6 +44,14 @@ export class AgentExchangeRefusedError extends Error
     }
 }
 
+/** The previous-key grace and the verifier that resolves keys through it. */
+export class PreviousKeyGraceVerifier
+{
+    public constructor(public readonly Grace: PreviousKeyGrace, public readonly Verifier: EnvelopeVerifier)
+    {
+    }
+}
+
 /** A handler's answer: a body the platform signs as `Kind` to the message's issuer, or null (acknowledged, 204). */
 export class AgentAnswer
 {
@@ -80,7 +89,8 @@ export class PlatformAgentExchange implements IAgentChannel
     private static readonly DuplicateText = 'two handlers for one message kind and issuer: '
     private readonly handlers: ReadonlyMap<string, IAgentMessageHandler>
 
-    public constructor(private readonly verifier: EnvelopeVerifier, private readonly signer: EnvelopeSigner, handlers: readonly IAgentMessageHandler[])
+    /** `grace`: the previous-key grace after a hive key rotation and a verifier over it (PreviousKeyGrace). */
+    public constructor(private readonly verifier: EnvelopeVerifier, private readonly signer: EnvelopeSigner, handlers: readonly IAgentMessageHandler[], private readonly grace?: PreviousKeyGraceVerifier)
     {
         const P = PlatformAgentExchange
         const map = new Map<string, IAgentMessageHandler>()
@@ -111,7 +121,7 @@ export class PlatformAgentExchange implements IAgentChannel
             throw new AgentExchangeRefusedError(AgentExchangeRefusal.UnsupportedKind)
         }
         const verified = handler.KeyOf === undefined
-            ? await this.verifier.Verify(request, handler.Kind, handler.Decoder)
+            ? await this.VerifyKeyed(request, handler)
             : await this.verifier.VerifySelfSigned(request, handler.Kind, handler.Decoder, body => handler.KeyOf!(body))
         const answer = await handler.Handle(verified)
         return answer === null ? null : this.signer.Sign(answer.Kind, request.Issuer, answer.Body)
@@ -120,5 +130,28 @@ export class PlatformAgentExchange implements IAgentChannel
     private static KeyOf(kind: MessageKind, issuer: string): string
     {
         return kind + PlatformAgentExchange.KeySeparator + issuer
+    }
+
+    /**
+     * Verified under the issuer's current key, which ends any previous-key grace; a kind the grace accepts that names
+     * another key is tried under the previous key (no nonce is burnt by the first attempt: the key is checked first).
+     */
+    private async VerifyKeyed(request: SignedEnvelope, handler: IAgentMessageHandler): Promise<VerifiedMessage<unknown>>
+    {
+        try
+        {
+            const verified = await this.verifier.Verify(request, handler.Kind, handler.Decoder)
+            await this.grace?.Grace.CurrentKeyUsed(request.Issuer)
+            return verified
+        }
+        catch (error)
+        {
+            const mismatch = error instanceof ProtocolVerificationError && error.Failure === VerificationFailure.KeyMismatch
+            if (!mismatch || this.grace === undefined || !this.grace.Grace.Accepts(handler.Kind))
+            {
+                throw error
+            }
+            return this.grace.Verifier.Verify(request, handler.Kind, handler.Decoder)
+        }
     }
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { EnvironmentReadiness, type ComponentState, type HiveReport, type IntentProgress } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { EnvironmentReadiness, type ComponentState, type HiveReport, type IntentFailure, type IntentProgress } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { JsonRecordStore, type IRecordMap, type HiveHealthDto } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 
 export type HiveObservationRecord = {
@@ -24,6 +24,8 @@ export type ObservedComponent = {
 export type ObservedIntent = {
     intentId: string
     progress: IntentProgress
+    /** A failed intent's code (C3.4); absent otherwise and on records before it. */
+    failure?: IntentFailure
 }
 
 export class HiveObservationRegistry extends JsonRecordStore<HiveObservationRecord>
@@ -72,7 +74,7 @@ export class HiveObservationRegistry extends JsonRecordStore<HiveObservationReco
             reportedAt: new Date().toISOString(),
             engineVersion: report.EngineVersion,
             components: report.Components.map(entry => ({ component: entry.Component, state: entry.State, version: entry.Version })),
-            intents: report.Intents.map(entry => ({ intentId: entry.IntentId, progress: entry.Progress })),
+            intents: report.Intents.map(entry => entry.Failure === null ? { intentId: entry.IntentId, progress: entry.Progress } : { intentId: entry.IntentId, progress: entry.Progress, failure: entry.Failure }),
         })
         await this.Trim(hiveId)
     }

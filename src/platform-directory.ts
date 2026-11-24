@@ -5,6 +5,7 @@ import { type EnvironmentRecord, HivePlacementError, RecordId, type TenantRecord
 import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { HiveConsoleSpecs } from './hive-console-spec.js'
 import { HiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import { SigningPublicKey } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { ClientRecord, EnrolledConsoleAddress, PlatformHiveRecord, PlatformTenantRecord } from './platform-records.js'
 
 /** What an enrolling hive is recorded with (PlatformDirectory.EnrolHive). */
@@ -116,6 +117,19 @@ export class InHiveConsoleTakenError extends Error
     {
         super(`Tenant ${tenantId} already runs its console in hive ${hiveId}; a tenant has one console.`)
         this.name = InHiveConsoleTakenError.ErrorName
+    }
+}
+
+/** A hive key rotation found the hive's key already changed (another rotation won). */
+export class HiveKeyChangedError extends Error
+{
+    private static readonly ErrorName = 'HiveKeyChangedError'
+    private static readonly MessagePrefix = 'The hive key changed meanwhile: '
+
+    public constructor(id: string)
+    {
+        super(HiveKeyChangedError.MessagePrefix + id)
+        this.name = HiveKeyChangedError.ErrorName
     }
 }
 
@@ -393,6 +407,42 @@ export class PlatformDirectory implements ITenantRecordSource
         const updated: PlatformHiveRecord = { ...hive, engineVersion: input.engineVersion, consoleAddress: input.consoleAddress, enrolledAt: this.Stamp(), enrolledBy: input.enrolledBy }
         await this.hives.Put(updated)
         return updated
+    }
+
+    /**
+     * Switches an enrolled hive's key in one write (C3.4 hive key rotation), only while the hive's key is still
+     * `expectedKeyId` (HiveKeyChangedError otherwise): the record names the new public key and the id derived from it
+     * from then on, so the key directory refuses the old one, which is kept as the previous key until ConfirmHiveKey.
+     * The record is re-read and written in one synchronous step, so no other change to the hive is lost.
+     */
+    public async RotateHiveKey(id: string, expectedKeyId: string, publicKey: string): Promise<PlatformHiveRecord>
+    {
+        const hive = this.hives.Get(id) as PlatformHiveRecord | undefined
+        if (hive === undefined)
+        {
+            throw new UnknownHiveError(id)
+        }
+        if (hive.keyId !== expectedKeyId || hive.publicKey === undefined)
+        {
+            throw new HiveKeyChangedError(id)
+        }
+        const updated: PlatformHiveRecord = {
+            ...hive, publicKey, keyId: SigningPublicKey.Parse(publicKey).KeyId, keyRotatedAt: this.Stamp(), previousPublicKey: hive.publicKey, previousKeyId: hive.keyId,
+        }
+        await this.hives.Put(updated)
+        return updated
+    }
+
+    /** The hive used its new key: the previous one is forgotten (it can no longer ask for a lost acknowledgement). */
+    public async ConfirmHiveKey(id: string): Promise<void>
+    {
+        const hive = this.hives.Get(id) as PlatformHiveRecord | undefined
+        if (hive === undefined || hive.previousKeyId === undefined)
+        {
+            return
+        }
+        const { previousPublicKey: _key, previousKeyId: _id, ...rest } = hive
+        await this.hives.Put(rest)
     }
 
     /** The hive enrolled with this key id, when one is (whether or not its customer left it). */

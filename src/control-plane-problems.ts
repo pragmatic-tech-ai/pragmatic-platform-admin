@@ -16,6 +16,9 @@ import { NoInfraTargetBackendError, NoInfraTargetError } from './no-infra-target
 import { HostedClusterRefMissingError } from './hosted-hive-orchestrator-factory.js'
 import { KubectlError, PortForwardError } from '@pragmatic-tech-ai/pragmatic-kube'
 import { BodyTooLargeError, ChannelNotSubscribedError, HiveNotRegisteredError, ManifestExistsError, ManifestNotGatedError, ManifestWithdrawnError, PolicyStoreUnavailableError, ReleaseNotRunnableYetError, ReleaseRegistryUnavailableError, ReleaseRejectedError, TenantOnHoldError, UnknownHiveError, UnknownManifestError, VersionBelowFloorError } from '@pragmatic-tech-ai/pragmatic-platform-link'
+import { HiveNotPushableError } from './hive-reach.js'
+import { IntentRefusedError } from './intents/intent-publisher.js'
+import { IntentSequenceContendedError } from './intents/sql-intent-sequences.js'
 
 /**
  * The platform admin console's domain error -> HTTP status table, as the host's ProblemMapper registration (the table the
@@ -76,6 +79,10 @@ export class ControlPlaneProblems extends ProblemMapper
             .Register(NoInfraTargetError, P.CodeUnavailable)
             .Register(NoInfraTargetBackendError, P.CodeUnavailable)
             .Register(HostedClusterRefMissingError, P.CodeBadRequest)
+            // A push to a hive managed by pulled intents (C3.4): refused with its code, never attempted.
+            .Register(HiveNotPushableError, P.CodeConflict, () => ({ code: HiveNotPushableError.Code }))
+            // The intent sequence stayed contended (other processes kept winning): unavailable, with its code; retry.
+            .Register(IntentSequenceContendedError, P.CodeUnavailable, () => ({ code: IntentSequenceContendedError.Code }))
             .Register(KubectlError, P.CodeBadGateway)
             // The tenant is not authorized to that version (it was never gated to it): forbidden, not missing.
             .Register(ManifestNotGatedError, P.CodeForbidden)
@@ -134,6 +141,12 @@ export class ControlPlaneProblems extends ProblemMapper
 
     public override Write(res: ServerResponse, err: unknown): void
     {
+        // An intent refused (a release selection for a hive that takes none, an unknown hive): its own status and code.
+        if (err instanceof IntentRefusedError && !res.headersSent)
+        {
+            JsonApi.WriteJson(res, err.Status, { [ControlPlaneProblems.ErrorKey]: err.message, code: err.Code })
+            return
+        }
         if (!(err instanceof AdminProxyError) || res.headersSent)
         {
             super.Write(res, err)

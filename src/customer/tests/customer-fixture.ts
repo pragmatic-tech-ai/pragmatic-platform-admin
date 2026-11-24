@@ -21,6 +21,12 @@ import { EnrolmentCodeRegistry } from '../../enrolment/enrolment-code-record.js'
 import { PlacementRegistry } from '../../placement/placement-registry.js'
 import { PlacementStore } from '../../placement/placement-record.js'
 import { HiveObservationRegistry } from '../../hive-observation-record.js'
+import { EnvelopeSigner, Participant, SigningKeyPair, SystemProtocolClock, ConsoleAddressOption } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { HiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import { IntentOutbox } from '../../intents/intent-outbox.js'
+import { IntentPublisher } from '../../intents/intent-publisher.js'
+import { IntentStore } from '../../intents/intent-record.js'
+import { SqlIntentSequences } from '../../intents/sql-intent-sequences.js'
 
 /** The release the install command names (or none), and the hives whose registration was revoked. */
 export class FakeDeployments implements IInstallReleases, IHiveRegistrations
@@ -83,6 +89,9 @@ export class CustomerFixture
 {
     public static readonly Stranger = CentralLoginSubject.Of(EntitlementSamples.Issuer, 'gip-stranger', 'stranger@elsewhere.test')
     public static readonly HiveDisplayName = 'Hive'
+    private static readonly EngineVersion = '0.1.0-early.19'
+    private static readonly ConsoleHost = 'console.acme.test'
+    private static readonly EnrolledBy = 'central:sub-1'
 
     private constructor(
         public readonly Sink: SqlEntitlementSink,
@@ -98,6 +107,7 @@ export class CustomerFixture
         public readonly Deployments: FakeDeployments,
         public readonly Clock: TestClock,
         public readonly Activity: FakeActivity,
+        public readonly Intents: IntentOutbox,
         public readonly Parts: CustomerApiServiceParts)
     {
     }
@@ -120,7 +130,10 @@ export class CustomerFixture
         const codeRegistry = new EnrolmentCodeRegistry(await Database.Map(PlatformAdminRegistry.EnrolmentCodes))
         const placementStore = new PlacementStore(await Database.Map(PlatformAdminRegistry.Placements))
         const observations = new HiveObservationRegistry(await Database.Map(PlatformAdminRegistry.HiveObservations))
-        await Promise.all([codeRegistry.Load(), placementStore.Load(), observations.Load()])
+        const intentStore = new IntentStore(await Database.Map(PlatformAdminRegistry.HiveIntents))
+        await Promise.all([codeRegistry.Load(), placementStore.Load(), observations.Load(), intentStore.Load()])
+        const intents = new IntentOutbox(intentStore, now)
+        const publisher = new IntentPublisher(intents, directory, new EnvelopeSigner(SigningKeyPair.Generate(), Participant.Platform, new SystemProtocolClock()), await SqlIntentSequences.Open(session))
         const codes = new EnrolmentCodeIssuer(codeRegistry, now)
         const placements = new PlacementRegistry(placementStore, now)
         const usage = new ClientUsage(directory, domains, [codes, placements, ...reservations], now)
@@ -129,9 +142,9 @@ export class CustomerFixture
         const activity = new FakeActivity()
         const parts: CustomerApiServiceParts = {
             Statements: sink, Directory: directory, Domains: domains, Usage: usage, Lock: lock, Codes: codes, Placements: placements,
-            Releases: deployments, Registrations: deployments, Reports: observations, Adverts: adverts, Activity: activity, Now: now,
+            Releases: deployments, Registrations: deployments, Reports: observations, Adverts: adverts, Intents: publisher, Activity: activity, Now: now,
         }
-        return new CustomerFixture(sink, directory, domains, adverts, txt, usage, lock, codes, placements, observations, deployments, clock, activity, parts)
+        return new CustomerFixture(sink, directory, domains, adverts, txt, usage, lock, codes, placements, observations, deployments, clock, activity, intents, parts)
     }
 
     public Service(): PlatformCustomerApiService
@@ -148,5 +161,15 @@ export class CustomerFixture
     public async Hive(id: string, tenantId: string): Promise<void>
     {
         await this.Directory.CreateHive({ id, tenantId, displayName: CustomerFixture.HiveDisplayName, cluster: { backend: HiveBackend.Local, mode: InfraMode.Attach }, registry: { mode: InfraMode.Attach } })
+    }
+
+    /** A hive that enrolled itself by its key at `level` (C3.3), so it takes intents when Enrolled or Delegated. */
+    public async EnrolledHive(id: string, tenantId: string, level: HiveLevel): Promise<void>
+    {
+        const key = SigningKeyPair.Generate().PublicKey
+        await this.Directory.EnrolHive({
+            id, tenantId, level, publicKey: key.ToJson(), keyId: key.KeyId, engineVersion: CustomerFixture.EngineVersion,
+            consoleAddress: { Option: ConsoleAddressOption.OwnDomain, Host: CustomerFixture.ConsoleHost, IngressAddress: null }, enrolledBy: CustomerFixture.EnrolledBy,
+        })
     }
 }

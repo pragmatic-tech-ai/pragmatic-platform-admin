@@ -6,6 +6,7 @@ import { KindCli } from './kind.js'
 import { KindHiveOrchestrator } from './kind-hive-orchestrator.js'
 import { NodeExecFile } from '@pragmatic-tech-ai/pragmatic-kube'
 import { FileSignatureStore } from './signature-store.js'
+import { HiveReach } from './hive-reach.js'
 
 /**
  * The platform's (dev-box) orchestrator factory: everything HiveOrchestratorFactory drives, with a kubectl-driven hive's images
@@ -33,6 +34,13 @@ export class PlatformHiveOrchestratorFactory extends HiveOrchestratorFactory
     public constructor(localContext?: string, dataRoot?: string, private readonly digests: IImageDigest = new DockerImageDigest(), private readonly signatures?: ISignatureStore)
     {
         super(localContext, dataRoot)
+    }
+
+    /** Every push to a hive goes through an orchestrator: none for a hive managed by pulled intents (C3.4, hive-not-pushable). */
+    public override For(hive: HiveRecord): IHiveOrchestrator
+    {
+        HiveReach.Require(hive)
+        return super.For(hive)
     }
 
     protected override Verifier(): IImageVerifier

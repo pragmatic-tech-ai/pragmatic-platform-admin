@@ -12,6 +12,9 @@ import type { IManifestSigner } from './manifest-signer.js'
 import { ReleasePolicyRegistry, type ReleasePolicyRecord } from './release-policy-record.js'
 import { PolicyStoreUnavailableError, AgentUnauthorizedError, HiveNotRegisteredError, ManifestExistsError, ManifestNotGatedError, UnknownHiveError, UnknownManifestError, ManifestWithdrawnError, TenantOnHoldError, ChannelNotSubscribedError, VersionBelowFloorError, ReleaseRejectedError, ReleaseNotRejectedError, ReleaseNotRunnableYetError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { VersionOrder } from './version-order.js'
+import { HiveNotPushableError, HiveReach } from './hive-reach.js'
+import { PlatformHiveRecords, type PlatformHiveRecord } from './platform-records.js'
+import { IntentRefusal, IntentRefusedError } from './intents/intent-publisher.js'
 
 type PolicyBlock = 'not-gated' | 'withdrawn' | 'held' | 'channel' | 'floor'
 
@@ -26,6 +29,16 @@ export interface IWorkloadPlacement
 }
 
 export type RolloutTarget = { version: string; image: string }
+
+/** What a release selection publishes for a hive managed by pulled intents (RolloutIntents, C3.4). */
+export interface IReleaseIntents
+{
+    /**
+     * One intent per engine component whose image in `to` is not the one the hive runs (the last it applied by intent,
+     * else the one of `installed`, the release it enrolled at), unless an open intent already asks for it.
+     */
+    PublishRelease(hive: PlatformHiveRecord, installed: ManifestRecord | undefined, to: ManifestRecord): Promise<readonly string[]>
+}
 
 /** The hive's customer left it (leave-hive): it is kept as a record but never registered again. */
 export class HiveLeftError extends Error
@@ -49,6 +62,7 @@ export class PlatformDeploymentRegistry
     private static readonly KeySeparator = ':'
     private static readonly HiveKeyPrefix = 'h:'
     private static readonly LedgerFailureMessage = 'adoption ledger append failed:'
+    private static readonly SelectedAction: LedgerAction = 'selected'
 
     public constructor(
         private readonly manifests: ManifestRegistry,
@@ -62,7 +76,8 @@ export class PlatformDeploymentRegistry
         private readonly observations: HiveObservationRegistry,
         private readonly signer?: IManifestSigner,
         private readonly policies?: ReleasePolicyRegistry,
-        private readonly ledger?: AdoptionLedgerRegistry)
+        private readonly ledger?: AdoptionLedgerRegistry,
+        private readonly releaseIntents?: IReleaseIntents)
     {
     }
 
@@ -320,11 +335,61 @@ export class PlatformDeploymentRegistry
         }
     }
 
-    /** Records the selection (after the gating check) and pushes the roll to the hive's orchestrator. */
+    /**
+     * Records the selection (after the gating check) and pushes the roll to the hive's orchestrator. A hive managed by
+     * pulled intents (Enrolled, Delegated) is never pushed to: its selection must be a verified registry release, and it is
+     * told by one signed component-at-version intent per engine component whose image changed (RolloutIntents, C3.4).
+     */
     public async SelectTarget(hiveId: string, version: string): Promise<void>
     {
+        const hive = this.hives.GetHive(hiveId)
+        if (hive !== undefined && !HiveReach.Pushable(hive))
+        {
+            await this.SelectByIntents(hive as PlatformHiveRecord, version)
+            return
+        }
         const recorded = await this.Record(hiveId, version, 'selected')
         await this.Push(recorded.hive, recorded.image)
+    }
+
+    /**
+     * The release selection of a hive managed by pulled intents (never pushed): the hive must take intents, the release
+     * be a verified registry release the hive's gating admits; its intents are published first (idempotently per
+     * component), then the selection and the ledger are recorded, so a failure part-way leaves nothing recorded and a
+     * retry publishes only what is still missing.
+     */
+    private async SelectByIntents(hive: PlatformHiveRecord, version: string): Promise<void>
+    {
+        if (!PlatformHiveRecords.TakesIntents(hive))
+        {
+            throw new IntentRefusedError(IntentRefusal.HiveTakesNoIntents)
+        }
+        if (this.releaseIntents === undefined)
+        {
+            throw new HiveNotPushableError()
+        }
+        const manifest = this.manifests.Get(version)
+        if (manifest === undefined)
+        {
+            throw new UnknownManifestError(version)
+        }
+        if (manifest.release === undefined)
+        {
+            throw new ReleaseNotRunnableYetError(version)
+        }
+        if (manifest.release.state !== ReleaseState.Verified)
+        {
+            throw new ReleaseRejectedError(version)
+        }
+        const reason = this.BlockReasonFor(hive.tenantId, hive.id, manifest)
+        if (reason !== undefined)
+        {
+            throw this.BlockError(reason, version)
+        }
+        const installed = hive.engineVersion === undefined ? undefined : this.manifests.Get(hive.engineVersion)
+        await this.releaseIntents.PublishRelease(hive, installed, manifest)
+        await this.selections.Put({ id: hive.id, hiveId: hive.id, targetVersion: version, selectedAt: new Date().toISOString() })
+        await this.RecordLedger({ hiveId: hive.id, tenantId: hive.tenantId, version, action: PlatformDeploymentRegistry.SelectedAction })
     }
 
     /** Records the selection after the same gating check as SelectTarget but does NOT push: the hive's own agent rolls locally by polling the target. */
@@ -605,10 +670,15 @@ export class PlatformDeploymentRegistry
      *  customer left (D4) is never registered again: HiveLeftError. */
     public async CommitAgentToken(hiveId: string, token: string): Promise<void>
     {
-        const hive = this.hives.GetHive(hiveId) as { leftAt?: string } | undefined
+        const hive = this.hives.GetHive(hiveId) as PlatformHiveRecord | undefined
         if (hive?.leftAt !== undefined)
         {
             throw new HiveLeftError(hiveId)
+        }
+        // A hive managed by pulled intents holds no agent token: the legacy bearer channel is a push path (C3.4).
+        if (hive !== undefined)
+        {
+            HiveReach.Require(hive)
         }
         await this.registrations.Put({ id: hiveId, hiveId, agentTokenHash: this.HashToken(token), registeredAt: new Date().toISOString() })
     }

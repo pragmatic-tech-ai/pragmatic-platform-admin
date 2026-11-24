@@ -10,6 +10,7 @@ import type { PortalSessionService } from '../../shell/portal-session-service.js
 import { FleetHiveRowViewModel } from '../fleet/fleet-page-view-model.js'
 import { AgentInstallPhase, HiveAgentInstallViewModel } from './hive-agent-install-view-model.js'
 import { HiveConsoleViewModel } from './hive-console-view-model.js'
+import { HiveIntentsViewModel } from './hive-intents-view-model.js'
 import { HiveInstallMode, HiveInstallViewModel } from './hive-install-view-model.js'
 import type { HivesSectionService } from './hives-section-service.js'
 
@@ -196,12 +197,14 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
     private static readonly DisplayNameProperty = 'DisplayName'
     private static readonly OwnerLabelProperty = 'OwnerLabel'
     private static readonly IsEnrolledProperty = 'IsEnrolled'
+    private static readonly TakesIntentsProperty = 'TakesIntents'
     private static readonly LevelLabelProperty = 'LevelLabel'
     private static readonly KeyIdLabelProperty = 'KeyIdLabel'
     private static readonly ConsoleAddressLabelProperty = 'ConsoleAddressLabel'
     private static readonly EnrolledLabelProperty = 'EnrolledLabel'
     private static readonly LevelLabels: Readonly<Record<HiveLevelDto, string>> = { standalone: 'Standalone', enrolled: 'Enrolled', delegated: 'Delegated', hosted: 'Hosted' }
     private static readonly DefaultLevel: HiveLevelDto = 'hosted'
+    private static readonly PullingLevels: ReadonlySet<HiveLevelDto> = new Set<HiveLevelDto>(['enrolled', 'delegated'])
     private static readonly ConsoleOptionLabels: ReadonlyMap<string, string> = new Map([
         ['own-domain', 'own domain'], ['hive-subdomain', 'hive subdomain'], ['relayed-hive-subdomain', 'relayed hive subdomain'],
     ])
@@ -256,6 +259,7 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
     private readonly install: HiveInstallViewModel
     private readonly agentInstall: HiveAgentInstallViewModel
     private readonly console: HiveConsoleViewModel
+    private readonly intents: HiveIntentsViewModel
     private readonly toggleManualCommand: RelayCommand
     private manualOpen = false
     // The install-path values as last raised, for their change notifications.
@@ -271,6 +275,7 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
         this.install = new HiveInstallViewModel(session, section, HiveInstallMode.FirstInstall)
         this.agentInstall = new HiveAgentInstallViewModel(session, Id, section.PollScheduler)
         this.console = new HiveConsoleViewModel(session, Id, section, section.PollScheduler)
+        this.intents = new HiveIntentsViewModel(session, Id)
         this.toggleManualCommand = new RelayCommand(() => this.ToggleManual())
         this.pathShown = this.PathSnapshot()
         this.install.PropertyChanged(HiveInstallViewModel.AutoInstallProperty).subscribe(() => this.RaisePathChanged())
@@ -502,6 +507,19 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
         return this.agentInstall
     }
 
+    // Whether the hive is managed by pulled intents: enrolled by its key at Enrolled or Delegated (C3.4).
+    public get TakesIntents(): boolean
+    {
+        const level = this.hive?.level
+        return this.IsEnrolled && level !== undefined && HiveDetailPageViewModel.PullingLevels.has(level)
+    }
+
+    // The intents of a hive managed by pulls (C3.4); its panel shows for an enrolled hive only.
+    public get Intents(): HiveIntentsViewModel
+    {
+        return this.intents
+    }
+
     // The hive's tenant console: where it is served, its install and the Owner password.
     public get Console(): HiveConsoleViewModel
     {
@@ -625,6 +643,10 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
         {
             this.console.Load(hive)
         }
+        if (this.TakesIntents)
+        {
+            void this.intents.Load()
+        }
         this.Refill(this.rolloutRows, (this.rollout?.environments ?? []).map(e => new HiveRolloutRowViewModel(e)))
         this.Refill(this.ledgerRows, ledger.map(l => new HiveLedgerRowViewModel(l)))
         this.Refill(this.checkIns, observations.map(o => new HiveCheckInRowViewModel(o)))
@@ -639,6 +661,7 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
             DisplayName: this.DisplayName,
             OwnerLabel: this.OwnerLabel,
             IsEnrolled: this.IsEnrolled,
+            TakesIntents: this.TakesIntents,
             LevelLabel: this.LevelLabel,
             KeyIdLabel: this.KeyIdLabel,
             ConsoleAddressLabel: this.ConsoleAddressLabel,
@@ -665,6 +688,7 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
         this.RaisePropertyChanged(P.DisplayNameProperty, b.DisplayName, this.DisplayName)
         this.RaisePropertyChanged(P.OwnerLabelProperty, b.OwnerLabel, this.OwnerLabel)
         this.RaisePropertyChanged(P.IsEnrolledProperty, b.IsEnrolled, this.IsEnrolled)
+        this.RaisePropertyChanged(P.TakesIntentsProperty, b.TakesIntents, this.TakesIntents)
         this.RaisePropertyChanged(P.LevelLabelProperty, b.LevelLabel, this.LevelLabel)
         this.RaisePropertyChanged(P.KeyIdLabelProperty, b.KeyIdLabel, this.KeyIdLabel)
         this.RaisePropertyChanged(P.ConsoleAddressLabelProperty, b.ConsoleAddressLabel, this.ConsoleAddressLabel)
@@ -809,6 +833,7 @@ interface HiveDetailSnapshot
     readonly DisplayName: string
     readonly OwnerLabel: string
     readonly IsEnrolled: boolean
+    readonly TakesIntents: boolean
     readonly LevelLabel: string
     readonly KeyIdLabel: string
     readonly ConsoleAddressLabel: string

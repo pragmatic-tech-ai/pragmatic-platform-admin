@@ -27,6 +27,7 @@ import { ConsoleBootstrapSplit } from './console-bootstrap-split.js'
 import { IdpRolloutState, IdpRolloutStatus } from './idp-rollout-state.js'
 import { ComponentConfigurationReadiness, ConfigurationReadinessState } from './component-configuration-readiness.js'
 import { IdpCaRotation, IdpCaRotationError } from './idp-ca-rotation.js'
+import { HiveReach } from './hive-reach.js'
 
 /** Where a console install stands. Values are the wire strings. */
 export enum ConsoleInstallState
@@ -384,6 +385,7 @@ export class TenantConsoleInstaller
         {
             throw new UnknownHiveError(hiveId)
         }
+        HiveReach.Require(hive)
         const spec = hive.console
         if (spec === undefined)
         {
@@ -579,6 +581,7 @@ export class TenantConsoleInstaller
         {
             throw new UnknownHiveError(hiveId)
         }
+        HiveReach.Require(hive)
         if (hive.console === undefined)
         {
             throw new ConsoleNotConfiguredError()
