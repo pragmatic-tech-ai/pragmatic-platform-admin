@@ -259,6 +259,7 @@ export enum ConsoleInstallState
 export enum ConsoleInstallStep
 {
     CheckingAgent = 'checking-agent',
+    RotatingIdpCa = 'rotating-idp-ca',
     PreparingCertificates = 'preparing-certificates',
     ReadingReleaseDescriptors = 'reading-release-descriptors',
     ApplyingConsole = 'applying-console',

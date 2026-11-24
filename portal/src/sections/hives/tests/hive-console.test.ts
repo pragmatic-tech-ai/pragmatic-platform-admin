@@ -201,14 +201,14 @@ describe('Hive tenant console (panel)', () =>
         assert.equal(panel.SaveCommand.CanExecute(), false)
         assert.equal(panel.SetOwnerPasswordCommand.CanExecute(), false)
         assert.deepEqual(panel.Steps.ToArray().map(s => s.Label), [
-            'Check the hive agent', 'Prepare certificates', 'Read the release descriptors', 'Apply the console', 'Store its secrets', 'Wait for the console to start',
+            'Check the hive agent', "Renew the identity provider's certificate authority", 'Prepare certificates', 'Read the release descriptors', 'Apply the console', 'Store its secrets', 'Wait for the console to start',
             'Prepare the configurations for this release', 'Update the hive agent', 'Start the identity provider', 'Create the Owner account',
         ])
         assert.deepEqual(fx.Polls.Delays, [2000])
         fx.Api.ConsoleInstallReplies = [FakeControlPlane.ConsoleStatus(ConsoleInstallState.Installing, ConsoleInstallStep.ApplyingConsole)]
         await fx.Poll()
         assert.deepEqual(panel.Steps.ToArray().map(s => s.State), [
-            AgentInstallStepState.Done, AgentInstallStepState.Done, AgentInstallStepState.Done, AgentInstallStepState.Running,
+            AgentInstallStepState.Done, AgentInstallStepState.Done, AgentInstallStepState.Done, AgentInstallStepState.Done, AgentInstallStepState.Running,
             AgentInstallStepState.Pending, AgentInstallStepState.Pending, AgentInstallStepState.Pending, AgentInstallStepState.Pending, AgentInstallStepState.Pending, AgentInstallStepState.Pending,
         ])
         assert.equal(fx.Polls.Pending, 1)
@@ -372,7 +372,7 @@ describe('Hive tenant console (panel)', () =>
         await fx.Poll()
         assert.equal(panel.IsFailed, true)
         assert.equal(panel.ErrorText, 'The TLS Secret acme-tls in pragmatic-system is not a kubernetes.io/tls Secret.')
-        assert.equal(panel.Steps.Get(1)?.State, AgentInstallStepState.Failed)
+        assert.equal(panel.Steps.Get(2)?.State, AgentInstallStepState.Failed)
         assert.equal(panel.RetryCommand.CanExecute(), true)
         panel.RetryCommand.Execute()
         await Tick.Settle()
@@ -390,9 +390,27 @@ describe('Hive tenant console (panel)', () =>
         fx.Api.ConsoleInstallReplies = [FakeControlPlane.ConsoleStatus(ConsoleInstallState.Failed, ConsoleInstallStep.PreparingConfiguration, { error: refusal })]
         await fx.Poll()
         assert.equal(panel.ErrorText, refusal)
-        assert.equal(panel.Steps.Get(6)?.State, AgentInstallStepState.Failed)
-        assert.equal(panel.Steps.Get(5)?.State, AgentInstallStepState.Done)
-        assert.equal(panel.Steps.Get(7)?.State, AgentInstallStepState.Pending)
+        assert.equal(panel.Steps.Get(7)?.State, AgentInstallStepState.Failed)
+        assert.equal(panel.Steps.Get(6)?.State, AgentInstallStepState.Done)
+        assert.equal(panel.Steps.Get(8)?.State, AgentInstallStepState.Pending)
+    })
+
+    it('an IdP certificate authority renewal shows as its own step, and its failure stops there with the agent check done', async () =>
+    {
+        const fx = new ConsoleFixture()
+        const panel = await fx.Configured()
+        await panel.Install()
+        fx.Api.ConsoleInstallReplies = [FakeControlPlane.ConsoleStatus(ConsoleInstallState.Installing, ConsoleInstallStep.RotatingIdpCa)]
+        await fx.Poll()
+        assert.equal(panel.Steps.Get(1)?.Label, "Renew the identity provider's certificate authority")
+        assert.equal(panel.Steps.Get(1)?.State, AgentInstallStepState.Running)
+        const stopped = "The identity provider's certificate authority predates pragmatic-shared 0.18.14 (Plexus cannot verify it), and renewing it stopped: environment dev did not restart trusting the new certificate authority."
+        fx.Api.ConsoleInstallReplies = [FakeControlPlane.ConsoleStatus(ConsoleInstallState.Failed, ConsoleInstallStep.RotatingIdpCa, { error: stopped })]
+        await fx.Poll()
+        assert.equal(panel.ErrorText, stopped)
+        assert.equal(panel.Steps.Get(0)?.State, AgentInstallStepState.Done)
+        assert.equal(panel.Steps.Get(1)?.State, AgentInstallStepState.Failed)
+        assert.equal(panel.Steps.Get(2)?.State, AgentInstallStepState.Pending)
     })
 
     it('a refused install (another one running) follows the running install', async () =>

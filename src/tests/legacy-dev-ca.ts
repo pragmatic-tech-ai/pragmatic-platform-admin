@@ -31,11 +31,12 @@ export class LegacyDevCa
     private static readonly SanSuffix = ',IP:127.0.0.1\nbasicConstraints=CA:FALSE\n'
     private static readonly Piped = 'pipe'
 
-    public static MintAt(dir: string, host: string): LegacyDevCaFiles
+    /** `caSubject` names the CA (another subject than DevCa's mints an unrelated CA, for trust that is not the IdP's). */
+    public static MintAt(dir: string, host: string, caSubject: string = LegacyDevCa.CaSubject): LegacyDevCaFiles
     {
         const L = LegacyDevCa
         const at = (name: string): string => join(dir, name)
-        L.Run(['req', '-x509', ...L.Key, '-keyout', at(L.CaKeyFileName), '-out', at(L.CaFileName), '-days', L.Days, '-subj', L.CaSubject,
+        L.Run(['req', '-x509', ...L.Key, '-keyout', at(L.CaKeyFileName), '-out', at(L.CaFileName), '-days', L.Days, '-subj', caSubject,
             '-addext', L.CaBasic, '-addext', L.CaUsage, '-addext', L.ConstraintsPrefix + host + L.ConstraintsSuffix])
         L.Run(['req', ...L.Key, '-keyout', at(L.KeyFileName), '-out', at(L.CsrFileName), '-subj', L.SubjectPrefix + host])
         writeFileSync(at(L.ExtFileName), L.SanPrefix + host + L.SanSuffix)

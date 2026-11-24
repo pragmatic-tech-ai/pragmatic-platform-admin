@@ -40,6 +40,7 @@ export class HiveConsoleViewModel extends Observable
 
     private static readonly StepLabels: ReadonlyArray<readonly [ConsoleInstallStep, string]> = [
         [ConsoleInstallStep.CheckingAgent, 'Check the hive agent'],
+        [ConsoleInstallStep.RotatingIdpCa, "Renew the identity provider's certificate authority"],
         [ConsoleInstallStep.PreparingCertificates, 'Prepare certificates'],
         [ConsoleInstallStep.ReadingReleaseDescriptors, 'Read the release descriptors'],
         [ConsoleInstallStep.ApplyingConsole, 'Apply the console'],

@@ -1,6 +1,6 @@
 {
   "name": "@pragmatic-tech-ai/pragmatic-platform-admin",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "description": "The platform admin console (operator plane, release catalogue, co-hosted tenant plane): the pragmatic-platform-admin image.",
   "license": "Apache-2.0",

@@ -71,6 +71,9 @@ export class ConsoleFakeKubectl implements IKubectl
     /** Positions (in Applied) of client-side applies that fail. */
     public readonly ApplyFailures = new Set<number>()
 
+    /** When set, a client-side apply that lands stores its Secrets (whole objects, as a client-side apply of all fields does). */
+    public StoreAppliedSecrets = false
+
     public async Apply(manifestJson: string): Promise<void>
     {
         const index = this.Applied.length
@@ -79,6 +82,17 @@ export class ConsoleFakeKubectl implements IKubectl
         if (this.ApplyFailures.has(index))
         {
             throw new KubectlError('apply refused')
+        }
+        if (!this.StoreAppliedSecrets)
+        {
+            return
+        }
+        for (const item of ConsoleFakeKubectl.ItemsOf(manifestJson))
+        {
+            if (item.kind === 'Secret' && item.metadata?.name !== undefined && item.metadata.namespace !== undefined)
+            {
+                this.Put(item.metadata.namespace, 'secret/' + item.metadata.name, item)
+            }
         }
     }
 
@@ -198,6 +212,8 @@ export class ConsoleFakeKubectl implements IKubectl
     public RolloutStatusError: Error | undefined
     /** Rollout waits of a namespace that fail, in turn (true: fails), before it answers normally. */
     public readonly RolloutStatusFailures = new Map<string, boolean[]>()
+    /** A rollout wait of a namespace that fails once with the error built here (before RolloutStatusFailures). */
+    public readonly RolloutStatusErrors = new Map<string, () => Error>()
 
     public async RolloutStatus(n: string, d: string): Promise<void>
     {
@@ -205,6 +221,12 @@ export class ConsoleFakeKubectl implements IKubectl
         if (this.RolloutStatusError !== undefined)
         {
             throw this.RolloutStatusError
+        }
+        const custom = this.RolloutStatusErrors.get(n)
+        if (custom !== undefined)
+        {
+            this.RolloutStatusErrors.delete(n)
+            throw custom()
         }
         if (this.RolloutStatusFailures.get(n)?.shift() === true)
         {

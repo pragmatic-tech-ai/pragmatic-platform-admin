@@ -78,12 +78,20 @@ class IdpTenantSeed
     #seed: IdpSeed
     #secrets: IdpSecretSet
     #database: IdpSecretSet
+    #tls: IdpSecretSet
 
-    public constructor(seed: IdpSeed, secrets: IdpSecretSet, database: IdpSecretSet)
+    public constructor(seed: IdpSeed, secrets: IdpSecretSet, database: IdpSecretSet, tls: IdpSecretSet)
     {
         this.#seed = seed
         this.#secrets = secrets
         this.#database = database
+        this.#tls = tls
+    }
+
+    /** The IdP's TLS Secret alone (CA, leaf and its key), for a CA rotation that keeps the admin token. */
+    public get Tls(): IdpSecretSet
+    {
+        return this.#tls
     }
 
     /** The IdP's database Secret, kept apart from the TLS + admin seed: the driver applies it only when none exists. */
@@ -178,6 +186,12 @@ export class InClusterIdpSeedSource implements IIdpSeedSource
         return this.TenantSeed(tenantId).Database.RenderManifest()
     }
 
+    /** The IdP's TLS Secret alone (freshly minted CA, leaf and key; no admin token): what an IdP CA rotation applies. */
+    public TlsSecretManifestFor(tenantId: string): string
+    {
+        return this.TenantSeed(tenantId).Tls.RenderManifest()
+    }
+
     /** IIdpSeedSource hook: the manifest of seed Secrets the driver applies before the workload. */
     public SecretsManifestFor(tenantId: string): string
     {
@@ -221,6 +235,8 @@ export class InClusterIdpSeedSource implements IIdpSeedSource
             const adminName = InClusterIdpSeedSource.AdminSecretNameOf(tenantId)
             const secrets = new IdpSecretSet(K8sManifestBuilder.IdpNameOf(tenantId))
             secrets.Add(tlsName, tls)
+            const tlsOnly = new IdpSecretSet(K8sManifestBuilder.IdpNameOf(tenantId))
+            tlsOnly.Add(tlsName, tls)
             secrets.Add(adminName, new Map([[InClusterIdpSeedSource.AdminTokenKey, Buffer.from(token, InClusterIdpSeedSource.Utf8)]]))
             const seed: IdpSeed = {
                 caRef: tlsName, adminTokenRef: InClusterIdpSeedSource.AdminTokenKey, tlsSecretName: tlsName, adminTokenSecretName: adminName,
@@ -228,7 +244,7 @@ export class InClusterIdpSeedSource implements IIdpSeedSource
             }
             const database = new IdpSecretSet(K8sManifestBuilder.IdpNameOf(tenantId))
             database.Add(IdpDatabaseSecret.NameOf(tenantId), IdpDatabaseSecret.Mint())
-            return new IdpTenantSeed(seed, secrets, database)
+            return new IdpTenantSeed(seed, secrets, database, tlsOnly)
         }
         finally
         {

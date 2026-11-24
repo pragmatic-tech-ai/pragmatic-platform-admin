@@ -26,6 +26,7 @@ import { AppliedConfigurationKeys } from '@pragmatic-tech-ai/pragmatic-configura
 import { ConsoleBootstrapSplit } from './console-bootstrap-split.js'
 import { IdpRolloutState, IdpRolloutStatus } from './idp-rollout-state.js'
 import { ComponentConfigurationReadiness, ConfigurationReadinessState } from './component-configuration-readiness.js'
+import { IdpCaRotation, IdpCaRotationError } from './idp-ca-rotation.js'
 
 /** Where a console install stands. Values are the wire strings. */
 export enum ConsoleInstallState
@@ -41,6 +42,8 @@ export enum ConsoleInstallState
 export enum ConsoleInstallStep
 {
     CheckingAgent = 'checking-agent',
+    /** An IdP whose CA predates pragmatic-shared 0.18.14 gets a new CA and leaf, every environment's copy moved (IdpCaRotation); a current one: nothing. */
+    RotatingIdpCa = 'rotating-idp-ca',
     PreparingCertificates = 'preparing-certificates',
     ReadingReleaseDescriptors = 'reading-release-descriptors',
     ApplyingConsole = 'applying-console',
@@ -270,6 +273,7 @@ export class TenantConsoleInstaller
     private static readonly ConfigMapPrefix = 'configmap/'
     private static readonly StepFailureMessages: Readonly<Record<ConsoleInstallStep, string>> = {
         [ConsoleInstallStep.CheckingAgent]: 'Could not check the hive agent.',
+        [ConsoleInstallStep.RotatingIdpCa]: "Could not renew the identity provider's certificate authority.",
         [ConsoleInstallStep.PreparingCertificates]: "Could not prepare the console's certificates and settings.",
         [ConsoleInstallStep.ReadingReleaseDescriptors]: "Could not read the release's component descriptors.",
         [ConsoleInstallStep.ApplyingConsole]: 'Could not apply the console to the cluster.',
@@ -336,6 +340,10 @@ export class TenantConsoleInstaller
     private static readonly IdpDatabaseIncompletePrefix = 'The identity provider database Secret '
     private static readonly IdpDatabaseIncompleteInfix = ' in '
     private static readonly IdpDatabaseIncompleteSuffix = ' lacks one of its keys (superuser, password, database-url). Restore them; the install never replaces it, since its passwords open the stored data.'
+    private static readonly RotatedInfix = ": renewed the identity provider's certificate authority (it predated pragmatic-shared 0.18.14); environments restarted: "
+    private static readonly NarrowFailedInfix = ": dropping the identity provider's earlier certificate authority from its copies failed (the next install drops it): "
+    private static readonly NotSealedInfix = ": sealing the renewed identity provider certificate authority failed: "
+    private static readonly NotSealedMessage = "The identity provider's certificate authority was renewed and the identity provider runs on it, but the control plane could not seal the new one, so its calls to the identity provider fail until an install completes. Install again."
     private static readonly IdpDatabaseKeys: readonly string[] = [IdpDatabaseSecret.SuperuserKey, IdpDatabaseSecret.PasswordKey, IdpDatabaseSecret.UrlKey]
 
     private readonly runs = new Map<string, ConsoleInstallRun>()
@@ -626,9 +634,12 @@ export class TenantConsoleInstaller
             {
                 throw new ConsoleInstallStepError(C.AdmissionUnservedMessage)
             }
+            // Before anything else reads the IdP's CA: the rest of the install then carries the renewed one everywhere.
+            this.Enter(run, ConsoleInstallStep.RotatingIdpCa)
+            await this.RotateIdpCa(run, kubectl, hive, spec, t)
             this.Enter(run, ConsoleInstallStep.PreparingCertificates)
             const trustRootRef = hive.trustRootRef
-            if (trustRootRef === undefined || trustRootRef.length === 0)
+            if (trustRootRef === undefined || !C.HasTrustRoot(hive))
             {
                 throw new ConsoleInstallStepError(C.NoTrustRootMessage)
             }
@@ -851,6 +862,105 @@ export class TenantConsoleInstaller
         }
         const back = await kubectl.RolloutStatus(idpName, idpName).then(() => true, () => false)
         throw new ConsoleInstallStepError(C.WithDetail(back ? C.IdpPutBackMessage : C.IdpPutBackPendingMessage, reason))
+    }
+
+    /**
+     * Renews a running IdP's CA when it predates pragmatic-shared 0.18.14 (IdpCaRotation; a failure there has put everything
+     * back and stops the install with its sentence), then drops the IdP's earlier CAs from its copies. Only an IdP with
+     * both its Secrets is considered (a half pair is the credential step's to judge, IdpMaterialOf), and only when the
+     * install's own checks of the next step would pass (WouldPrepare): a renewal restarts every environment, which an
+     * install refused for its settings must not cost. A renewed CA is sealed at once with the IdP's unchanged admin token,
+     * so the control plane's admin calls verify the new leaf even when a later step of this install fails. Dropping the
+     * earlier CAs is best effort: a copy trusting both still verifies, and the next install drops it.
+     */
+    private async RotateIdpCa(run: ConsoleInstallRun, kubectl: IKubectl, hive: HiveRecord, spec: HiveConsoleSpec, tenantId: string): Promise<void>
+    {
+        const C = TenantConsoleInstaller
+        const token = C.DataOf(await kubectl.Find(K8sManifestBuilder.IdpNameOf(tenantId), C.SecretPrefix + InClusterIdpSeedSource.AdminSecretNameOf(tenantId)), InClusterIdpSeedSource.AdminTokenKey)
+        if (token === undefined || !await C.WouldPrepare(kubectl, hive, spec, tenantId))
+        {
+            return
+        }
+        const adminToken = Buffer.from(token, C.Base64).toString(C.Utf8)
+        run.secrets.push(token, adminToken)
+        const rotation = new IdpCaRotation(kubectl, this.clock, run.secrets)
+        let rotated
+        try
+        {
+            rotated = await rotation.Rotate(hive.id, tenantId, spec.baseDomain)
+        }
+        catch (err)
+        {
+            if (err instanceof IdpCaRotationError)
+            {
+                throw new ConsoleInstallStepError(err.message)
+            }
+            throw err
+        }
+        const renewed = rotated?.Ca ?? rotation.FinishedCa
+        if (renewed !== undefined)
+        {
+            try
+            {
+                await this.idpAdmin.Remember(tenantId, renewed, adminToken)
+            }
+            catch (err)
+            {
+                console.error(C.LogPrefix + hive.id + C.NotSealedInfix + (err instanceof Error ? err.name : C.UnknownErrorName))
+                throw new ConsoleInstallStepError(C.NotSealedMessage)
+            }
+        }
+        if (rotated !== undefined)
+        {
+            console.log(C.LogPrefix + hive.id + C.RotatedInfix + String(rotated.Restarted.length))
+        }
+        try
+        {
+            await rotation.Narrow(hive.id, tenantId)
+        }
+        catch (err)
+        {
+            console.error(C.LogPrefix + hive.id + C.NarrowFailedInfix + (err instanceof Error ? err.name : C.UnknownErrorName))
+        }
+    }
+
+    /**
+     * Whether the checks the certificates step makes before it touches anything would pass: a trust root, settings that
+     * validate, the operator's TLS Secret when one is named, and a complete IdP database Secret when one exists.
+     */
+    private static async WouldPrepare(kubectl: IKubectl, hive: HiveRecord, spec: HiveConsoleSpec, tenantId: string): Promise<boolean>
+    {
+        const C = TenantConsoleInstaller
+        if (!C.HasTrustRoot(hive))
+        {
+            return false
+        }
+        try
+        {
+            HiveConsoleSpecs.Validate(spec, tenantId)
+        }
+        catch
+        {
+            return false
+        }
+        if (spec.tls.source === IngressTlsSource.ExistingSecret && C.TlsSecretOf(await kubectl.Find(K8sManifestBuilder.SystemNamespace, C.SecretPrefix + (spec.tls.secretName as string))) === undefined)
+        {
+            return false
+        }
+        const database = await kubectl.Find(K8sManifestBuilder.IdpNameOf(tenantId), C.SecretPrefix + IdpDatabaseSecret.NameOf(tenantId))
+        return database === undefined || C.IdpDatabaseComplete(database)
+    }
+
+    /** Whether the hive names a trust root (the console image is verified against it). */
+    private static HasTrustRoot(hive: HiveRecord): boolean
+    {
+        return hive.trustRootRef !== undefined && hive.trustRootRef.length > 0
+    }
+
+    /** Whether an IdP database Secret (as kubectl returned it) holds every one of its keys. */
+    private static IdpDatabaseComplete(json: string): boolean
+    {
+        return TenantConsoleInstaller.IdpDatabaseKeys.every(key => TenantConsoleInstaller.DataOf(json, key) !== undefined)
     }
 
     // The running agent with the configuration attached (AgentConfigurationHold); nothing when no agent Deployment runs.
@@ -1143,9 +1253,8 @@ export class TenantConsoleInstaller
         const json = await kubectl.Find(ns, C.SecretPrefix + name)
         if (json !== undefined)
         {
-            const values = C.IdpDatabaseKeys.map(key => C.DataOf(json, key))
-            const present = values.filter((v): v is string => v !== undefined)
-            if (present.length !== values.length)
+            const present = C.IdpDatabaseKeys.map(key => C.DataOf(json, key)).filter((v): v is string => v !== undefined)
+            if (!C.IdpDatabaseComplete(json))
             {
                 throw new ConsoleInstallStepError(C.IdpDatabaseIncompletePrefix + name + C.IdpDatabaseIncompleteInfix + ns + C.IdpDatabaseIncompleteSuffix)
             }
