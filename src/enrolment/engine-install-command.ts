@@ -29,7 +29,8 @@ export class InvalidInstallTenantError extends Error
 /**
  * The public, secret-free command a customer runs to install the engine: the pragmatic-engine Helm chart at the
  * platform release the tenant admits, into `pragmatic-system`, naming the tenant (the realm id of the engine's sign-in
- * service from its first start) and a placeholder for the console host the customer chooses; a Standalone hive also sets
+ * service from its first start) and placeholders for the console host and the TLS Secret (a kubernetes.io/tls Secret the
+ * customer creates in pragmatic-system, covering the console, the sign-in service and *.<base domain>); a Standalone hive also sets
  * `level=standalone`. It never carries a code or a secret (the enrolment code is typed into the engine's console).
  */
 export class EngineInstallCommand
@@ -40,9 +41,11 @@ export class EngineInstallCommand
     private static readonly Namespace = ' --namespace pragmatic-system --create-namespace'
     private static readonly StandaloneFlag = ' --set level=standalone'
     private static readonly TenantFlag = ' --set tenant.id='
-    /** The literal placeholder the customer replaces with the host their console answers on. */
-    public static readonly ConsoleHostPlaceholder = '<your-console-host>'
+    /** The literal placeholders the customer replaces: their console's host, and the TLS Secret that covers it (no shell metacharacters). */
+    public static readonly ConsoleHostPlaceholder = 'YOUR-CONSOLE-HOST'
+    public static readonly TlsSecretPlaceholder = 'YOUR-TLS-SECRET'
     private static readonly ConsoleHostFlag = ' --set console.host='
+    private static readonly TlsSecretFlag = ' --set tls.secretName='
     private static readonly ReleasePattern = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/
     /** The chart's `tenant.id` (values.schema.json). */
     private static readonly TenantPattern = /^[a-z][a-z0-9-]{1,30}[a-z0-9]$/
@@ -58,7 +61,7 @@ export class EngineInstallCommand
         {
             throw new InvalidInstallTenantError()
         }
-        const command = E.Install + E.Chart + E.VersionFlag + release + E.Namespace + E.TenantFlag + tenantId + E.ConsoleHostFlag + E.ConsoleHostPlaceholder
+        const command = E.Install + E.Chart + E.VersionFlag + release + E.Namespace + E.TenantFlag + tenantId + E.ConsoleHostFlag + E.ConsoleHostPlaceholder + E.TlsSecretFlag + E.TlsSecretPlaceholder
         return level === HiveLevel.Standalone ? command + E.StandaloneFlag : command
     }
 }

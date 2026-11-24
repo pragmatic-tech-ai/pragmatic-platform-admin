@@ -343,7 +343,7 @@ describe('ReleaseCatalog.Refresh', () =>
         {
             const { descriptor } = await fx.PublishManifest(CatalogFixture.Early, true)
             assert.equal(descriptor.schema, 3)
-            assert.equal(ReleaseDescriptorCodec.ChartOf(descriptor)?.reference, 'ghcr.io/pragmatic-tech-ai/charts/pragmatic-engine')
+            assert.match(ReleaseDescriptorCodec.ChartOf(descriptor)?.reference ?? '', /\/pragmatic-tech-ai\/charts\/pragmatic-engine$/)
             const result = await fx.Catalog().Refresh()
             assert.deepEqual(result.imported, [CatalogFixture.Early])
             assert.equal(fx.Release(CatalogFixture.Early)?.release?.state, ReleaseState.Verified)

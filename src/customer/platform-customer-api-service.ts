@@ -301,7 +301,7 @@ export class PlatformCustomerApiService implements ICustomerApiService
         {
             return new CustomerApiError(CustomerErrorCode.TenantTaken)
         }
-        if (err instanceof InvalidRecordIdError || err instanceof EmailDomainsNotEditableError || err instanceof DomainNotClaimedError)
+        if (err instanceof InvalidRecordIdError || err instanceof EmailDomainsNotEditableError || err instanceof DomainNotClaimedError || err instanceof InvalidInstallTenantError)
         {
             return new CustomerApiError(CustomerErrorCode.InvalidRequest)
         }
@@ -321,7 +321,7 @@ export class PlatformCustomerApiService implements ICustomerApiService
         {
             return new CustomerApiError(CustomerErrorCode.RateLimited)
         }
-        if (err instanceof UnknownClientError || err instanceof DomainVerificationUnavailableError || err instanceof InvalidInstallReleaseError || err instanceof InvalidInstallTenantError || err instanceof ClientLockTimeoutError)
+        if (err instanceof UnknownClientError || err instanceof DomainVerificationUnavailableError || err instanceof InvalidInstallReleaseError || err instanceof ClientLockTimeoutError)
         {
             return new CustomerApiError(CustomerErrorCode.Unavailable)
         }
