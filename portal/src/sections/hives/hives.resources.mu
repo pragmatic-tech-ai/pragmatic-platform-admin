@@ -251,6 +251,33 @@ resources HivesResources {
                         }
                     }
 
+                    // Enrolment: a hive that connected itself by its key. Key id only; the platform holds no secret of it.
+                    StackPanel [ Orientation = Vertical, Visibility = $IsEnrolled << ToVisibility ] {
+                        TextBlock [ Text = "Enrolment", Style = @UiLabel, Foreground = @Fg1, Margin = (0,0,0,6) ]
+                        Border [ Fill = @Bg1, Stroke = Pen [ Brush = @Border ], Padding = (12,10,12,10), Margin = (0,0,0,16) ] {
+                            Grid {
+                                ColumnDefinitions {
+                                    ColumnDefinition [ Width = GridLength.Star ]
+                                    ColumnDefinition [ Width = GridLength.Star ]
+                                    ColumnDefinition [ Width = GridLength.Star ]
+                                }
+                                StackPanel [ Grid.Column = 0, Orientation = Vertical ] {
+                                    TextBlock [ Text = "Level", Style = @UiCaption, Foreground = @Fg2 ]
+                                    TextBlock [ Text = $LevelLabel, Foreground = @Fg0 ]
+                                    TextBlock [ Text = $EnrolledLabel, Style = @UiCaption, Foreground = @Fg2 ]
+                                }
+                                StackPanel [ Grid.Column = 1, Orientation = Vertical ] {
+                                    TextBlock [ Text = "Key id", Style = @UiCaption, Foreground = @Fg2 ]
+                                    TextBlock [ Text = $KeyIdLabel, Style = @Code, Foreground = @Fg0 ]
+                                }
+                                StackPanel [ Grid.Column = 2, Orientation = Vertical ] {
+                                    TextBlock [ Text = "Console address", Style = @UiCaption, Foreground = @Fg2 ]
+                                    TextBlock [ Text = $ConsoleAddressLabel, Foreground = @Fg0, TextWrapping = Wrap ]
+                                }
+                            }
+                        }
+                    }
+
                     // Credentials: referenced by name; values are never shown.
                     TextBlock [ Text = "Credentials", Style = @UiLabel, Foreground = @Fg1, Margin = (0,0,0,4) ]
                     TextBlock [ Text = "Referenced by name. No secret value is shown here.",

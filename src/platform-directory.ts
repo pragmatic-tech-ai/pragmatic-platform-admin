@@ -1,11 +1,24 @@
 import type { ClientRegistry } from './client-registry.js'
 import type { TenantRegistry } from './tenant-registry.js'
 import type { HiveRegistry } from './hive-registry.js'
-import { type EnvironmentRecord, HivePlacementError, RecordId, type TenantRecord, type HiveRecord, type ClusterSpec, type RegistrySpec, K8sManifestBuilder, EmailDomainPolicy, type HiveConsoleSpec, type ITenantRecordSource } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { type EnvironmentRecord, HivePlacementError, RecordId, type TenantRecord, type HiveRecord, type ClusterSpec, type RegistrySpec, K8sManifestBuilder, EmailDomainPolicy, type HiveConsoleSpec, type ITenantRecordSource, HiveBackend, InfraMode } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { UnknownHiveError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { HiveConsoleSpecs } from './hive-console-spec.js'
 import { HiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
-import type { ClientRecord, PlatformHiveRecord, PlatformTenantRecord } from './platform-records.js'
+import type { ClientRecord, EnrolledConsoleAddress, PlatformHiveRecord, PlatformTenantRecord } from './platform-records.js'
+
+/** What an enrolling hive is recorded with (PlatformDirectory.EnrolHive). */
+export interface EnrolledHiveInput
+{
+    id: string
+    tenantId: string
+    level: HiveLevel
+    publicKey: string
+    keyId: string
+    engineVersion: string
+    consoleAddress: EnrolledConsoleAddress
+    enrolledBy: string
+}
 
 export interface IEnvironmentLookup
 {
@@ -325,6 +338,46 @@ export class PlatformDirectory implements ITenantRecordSource
         }
         await this.hives.Put(record)
         return record
+    }
+
+    /**
+     * Records a hive that enrolled itself (C3.3): by its public key alone (no agent token, no cluster credential), at the
+     * level its one-time code was issued for, with the console address and engine version it reported. The cluster is
+     * the customer's (attached, private: the platform never reaches into it), the registry theirs.
+     */
+    public async EnrolHive(input: EnrolledHiveInput): Promise<PlatformHiveRecord>
+    {
+        K8sManifestBuilder.AssertValidHiveId(input.id)
+        this.AssertNew(RecordKind.Hive, input.id, this.hives.Get(input.id))
+        if (this.tenants.Get(input.tenantId) === undefined)
+        {
+            throw new UnknownTenantError(input.tenantId)
+        }
+        const stamp = this.Stamp()
+        const record: PlatformHiveRecord = {
+            id: input.id,
+            tenantId: input.tenantId,
+            displayName: input.id,
+            cluster: { backend: HiveBackend.Private, mode: InfraMode.Attach },
+            registry: { mode: InfraMode.Attach },
+            trustRootRef: this.defaultTrustRootRef,
+            createdAt: stamp,
+            level: input.level,
+            publicKey: input.publicKey,
+            keyId: input.keyId,
+            engineVersion: input.engineVersion,
+            consoleAddress: input.consoleAddress,
+            enrolledAt: stamp,
+            enrolledBy: input.enrolledBy,
+        }
+        await this.hives.Put(record)
+        return record
+    }
+
+    /** The hive enrolled with this key id, when one is (whether or not its customer left it). */
+    public HiveByKeyId(keyId: string): PlatformHiveRecord | undefined
+    {
+        return (this.hives.List() as readonly PlatformHiveRecord[]).find(hive => hive.keyId === keyId)
     }
 
     /** Sets (or, with undefined, clears) where the hive serves its tenant's console; a tenant has one console across its hives. */

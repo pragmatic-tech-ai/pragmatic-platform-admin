@@ -1,5 +1,6 @@
 import type { ClientKind } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import { HiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import type { ConsoleAddressOption } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { HiveRecord, TenantRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 
 /**
@@ -50,6 +51,24 @@ export type PlatformTenantRecord = TenantRecord & {
 export type PlatformHiveRecord = HiveRecord & {
     level?: HiveLevel
     leftAt?: string
+    /** An enrolled hive's public key (the hive protocol's text form; the private half never left the cluster) and its
+     *  key id. Absent on a hive the platform installed by push (it holds an agent token instead, `agentTokenRef`). */
+    publicKey?: string
+    keyId?: string
+    /** The engine version the hive reported at enrolment. */
+    engineVersion?: string
+    /** Where the enrolled hive's console is reached, as reported at enrolment. */
+    consoleAddress?: EnrolledConsoleAddress
+    enrolledAt?: string
+    /** The subject key of the customer admin whose one-time code enrolled the hive. */
+    enrolledBy?: string
+}
+
+/** An enrolled hive's console address (the hive protocol's ConsoleAddress, kept in the record's own casing). */
+export type EnrolledConsoleAddress = {
+    Option: ConsoleAddressOption
+    Host: string
+    IngressAddress: string | null
 }
 
 /** Reading the console's additions to the hive record. */
@@ -64,5 +83,17 @@ export class PlatformHiveRecords
     public static HasLeft(hive: PlatformHiveRecord): boolean
     {
         return hive.leftAt !== undefined
+    }
+
+    /** Whether the hive enrolled itself by its key (C3.3), rather than being installed by push with an agent token. */
+    public static IsEnrolled(hive: PlatformHiveRecord): boolean
+    {
+        return hive.publicKey !== undefined
+    }
+
+    /** Whether the hive serves its tenant's console: one the operator configured, or the engine console it enrolled from. */
+    public static ServesConsole(hive: PlatformHiveRecord): boolean
+    {
+        return hive.console !== undefined || hive.consoleAddress !== undefined
     }
 }

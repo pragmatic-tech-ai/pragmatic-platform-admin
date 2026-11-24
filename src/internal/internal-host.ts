@@ -6,6 +6,8 @@ import { CustomerCallAuthenticator, EntitlementReceiver } from '@pragmatic-tech-
 import type { ICentralLoginVerifier, IEntitlementSink } from '@pragmatic-tech-ai/pragmatic-entitlements-contract'
 import { CustomerApiRoutes } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
 import type { ICustomerApiService } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import type { IAgentChannel } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { AgentExchangeRoute } from '../hive-channel/agent-exchange-route.js'
 import { InternalSettings } from './internal-settings.js'
 
 /** What the internal listener answers with. The entitlements and customer parts are needed only for their links: a
@@ -17,6 +19,8 @@ export interface InternalHostParts
     Sink?: IEntitlementSink
     Customer?: ICustomerApiService
     Verifier?: ICentralLoginVerifier
+    /** The signed agent exchange (C3.3); absent when the console has no https agent channel URL to answer with. */
+    Exchange?: IAgentChannel
 }
 
 /** A link's setting is on but the composition gave the host no part to answer it with. */
@@ -38,13 +42,15 @@ export enum InternalLink
     InternalApi = 'internal-api',
     Entitlements = 'entitlements',
     CustomerApi = 'customer-api',
+    AgentExchange = 'agent-exchange',
 }
 
 /**
  * The console's internal listener (loopback, or the mesh; never public) on AppHost, carrying one link per caller, each
  * with its own bearer: the edge's internal API (agent channel and desktop discovery, carried verbatim: the reply's own
  * Status is inside the 200 body), the ledger's entitlement statements (EntitlementReceiver) and the customer API the
- * edge relays (CustomerApiRoutes, which verifies the customer's central-login token itself). Without a link's setting
+ * edge relays (CustomerApiRoutes, which verifies the customer's central-login token itself), and the signed agent
+ * exchange (AgentExchangeRoute, under the internal bearer; the envelope is verified end to end). Without a link's setting
  * its routes are absent (404). Every credential is read when the host is composed, so a bad secret file refuses the
  * start, naming its setting.
  */
@@ -77,7 +83,13 @@ export class InternalHost
     {
         const routes = new RouteTable()
         const links: InternalLink[] = [InternalLink.InternalApi]
-        this.MountInternalApi(routes, new InternalApiGuard(settings.InternalCredential()))
+        const guard = new InternalApiGuard(settings.InternalCredential())
+        this.MountInternalApi(routes, guard)
+        if (parts.Exchange !== undefined)
+        {
+            new AgentExchangeRoute(parts.Exchange).MountOn(routes, guard)
+            links.push(InternalLink.AgentExchange)
+        }
         const entitlements = settings.EntitlementsCredential()
         if (entitlements !== undefined)
         {

@@ -225,4 +225,32 @@ describe('Hives section', () =>
         await Tick.Settle()
         assert.equal(fx.Dialogs.Shown.length, 0)
     })
+
+    it('an enrolled hive shows its level, key id and console address, never its key', async () =>
+    {
+        const fx = new HivesFixture()
+        const hive = fx.Api.Hives[0]!
+        Object.assign(hive, {
+            level: 'delegated', publicKey: 'PUBLIC-KEY-TEXT', keyId: 'kid-abc123', engineVersion: '0.1.7', enrolledAt: '2026-11-24T10:00:00.000Z',
+            consoleAddress: { Option: 'hive-subdomain', Host: 'acme.hives.pragmatic-tech.ai', IngressAddress: '203.0.113.7' },
+        })
+        const detail = await fx.Detail()
+        assert.equal(detail.IsEnrolled, true)
+        assert.equal(detail.LevelLabel, 'Delegated')
+        assert.equal(detail.KeyIdLabel, 'kid-abc123')
+        assert.equal(detail.ConsoleAddressLabel, 'acme.hives.pragmatic-tech.ai at 203.0.113.7 (hive subdomain)')
+        assert.match(detail.EnrolledLabel, /engine 0\.1\.7/)
+        for (const label of [detail.LevelLabel, detail.KeyIdLabel, detail.ConsoleAddressLabel, detail.EnrolledLabel])
+        {
+            assert.ok(!label.includes('PUBLIC-KEY-TEXT'))
+        }
+    })
+
+    it('a hive installed by push has no enrolment panel and reads as Hosted', async () =>
+    {
+        const detail = await new HivesFixture().Detail()
+        assert.equal(detail.IsEnrolled, false)
+        assert.equal(detail.LevelLabel, 'Hosted')
+        assert.equal(detail.ConsoleAddressLabel, '')
+    })
 })

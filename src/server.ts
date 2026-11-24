@@ -7,6 +7,7 @@ import { SealedSecretStore } from './sealed-secret-store.js'
 import { LocalDesktopDiscoveryBackend } from './desktop-discovery-backend.js'
 import { DesktopDiscoveryEndpoint } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { InternalHost } from './internal/internal-host.js'
+import { HiveChannel } from './hive-channel/hive-channel.js'
 import { InternalSettings } from './internal/internal-settings.js'
 import { ClientProjection } from './entitlements/client-projection.js'
 import { SqlEntitlementSink } from './entitlements/sql-entitlement-sink.js'
@@ -365,9 +366,14 @@ export class ControlPlaneServer
             adverts, fingerprintKeys, approvals, registry)
         const discovery = new DesktopDiscoveryEndpoint(discoveryBackend, DesktopDiscoveryEndpoint.NewThrottle())
         const internalSettings = InternalSettings.Of(process.env)
+        // The signed agent exchange (C3.3): enrolment by one-time code and signed reports, answered under the platform
+        // signing key (the trust root every enrolled hive adopts).
+        const exchange = internalSettings === undefined ? undefined : await HiveChannel.Compose({
+            Session: database.Session, Hives: directory, Codes: codes, Observations: observations, Keys: keys, KeyRef: signing.PlatformSigner.KeyRef, ChannelUrl: agentChannelUrl,
+        })
         const internalStart = internalSettings === undefined ? undefined
             : new InternalHost(internalSettings, {
-                Agent: agentBackend, Discovery: discoveryBackend, Sink: entitlements, Customer: customerApi,
+                Agent: agentBackend, Discovery: discoveryBackend, Sink: entitlements, Customer: customerApi, Exchange: exchange,
                 Verifier: internalSettings.Central === undefined ? undefined : CentralLoginVerifiers.Create(internalSettings.Central),
             })
         // Installs a Local hive's tenant console through the same cluster access.

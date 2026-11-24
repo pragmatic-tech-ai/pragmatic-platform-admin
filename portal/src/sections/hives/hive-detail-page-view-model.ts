@@ -3,7 +3,7 @@ import { Observable } from '@pragmatic-tech-ai/todl-runtime'
 import { ApiError, ControlPlaneErrors } from '../../api-client.js'
 import { FleetConnection, FleetViewModel, type FleetRow } from '../../fleet-view-model.js'
 import { PortalDates } from '../../portal-dates.js'
-import type { EnvRolloutDto, FleetHiveDto, HiveDeleteOutcomeDto, HiveDto, HiveRolloutDto, LedgerDto, ObservationDto, PolicyDto } from '../../portal-types.js'
+import type { EnvRolloutDto, FleetHiveDto, HiveDeleteOutcomeDto, HiveDto, HiveLevelDto, HiveRolloutDto, LedgerDto, ObservationDto, PolicyDto } from '../../portal-types.js'
 import { ObservedEnvironmentsViewModel } from '../../shell/observed-environments-view-model.js'
 import { PortalPageViewModel } from '../../shell/portal-page-view-model.js'
 import type { PortalSessionService } from '../../shell/portal-session-service.js'
@@ -195,6 +195,22 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
     private static readonly NoToken = ''
     private static readonly DisplayNameProperty = 'DisplayName'
     private static readonly OwnerLabelProperty = 'OwnerLabel'
+    private static readonly IsEnrolledProperty = 'IsEnrolled'
+    private static readonly LevelLabelProperty = 'LevelLabel'
+    private static readonly KeyIdLabelProperty = 'KeyIdLabel'
+    private static readonly ConsoleAddressLabelProperty = 'ConsoleAddressLabel'
+    private static readonly EnrolledLabelProperty = 'EnrolledLabel'
+    private static readonly LevelLabels: Readonly<Record<HiveLevelDto, string>> = { standalone: 'Standalone', enrolled: 'Enrolled', delegated: 'Delegated', hosted: 'Hosted' }
+    private static readonly DefaultLevel: HiveLevelDto = 'hosted'
+    private static readonly ConsoleOptionLabels: ReadonlyMap<string, string> = new Map([
+        ['own-domain', 'own domain'], ['hive-subdomain', 'hive subdomain'], ['relayed-hive-subdomain', 'relayed hive subdomain'],
+    ])
+    private static readonly ConsoleOptionOpen = ' ('
+    private static readonly ConsoleOptionClose = ')'
+    private static readonly IngressSeparator = ' at '
+    private static readonly EnrolledTemplate = 'Enrolled {when}, engine {version}'
+    private static readonly WhenToken = '{when}'
+    private static readonly VersionToken = '{version}'
     private static readonly ClusterLabelProperty = 'ClusterLabel'
     private static readonly ConnectionLabelProperty = 'ConnectionLabel'
     private static readonly LastSeenLabelProperty = 'LastSeenLabel'
@@ -279,6 +295,47 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
     public get OwnerLabel(): string
     {
         return this.row?.ownerLabel ?? ''
+    }
+
+    // Whether the hive enrolled itself by its key (C3.3), so the enrolment panel shows.
+    public get IsEnrolled(): boolean
+    {
+        return this.hive?.publicKey !== undefined
+    }
+
+    public get LevelLabel(): string
+    {
+        const P = HiveDetailPageViewModel
+        return P.LevelLabels[this.hive?.level ?? P.DefaultLevel]
+    }
+
+    // The key id only: the platform holds no secret of an enrolled hive, and the public key itself is not shown.
+    public get KeyIdLabel(): string
+    {
+        return this.hive?.keyId ?? ''
+    }
+
+    public get ConsoleAddressLabel(): string
+    {
+        const P = HiveDetailPageViewModel
+        const address = this.hive?.consoleAddress
+        if (address === undefined)
+        {
+            return ''
+        }
+        const ingress = address.IngressAddress === null ? '' : P.IngressSeparator + address.IngressAddress
+        return address.Host + ingress + P.ConsoleOptionOpen + (P.ConsoleOptionLabels.get(address.Option) ?? address.Option) + P.ConsoleOptionClose
+    }
+
+    public get EnrolledLabel(): string
+    {
+        const P = HiveDetailPageViewModel
+        const hive = this.hive
+        if (hive?.enrolledAt === undefined)
+        {
+            return ''
+        }
+        return P.EnrolledTemplate.replace(P.WhenToken, PortalDates.Label(hive.enrolledAt)).replace(P.VersionToken, hive.engineVersion ?? '')
     }
 
     public get ClusterLabel(): string
@@ -581,6 +638,11 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
         return {
             DisplayName: this.DisplayName,
             OwnerLabel: this.OwnerLabel,
+            IsEnrolled: this.IsEnrolled,
+            LevelLabel: this.LevelLabel,
+            KeyIdLabel: this.KeyIdLabel,
+            ConsoleAddressLabel: this.ConsoleAddressLabel,
+            EnrolledLabel: this.EnrolledLabel,
             ClusterLabel: this.ClusterLabel,
             ConnectionLabel: this.ConnectionLabel,
             LastSeenLabel: this.LastSeenLabel,
@@ -602,6 +664,11 @@ export class HiveDetailPageViewModel extends PortalPageViewModel
         const P = HiveDetailPageViewModel
         this.RaisePropertyChanged(P.DisplayNameProperty, b.DisplayName, this.DisplayName)
         this.RaisePropertyChanged(P.OwnerLabelProperty, b.OwnerLabel, this.OwnerLabel)
+        this.RaisePropertyChanged(P.IsEnrolledProperty, b.IsEnrolled, this.IsEnrolled)
+        this.RaisePropertyChanged(P.LevelLabelProperty, b.LevelLabel, this.LevelLabel)
+        this.RaisePropertyChanged(P.KeyIdLabelProperty, b.KeyIdLabel, this.KeyIdLabel)
+        this.RaisePropertyChanged(P.ConsoleAddressLabelProperty, b.ConsoleAddressLabel, this.ConsoleAddressLabel)
+        this.RaisePropertyChanged(P.EnrolledLabelProperty, b.EnrolledLabel, this.EnrolledLabel)
         this.RaisePropertyChanged(P.ClusterLabelProperty, b.ClusterLabel, this.ClusterLabel)
         this.RaisePropertyChanged(P.ConnectionLabelProperty, b.ConnectionLabel, this.ConnectionLabel)
         this.RaisePropertyChanged(P.LastSeenLabelProperty, b.LastSeenLabel, this.LastSeenLabel)
@@ -741,6 +808,11 @@ interface HiveDetailSnapshot
 {
     readonly DisplayName: string
     readonly OwnerLabel: string
+    readonly IsEnrolled: boolean
+    readonly LevelLabel: string
+    readonly KeyIdLabel: string
+    readonly ConsoleAddressLabel: string
+    readonly EnrolledLabel: string
     readonly ClusterLabel: string
     readonly ConnectionLabel: string
     readonly LastSeenLabel: string

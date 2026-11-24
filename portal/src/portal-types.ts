@@ -90,7 +90,17 @@ export type HiveDto =
     trustRootRef?: string
     // Set once the operator chose to run the tenant console in this hive.
     console?: HiveConsoleSpecDto
+    // The management level (absent on a record from before levels: Hosted).
+    level?: HiveLevelDto
+    // Set on a hive that enrolled itself by its key (C3.3): the key's public half and id, never a secret.
+    publicKey?: string
+    keyId?: string
+    engineVersion?: string
+    consoleAddress?: { Option: string; Host: string; IngressAddress: string | null }
+    enrolledAt?: string
 }
+
+export type HiveLevelDto = 'standalone' | 'enrolled' | 'delegated' | 'hosted'
 
 export type GraphDto =
 {
