@@ -11,7 +11,7 @@ import { ComponentSources } from './component-sources.js'
 class PlatformAdminComponentFixture
 {
     public static readonly Here = dirname(fileURLToPath(import.meta.url))
-    public static readonly Readers = [['..', 'server.ts'], ['..', 'key-stores.ts'], ['..', 'infra-target-mode.ts'], ['..', 'hosted-kubeconfig.ts'], ['..', 'release', 'release-catalog-config.ts'], ['..', 'platform-admin-database.ts'], ['..', 'operator-sign-in', 'operator-oidc-settings.ts'], ['..', 'internal', 'internal-settings.ts'], ['..', 'customer', 'central-login-settings.ts']].map(path => join(PlatformAdminComponentFixture.Here, ...path))
+    public static readonly Readers = [['..', 'server.ts'], ['..', 'key-stores.ts'], ['..', 'infra-target-mode.ts'], ['..', 'hosted-kubeconfig.ts'], ['..', 'hosts', 'platform-sealing-key.ts'], ['..', 'release', 'release-catalog-config.ts'], ['..', 'platform-admin-database.ts'], ['..', 'operator-sign-in', 'operator-oidc-settings.ts'], ['..', 'internal', 'internal-settings.ts'], ['..', 'customer', 'central-login-settings.ts']].map(path => join(PlatformAdminComponentFixture.Here, ...path))
         .concat([join(dirname(fileURLToPath(import.meta.resolve('@pragmatic-tech-ai/pragmatic-platform-link'))), 'internal-api-link.js')])
     /**
      * PRAGMATIC_ADMIN_OPERATOR_PASSWORD: the inline alternative of operatorPassword (the declared source is the file).

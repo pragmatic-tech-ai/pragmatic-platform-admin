@@ -14,6 +14,12 @@ export class HiveViews
 {
     public static readonly FreshMs = 2 * 60 * 1000
     public static readonly UnreachableMs = 10 * 60 * 1000
+    private static readonly PlacementHealth: ReadonlyMap<PlacementState, HiveHealth> = new Map([
+        [PlacementState.Failed, HiveHealth.Degraded],
+        [PlacementState.Cancelled, HiveHealth.Gone],
+        [PlacementState.Removing, HiveHealth.Gone],
+        [PlacementState.Removed, HiveHealth.Gone],
+    ])
 
     public static Of(hive: PlatformHiveRecord, observation: HiveObservationRecord | undefined, now: Date): HiveView
     {
@@ -23,11 +29,13 @@ export class HiveViews
         return new HiveView(hive.id, hive.tenantId, PlatformHiveRecords.LevelOf(hive), PlatformHiveRecords.ServesConsole(hive), HiveViews.HealthOf(hive, observation, reportedAt, environments, now), reportedAt, environments)
     }
 
-    /** An open placement: a Hosted hive the platform has not placed yet (pending); a cancelled one is gone. */
+    /**
+     * A placement no hive enrolled from yet: a Hosted hive being placed (pending), one its host could not place
+     * (degraded), or one withdrawn (cancelled, removing, removed: gone).
+     */
     public static OfPlacement(placement: PlacementRecord): HiveView
     {
-        const health = placement.state === PlacementState.Cancelled ? HiveHealth.Gone : HiveHealth.Pending
-        return new HiveView(placement.id, placement.tenantId, HiveLevel.Hosted, false, health, null, [])
+        return new HiveView(placement.id, placement.tenantId, HiveLevel.Hosted, false, HiveViews.PlacementHealth.get(placement.state) ?? HiveHealth.Pending, null, [])
     }
 
     private static HealthOf(hive: PlatformHiveRecord, observation: HiveObservationRecord | undefined, reportedAt: Date | null, environments: readonly EnvironmentReport[], now: Date): HiveHealth

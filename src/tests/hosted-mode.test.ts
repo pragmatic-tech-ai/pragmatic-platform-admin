@@ -101,9 +101,11 @@ describe('HostedKubeconfig.Apply', () =>
         })
     })
 
-    it('refuses an unset setting, a missing file and a non-kubeconfig file with the copy, never the content', () =>
+    it('takes an unset setting as no shared kubeconfig; refuses a missing file and a non-kubeconfig file with the copy, never the content', () =>
     {
-        assert.throws(() => HostedKubeconfig.Apply({}), { message: HostedFixture.BadFileCopy })
+        const unset: NodeJS.ProcessEnv = {}
+        HostedKubeconfig.Apply(unset)
+        assert.equal(unset.KUBECONFIG, undefined, 'unset: no shared kubeconfig (placed hives carry their own credential)')
         HostedFixture.WithFile(undefined, path =>
         {
             assert.throws(() => HostedKubeconfig.Apply({ [HostedFixture.Setting]: path }), { message: HostedFixture.BadFileCopy })

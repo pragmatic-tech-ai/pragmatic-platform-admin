@@ -34,6 +34,10 @@ export enum PlatformAdminRegistry
     OperatorDirectory = 'operator_directory',
     EnrolmentCodes = 'enrolment_codes',
     Placements = 'placements',
+    /** The enrolled host agents (C5.1). */
+    Hosts = 'hosts',
+    /** The per-host queues of signed placement requests (C5.1). */
+    PlacementQueue = 'placement_queue',
     /** The ledger's entitlement statements: SqlEntitlementSink's own rows (an EntitlementRecord per client, written
      *  version-conditionally through SqlRecordStore, not the record-map row form); listed here so the importer refuses a
      *  database that already holds statements. */

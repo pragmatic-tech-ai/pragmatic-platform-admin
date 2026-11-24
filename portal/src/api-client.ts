@@ -1,7 +1,7 @@
 import { ApiError, AppSessionClient, type FetchFunction } from '@pragmatic-tech-ai/pragmatic-app-shell'
 import { BrowserEventSockets, type IEventSocket, type IEventSocketFactory } from './shell/event-sockets.js'
 import { PlatformShell } from './shell/platform-shell.js'
-import type { StaffOperatorDto, ClientDto, CreatedTenantDto, EnvironmentDto, HiveDto, FleetHiveDto, ManifestDto, OperatorSummaryDto, GatingDto, SelectionDto, HiveRolloutDto, TenantDto, GraphDto, GraphLoadedDto, PromotionResultDto, ProvisionInputDto, ProvisionResultDto, PolicyDto, ActivityDto, ObservationDto, LedgerDto, HiveBootstrapDto, RolloutRegistrationDto, AgentInstallStatusDto, HiveDeleteOutcomeDto, OwnerPasswordResetDto, HiveConsoleSpecDto, ConsoleInstallStatusDto, ConsoleRemovalDto, InHiveOwnerPasswordDto, ReleaseRefreshDto, TenantEmailDomainsDto, ProvisionRollbackDto } from './portal-types.js'
+import type { HostDto, HostCodeDto, StaffOperatorDto, ClientDto, CreatedTenantDto, EnvironmentDto, HiveDto, FleetHiveDto, ManifestDto, OperatorSummaryDto, GatingDto, SelectionDto, HiveRolloutDto, TenantDto, GraphDto, GraphLoadedDto, PromotionResultDto, ProvisionInputDto, ProvisionResultDto, PolicyDto, ActivityDto, ObservationDto, LedgerDto, HiveBootstrapDto, RolloutRegistrationDto, AgentInstallStatusDto, HiveDeleteOutcomeDto, OwnerPasswordResetDto, HiveConsoleSpecDto, ConsoleInstallStatusDto, ConsoleRemovalDto, InHiveOwnerPasswordDto, ReleaseRefreshDto, TenantEmailDomainsDto, ProvisionRollbackDto } from './portal-types.js'
 
 // The shell's error type: thrown for every non-2xx control-plane answer, its message the server's error text, its
 // Code the server's machine-readable code and its Body the whole error reply (a provision's rollback).
@@ -69,6 +69,8 @@ export class ControlPlaneClient extends AppSessionClient
     private static readonly RoleKey = 'role'
     private static readonly DisabledKey = 'disabled'
     private static readonly ActivityRoute = '/api/activity'
+    private static readonly HostsRoute = '/api/hosts'
+    private static readonly HostCodeRoute = '/api/hosts/enrolment-code'
     private static readonly ObservationsSegment = 'observations'
     private static readonly LedgerSegment = 'ledger'
     private static readonly BootstrapSegment = 'bootstrap'
@@ -310,6 +312,17 @@ export class ControlPlaneClient extends AppSessionClient
     private TenantPolicyRoute(tenantId: string, action: string): string
     {
         return this.ItemRoute(ControlPlaneClient.TenantsRoute, tenantId) + ControlPlaneClient.PathSeparator + ControlPlaneClient.PolicySegment + ControlPlaneClient.PathSeparator + action
+    }
+
+    public async ListHosts(): Promise<HostDto[]>
+    {
+        return await this.Get<HostDto[]>(ControlPlaneClient.HostsRoute)
+    }
+
+    // A one-time host enrolment code: shown once, never readable again.
+    public async IssueHostCode(): Promise<HostCodeDto>
+    {
+        return await this.Post<HostCodeDto>(ControlPlaneClient.HostCodeRoute)
     }
 
     public async ListActivity(limit?: number): Promise<ActivityDto[]>

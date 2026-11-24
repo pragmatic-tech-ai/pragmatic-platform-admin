@@ -13,5 +13,6 @@ export class ReleaseApps
         ReleaseApp.TenantIdp,
         ReleaseApp.UiUnpack,
         ReleaseApp.Postgres,
+        ReleaseApp.HostAgent,
     ]
 }

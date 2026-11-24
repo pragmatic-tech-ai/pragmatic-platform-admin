@@ -12,7 +12,8 @@ import { HiveViews } from './hive-views.js'
 import { EngineInstallCommand, InvalidInstallReleaseError, InvalidInstallTenantError } from '../enrolment/engine-install-command.js'
 import { EnrolmentAgentKind } from '../enrolment/enrolment-code-record.js'
 import type { EnrolmentCodeIssuer } from '../enrolment/enrolment-code-issuer.js'
-import type { PlacementRegistry } from '../placement/placement-registry.js'
+import { PlacementRegistry } from '../placement/placement-registry.js'
+import { PlacementState, type PlacementRecord } from '../placement/placement-record.js'
 import type { HiveObservationRecord } from '../hive-observation-record.js'
 import { PlatformHiveRecords, type PlatformHiveRecord } from '../platform-records.js'
 
@@ -188,7 +189,7 @@ export class PlatformCustomerApiService implements ICustomerApiService
         const now = this.Now()
         const hives = tenants.flatMap(tenant => this.parts.Directory.ListHives(tenant.id) as readonly PlatformHiveRecord[])
             .map(hive => HiveViews.Of(hive, this.parts.Reports.LatestRecord(hive.id), now))
-        const placements = this.parts.Placements.OpenFor(request.ClientId, request.TenantId ?? undefined).map(placement => HiveViews.OfPlacement(placement))
+        const placements = this.parts.Placements.ShownFor(request.ClientId, request.TenantId ?? undefined).map(placement => HiveViews.OfPlacement(placement))
         return [...hives, ...placements]
     }
 
@@ -196,16 +197,17 @@ export class PlatformCustomerApiService implements ICustomerApiService
      * The customer uninstalled: the hive is marked gone first (kept, never deleted; from then on the deployment registry
      * refuses to register it again, so an install or registration racing the leave cannot bring its agent back), then its
      * agent registration is revoked and its console advert forgotten (its domain claims released). Leaving a Hosted hive
-     * records an operator activity entry: its cluster is still placed on our machines. An open placement of the client is
-     * withdrawn (cancelled) instead. Never gated: a suspended client may leave. Leaving again answers the gone hive.
+     * placed by a host (C5.1) publishes its removal (the host deletes the cluster; on removed its credential is deleted);
+     * leaving a legacy Hosted hive records an operator activity entry: its cluster is still placed on our machines. A
+     * placement no hive enrolled from yet is withdrawn instead: cancelled while requested, otherwise removed from its host. Never gated: a suspended client may leave. Leaving again answers the gone hive.
      */
     public async LeaveHive(customer: CentralLoginSubject, request: LeaveHiveRequest): Promise<HiveView>
     {
         await this.RequireAdmin(customer, request.ClientId)
-        const placement = this.parts.Placements.OpenOf(request.ClientId, request.HiveId)
+        const placement = this.parts.Placements.ShownOf(request.ClientId, request.HiveId)
         if (placement !== undefined)
         {
-            return HiveViews.OfPlacement(await this.parts.Placements.Cancel(placement.id))
+            return HiveViews.OfPlacement(await this.Withdraw(placement))
         }
         const directory = this.parts.Directory
         const hive = directory.GetHive(request.HiveId) as PlatformHiveRecord | undefined
@@ -218,12 +220,27 @@ export class PlatformCustomerApiService implements ICustomerApiService
         const left = await directory.MarkHiveLeft(hive.id)
         await this.parts.Registrations.DeregisterHive(hive.id)
         await this.parts.Adverts.ForgetHive(hive.id)
-        if (leaving && PlatformHiveRecords.LevelOf(left) === HiveLevel.Hosted)
+        const placed = this.parts.Placements.OfHive(hive.id)
+        if (placed !== undefined)
+        {
+            // A hive placed on one of our hosts (C5.1): its host removes the cluster, then its credential is deleted.
+            if (PlacementRegistry.IsRemovable(placed))
+            {
+                await this.parts.Placements.BeginRemoval(placed.id)
+            }
+        }
+        else if (leaving && PlatformHiveRecords.LevelOf(left) === HiveLevel.Hosted)
         {
             const S = PlatformCustomerApiService
             await this.parts.Activity?.Record(customer.Email, S.LeaveAction, S.LeaveTarget, S.StatusOk, S.HostedLeftPrefix + hive.id + S.HostedLeftSuffix)
         }
         return HiveViews.Of(left, this.parts.Reports.LatestRecord(hive.id), this.Now())
+    }
+
+    /** A placement no hive enrolled from yet: cancelled while requested, otherwise removed from its host. */
+    private async Withdraw(placement: PlacementRecord): Promise<PlacementRecord>
+    {
+        return placement.state === PlacementState.Requested ? await this.parts.Placements.Cancel(placement.id) : await this.parts.Placements.BeginRemoval(placement.id)
     }
 
     /** The statement, when the customer administers the client. */

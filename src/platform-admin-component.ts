@@ -1,5 +1,6 @@
 import { SettingType, type ComponentDescriptor, ComponentDeclarations, type ComponentDeclaration } from '@pragmatic-tech-ai/pragmatic-component'
 import { OperatorRoleClaims } from './operator-sessions.js'
+import { PlatformSealingKey } from './hosts/platform-sealing-key.js'
 import { OperatorOidcSettings } from './operator-sign-in/operator-oidc-settings.js'
 
 /**
@@ -35,7 +36,8 @@ export class PlatformAdminComponent
                     { name: 'signingKeyRef', type: SettingType.String, source: 'PRAGMATIC_ADMIN_SIGNING_KEY_REF', description: 'The platform image signing key reference (the generated platform key when unset).' },
                     { name: 'signingKey', type: SettingType.String, source: 'PRAGMATIC_ADMIN_SIGNING_KEY_FILE', secret: true, description: 'The platform signing key (a mounted secret file; the key store in the state folder when unset).' },
                     { name: 'infraTarget', type: SettingType.String, source: 'PRAGMATIC_ADMIN_INFRA_TARGET', default: 'local', description: 'local (this host\'s Docker and kind), none, or hosted (registered clusters over the mesh).' },
-                    { name: 'kubeconfig', type: SettingType.String, source: 'PRAGMATIC_ADMIN_KUBECONFIG_FILE', secret: true, description: 'The kubeconfig of the hosted clusters (a mounted secret file).' },
+                    { name: 'kubeconfig', type: SettingType.String, source: 'PRAGMATIC_ADMIN_KUBECONFIG_FILE', secret: true, description: 'The shared kubeconfig of the legacy hosted clusters (a mounted secret file); a hive placed by a host agent carries its own credential.' },
+                    { name: 'sealingKey', type: SettingType.String, source: PlatformSealingKey.EnvVar, secret: true, description: 'The X25519 private key (PKCS#8 PEM) host agents seal cluster credentials to (a mounted secret file); unset, the console takes no hosts.' },
                     { name: 'agentChannelUrl', type: SettingType.Url, source: 'PRAGMATIC_AGENT_CHANNEL_URL', description: 'Public URL of the agent channel that hive install bundles point at.' },
                     { name: 'desktopTenantPlaneUrl', type: SettingType.Url, source: 'PRAGMATIC_DESKTOP_TENANT_PLANE_URL', description: 'Where the desktop app finds the tenant plane (derived from the tenant plane settings when unset).' },
                 ],

@@ -7,6 +7,7 @@ import { EnrolmentCodeRefusal, EnrolmentCodeRefusedError, type EnrolmentCodeExpe
 import { EnrolmentAgentKind, type EnrolmentCodeRecord } from '../enrolment/enrolment-code-record.js'
 import type { EnrolledHiveInput } from '../platform-directory.js'
 import { PlatformHiveRecords, type PlatformHiveRecord } from '../platform-records.js'
+import type { IPlacementEnrolments } from '../placement/placement-hive-link.js'
 import type { HiveIdAllocator } from './hive-id-allocator.js'
 import { AgentAnswer, AgentExchangeRefusedError, type IAgentMessageHandler } from './platform-agent-exchange.js'
 
@@ -40,6 +41,8 @@ export interface HiveEnrolmentHandlerParts
     Ids: HiveIdAllocator
     TrustRoot: SigningPublicKey
     ChannelUrl: string
+    /** Hosted placements (C5.1): a hive enrolled with a placement's code is linked to it. Without it such a code is refused. */
+    Placements?: IPlacementEnrolments
 }
 
 /**
@@ -49,7 +52,9 @@ export interface HiveEnrolmentHandlerParts
  * channel URL. A key already registered to a hive is refused `key-registered` before the code is touched, except the
  * one recovery: the agent restarted after the platform recorded it but before it stored the answer (the hive is the
  * same tenant and level and has never reported), where a new valid code answers that same hive again and no second
- * record is made. Enrolments are taken one at a time, so two requests for one key cannot both record a hive.
+ * record is made. Enrolments are taken one at a time, so two requests for one key cannot both record a hive. A hosted
+ * hive's code (C5.1) names its placement: the hive is linked to it (and attached to its cluster once placed); a code
+ * whose placement was removed or cancelled enrols nothing (`mismatch`).
  */
 export class HiveEnrolmentHandler implements IAgentMessageHandler<HiveEnrolmentRequest>
 {
@@ -90,6 +95,11 @@ export class HiveEnrolmentHandler implements IAgentMessageHandler<HiveEnrolmentR
         }
         const id = existing?.id ?? this.parts.Ids.Next()
         const code = await this.Redeem(request, level)
+        // A placement's code enrols only while its placement still stands (never once it is removed or cancelled).
+        if (code.placementId !== undefined && this.parts.Placements?.Accepts(code.placementId) !== true)
+        {
+            throw new AgentExchangeRefusedError(AgentExchangeRefusal.Mismatch)
+        }
         const input: EnrolledHiveInput = {
             id,
             tenantId: request.Tenant,
@@ -102,6 +112,10 @@ export class HiveEnrolmentHandler implements IAgentMessageHandler<HiveEnrolmentR
         }
         // The recovery keeps the hive (its id and key) and records this enrolment's details and who asked.
         const hive = existing === undefined ? await this.parts.Hives.EnrolHive(input) : await this.parts.Hives.ReEnrolHive(existing.id, input)
+        if (code.placementId !== undefined)
+        {
+            await this.parts.Placements?.HiveEnrolled(code.placementId, hive.id)
+        }
         const response = HiveEnrolmentResponse.Create({
             HiveId: hive.id, Tenant: request.Tenant, Level: request.Level, TrustRoot: this.parts.TrustRoot, ChannelUrl: this.parts.ChannelUrl, RequestNonce: message.Envelope.Nonce,
         })

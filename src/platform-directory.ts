@@ -446,6 +446,28 @@ export class PlatformDirectory implements ITenantRecordSource
         return updated
     }
 
+    /**
+     * A hosted hive's cluster (C5.1): the hive enrolled from placement `placementId`, which the host placed, is driven by
+     * push through its own credential (`configRef`, the sealed store's `clusters/<placement>`). Kept the same when it
+     * already is. UnknownHiveError for an unknown id.
+     */
+    public async AttachHostedCluster(hiveId: string, placementId: string, configRef: string): Promise<PlatformHiveRecord>
+    {
+        const hive = this.hives.Get(hiveId) as PlatformHiveRecord | undefined
+        if (hive === undefined)
+        {
+            throw new UnknownHiveError(hiveId)
+        }
+        const cluster: ClusterSpec = { backend: HiveBackend.Local, mode: InfraMode.Attach, configRef }
+        if (hive.placementId === placementId && hive.cluster.backend === cluster.backend && hive.cluster.mode === cluster.mode && hive.cluster.configRef === configRef)
+        {
+            return hive
+        }
+        const updated: PlatformHiveRecord = { ...hive, cluster, placementId }
+        await this.hives.Put(updated)
+        return updated
+    }
+
     public async DeleteHive(id: string): Promise<void>
     {
         this.AssertHiveDeletable(id)

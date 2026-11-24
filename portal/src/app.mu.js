@@ -2,6 +2,7 @@ import { ActivityModule } from "./sections/activity/activity.module.mu.js";
 import { ClientsModule } from "./sections/clients/clients.module.mu.js";
 import { FleetModule } from "./sections/fleet/fleet.module.mu.js";
 import { HivesModule } from "./sections/hives/hives.module.mu.js";
+import { HostsModule } from "./sections/hosts/hosts.module.mu.js";
 import { ReleasePolicyModule } from "./sections/release-policy/release-policy.module.mu.js";
 import { ReleasesModule } from "./sections/releases/releases.module.mu.js";
 import { SettingsModule } from "./sections/settings/settings.module.mu.js";
@@ -34,6 +35,7 @@ export const app = (() => {
     _app0.AddModule(ClientsModule);
     _app0.AddModule(TenantsModule);
     _app0.AddModule(HivesModule);
+    _app0.AddModule(HostsModule);
     _app0.AddModule(ReleasesModule);
     _app0.AddModule(ReleasePolicyModule);
     _app0.AddModule(ActivityModule);

@@ -668,7 +668,7 @@ class PortalText
     public static readonly DeleteAnywayTitle = 'Delete the hive anyway?'
     // Each rail section's page title (its H3), in RailEntry order.
     public static readonly SectionTitles: readonly string[] = [
-        'Fleet', 'Clients', 'Tenants', 'Hives', 'Registry & Releases', 'Release Policy', 'Activity', 'Settings',
+        'Fleet', 'Clients', 'Tenants', 'Hives', 'Hosts', 'Registry & Releases', 'Release Policy', 'Activity', 'Settings',
     ]
     public static readonly HiveDetailCaptions: readonly string[] = [
         'Agent install', 'Download bundle', 'Reissue agent token',

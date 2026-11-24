@@ -30,6 +30,7 @@ import type { OperatorDirectory } from './operator-sign-in/operator-directory.js
 import { type DesktopDiscoveryEndpoint, ReleaseRegistryUnavailableError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { Channel, ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { OperatorSocketRegistry } from './operator-socket-registry.js'
+import type { HostRoutes } from './hosts/host-routes.js'
 import type { PlatformDirectory } from './platform-directory.js'
 import { HiveBootstrapBundle } from './hive-bootstrap-bundle.js'
 import { DevPlatformImages, PlatformImages, type IPlatformImages } from './platform-images.js'
@@ -198,6 +199,8 @@ export interface ControlPlaneHostOptions
     /** The clients' entitlement statements and the decision an operator's tenant or hive create passes (shared with the
      *  customer API); without it every such create is refused `not-entitled` (deny by default) and clients show none. */
     Entitlements?: OperatorEntitlementGate
+    /** The hosts' operator routes (C5.1: issue a host code, list hosts); absent, the routes are absent. */
+    Hosts?: HostRoutes
 }
 
 /**
@@ -589,6 +592,8 @@ export class ControlPlaneHost
         write(HttpMethod.Post, C.HiveConsoleOwnerPasswordPath, ctx => this.HandleHiveConsoleOwnerPassword(ctx))
         write(HttpMethod.Put, C.HiveConsolePath, ctx => this.HandleSetHiveConsole(ctx))
         write(HttpMethod.Delete, C.HiveConsolePath, ctx => this.HandleRemoveHiveConsole(ctx))
+        // Hosts (C5.1).
+        this.options.Hosts?.Register((pattern, handler) => read(pattern, handler), (method, pattern, handler) => write(method, pattern, handler))
         // Environments and graphs.
         read(C.EnvironmentsPath, async ctx => ctx.WriteJson(C.StatusOk, (await this.options.Service.ListReconciled()).map(r => EnvironmentDtoMapper.ToDto(r))))
         read(C.LoadedGraphPath, async ctx => ctx.WriteJson(C.StatusOk, await this.options.Graphs.GetLoaded(ctx.Param(C.EnvParam))))

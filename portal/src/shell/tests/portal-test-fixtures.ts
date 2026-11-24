@@ -12,7 +12,7 @@ import { PlatformShell } from '../platform-shell.js'
 import { OperatorContext } from '../../operator-context.js'
 import { AgentInstallState, AgentInstallStep, ConsoleInstallState, ConsoleInstallStep, DomainApprovalState, EmailDomainSource, type AgentInstallStatusDto, type ConsoleInstallStatusDto, type TenantEmailDomainsDto, type ClientEntitlementDto } from '../../portal-types.js'
 import type { ConsoleRemovalDto, HiveConsoleSpecDto, HiveDeleteOutcomeDto, InHiveOwnerPasswordDto, OwnerPasswordResetDto } from '../../portal-types.js'
-import type { ActivityDto, ClientDto, CreatedTenantDto, FleetHiveDto, GatingDto, HiveBootstrapDto, HiveDto, HiveRolloutDto, LedgerDto, ManifestDto, ObservationDto, OperatorSummaryDto, StaffOperatorDto, PolicyDto, ProvisionInputDto, ProvisionResultDto, ReleaseRefreshDto, SelectionDto, TenantDto } from '../../portal-types.js'
+import type { ActivityDto, HostCodeDto, HostDto, ClientDto, CreatedTenantDto, FleetHiveDto, GatingDto, HiveBootstrapDto, HiveDto, HiveRolloutDto, LedgerDto, ManifestDto, ObservationDto, OperatorSummaryDto, StaffOperatorDto, PolicyDto, ProvisionInputDto, ProvisionResultDto, ReleaseRefreshDto, SelectionDto, TenantDto } from '../../portal-types.js'
 import { DownloadService } from '../download-service.js'
 import { PollScheduling, type IPollScheduler } from '../poll-scheduler.js'
 import { PortalSessionService } from '../portal-session-service.js'
@@ -224,6 +224,9 @@ export class FakeControlPlane
     public Manifests: ManifestDto[] = []
     public Gating: GatingDto[] = []
     public Activity: ActivityDto[] = []
+    public Hosts: HostDto[] = []
+    public HostCode = 'pe1-FIXTUREHOSTCODEAAAAAAAAAA'
+    public HostCodesIssued = 0
     public Operators: OperatorSummaryDto[] = []
     public StaffOperators: StaffOperatorDto[] = []
     // Holds SetStaffOperatorDisabled until ReleaseStaffToggle (a mutation still in flight).
@@ -503,6 +506,17 @@ export class FakeControlPlane
     public async ListActivity(): Promise<ActivityDto[]>
     {
         return [...this.Activity]
+    }
+
+    public async ListHosts(): Promise<HostDto[]>
+    {
+        return this.Hosts.map(host => ({ ...host, placements: host.placements.map(p => ({ ...p })) }))
+    }
+
+    public async IssueHostCode(): Promise<HostCodeDto>
+    {
+        this.HostCodesIssued++
+        return { code: this.HostCode, expiresAt: '2026-11-24T12:30:00.000Z' }
     }
 
     public async ListOperators(): Promise<OperatorSummaryDto[]>

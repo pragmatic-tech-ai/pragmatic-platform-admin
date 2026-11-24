@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs'
 
 /**
- * The kubeconfig of the clusters a hosted admin drives, delivered as a file by the secret sync. Checked once at start, so a
- * missing or wrong file stops the admin instead of every later push; the refusal names the setting, never the content.
+ * The single shared kubeconfig of the legacy hosted clusters (records that name a context, placed before C5.1), delivered
+ * as a file by the secret sync. A hive placed by a host agent carries its own credential instead (the sealed store's
+ * `clusters/<placement>`), so the setting is optional: unset, there is no shared kubeconfig. Set, it is checked once at
+ * start, so a wrong file stops the admin instead of every later push; the refusal names the setting, never the content.
  * KUBECONFIG is then set for this process, and every kubectl it spawns inherits it.
  */
 export class HostedKubeconfig
@@ -26,7 +28,7 @@ export class HostedKubeconfig
         const path = env[H.EnvVar]?.trim() ?? ''
         if (path === '')
         {
-            throw new Error(H.BadFileMessage)
+            return
         }
         let text: string
         try

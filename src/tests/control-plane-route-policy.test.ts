@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { AuthorizationOutcome, ClaimsAuthorizer, HttpMethod, RouteAuth, SessionPolicy, SessionRecord, type RouteTable } from '@pragmatic-tech-ai/pragmatic-app-host'
 import { ControlPlaneHost, type ControlPlaneHostOptions } from '../control-plane-host.js'
 import { OperatorRole } from '../operator-identity.js'
+import { HostRoutes } from '../hosts/host-routes.js'
 import { OperatorRoleClaims, OperatorSessions } from '../operator-sessions.js'
 
 /**
@@ -17,7 +18,7 @@ class RoutePolicyFixture
         '/api/clients', '/api/clients/c1', '/api/tenants', '/api/tenants/t1', '/api/hives', '/api/hives/h1',
         '/api/tenants/t1/manifests', '/api/tenants/t1/email-domains', '/api/hives/h1/rollout', '/api/hives/h1/health', '/api/hives/h1/observations',
         '/api/hives/h1/ledger', '/api/hives/h1/bootstrap', '/api/hives/h1/agent-install', '/api/hives/h1/console-install',
-        '/api/environments/e1/graphs', '/api/environments/e1/graphs/g1', '/api/environments/e1/loaded-graph',
+        '/api/environments/e1/graphs', '/api/environments/e1/graphs/g1', '/api/environments/e1/loaded-graph', '/api/hosts',
     ]
     public static readonly FullOnly: ReadonlyArray<[HttpMethod, string]> = [
         [HttpMethod.Get, '/api/operators'], [HttpMethod.Post, '/api/operators'], [HttpMethod.Post, '/api/operators/role'],
@@ -35,6 +36,7 @@ class RoutePolicyFixture
         [HttpMethod.Post, '/api/hives/h1/rollout-registration'], [HttpMethod.Post, '/api/hives/h1/agent-install'], [HttpMethod.Post, '/api/hives/h1/console-install'],
         [HttpMethod.Post, '/api/hives/h1/console/owner-password'], [HttpMethod.Put, '/api/hives/h1/console'], [HttpMethod.Delete, '/api/hives/h1/console'],
         [HttpMethod.Post, '/api/environments/e1/graphs'], [HttpMethod.Delete, '/api/environments/e1/graphs/g1'], [HttpMethod.Post, '/api/environments/e1/graphs/g1/promote'],
+        [HttpMethod.Post, '/api/hosts/enrolment-code'],
     ]
     public static readonly Public: ReadonlyArray<[HttpMethod, string]> = [
         [HttpMethod.Get, '/api/ping'], [HttpMethod.Post, '/api/login'], [HttpMethod.Get, '/api/session'], [HttpMethod.Post, '/api/logout'], [HttpMethod.Post, '/api/desktop/discover'],
@@ -48,7 +50,7 @@ class RoutePolicyFixture
         const options = {
             Service: {}, Graphs: {}, Operator: {}, Directory: {}, Deployments: {}, Provisioning: {}, Observations: {},
             Sessions: new OperatorSessions(OperatorSessions.InMemory(), false),
-            EmailDomains: {}, Discovery: {},
+            EmailDomains: {}, Discovery: {}, Hosts: new HostRoutes({ List: () => [] }, { List: () => [], HoldingSlotOn: () => [] }, { IssueHostCode: () => Promise.reject(new Error('unused')) }),
         } as unknown as ControlPlaneHostOptions
         return new ControlPlaneHost(options).Routes()
     }

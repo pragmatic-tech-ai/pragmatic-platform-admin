@@ -116,7 +116,14 @@
           "type": "string",
           "required": false,
           "secret": true,
-          "description": "PRAGMATIC_ADMIN_KUBECONFIG_FILE: The kubeconfig of the hosted clusters (a mounted secret file)."
+          "description": "PRAGMATIC_ADMIN_KUBECONFIG_FILE: The shared kubeconfig of the legacy hosted clusters (a mounted secret file); a hive placed by a host agent carries its own credential."
+        },
+        {
+          "name": "sealingKey",
+          "type": "string",
+          "required": false,
+          "secret": true,
+          "description": "PRAGMATIC_ADMIN_SEALING_KEY_FILE: The X25519 private key (PKCS#8 PEM) host agents seal cluster credentials to (a mounted secret file); unset, the console takes no hosts."
         },
         {
           "name": "agentChannelUrl",

@@ -95,6 +95,7 @@ export class ReleaseDescriptorFixtures
             [ReleaseApp.TenantIdp]: of(ReleaseApp.TenantIdp),
             [ReleaseApp.UiUnpack]: of(ReleaseApp.UiUnpack),
             [ReleaseApp.Postgres]: of(ReleaseApp.Postgres),
+            [ReleaseApp.HostAgent]: of(ReleaseApp.HostAgent),
         }
         return { schema: 1, version, components }
     }

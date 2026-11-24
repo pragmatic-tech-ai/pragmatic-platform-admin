@@ -8,6 +8,7 @@ import { EnrolmentCodeIssuer } from '../../enrolment/enrolment-code-issuer.js'
 import { EnrolmentAgentKind } from '../../enrolment/enrolment-code-record.js'
 import { EngineInstallCommand } from '../../enrolment/engine-install-command.js'
 import { PlacementState } from '../../placement/placement-record.js'
+import { PlacementFailure } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { CustomerFixture, FakeDeployments } from './customer-fixture.js'
 
 class HiveCases
@@ -161,6 +162,43 @@ describe('PlatformCustomerApiService: enrolment, hives, leave', () =>
             assert.equal(f.Activity.Entries.length, 1)
             assert.equal(f.Activity.Entries[0]?.actor, S.Admin().Email)
             assert.match(f.Activity.Entries[0]?.note ?? '', new RegExp(C.HiveId + C.StillPlaced))
+        })
+
+        it(`${backend}: leaving a hive a host placed publishes its removal (no activity entry); leaving a scheduled placement removes it too`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await C.Ready(f, C.TwoHives)
+            const schedule = { HostId: 'hsaaaaaaaaaa', Label: C.TenantId + '-abcd', HiveHostName: C.TenantId + '-abcd.hives.pragmatic-tech.ai', EngineVersion: FakeDeployments.Release, ChartDigest: 'sha256:' + 'a'.repeat(64) }
+            const placed = await f.Placements.Request(S.ClientId, C.TenantId, S.Admin().Key)
+            await f.Placements.Schedule(placed.id, schedule)
+            await f.Placements.MarkPlaced(placed.id, { host: 'hive-laptop.mesh.test', port: 16444 })
+            await f.Hive(C.HiveId, C.TenantId)
+            await f.Placements.LinkHive(placed.id, C.HiveId)
+            assert.equal(f.Placements.OutstandingFor(S.ClientId, new Date()), 0, 'its hive counts instead')
+            const left = await f.Service().LeaveHive(S.Admin(), new LeaveHiveRequest(S.ClientId, C.HiveId))
+            assert.equal(left.Health, HiveHealth.Gone)
+            assert.equal(f.Placements.Get(placed.id)?.state, PlacementState.Removing)
+            assert.equal(f.Placements.Get(placed.id)?.requestSequence, undefined, 'the removal is owed to the host')
+            assert.equal(f.Activity.Entries.length, 0)
+            const scheduled = await f.Placements.Request(S.ClientId, C.TenantId, S.Admin().Key)
+            await f.Placements.Schedule(scheduled.id, { ...schedule, Label: C.TenantId + '-efgh', HiveHostName: C.TenantId + '-efgh.hives.pragmatic-tech.ai' })
+            const view = await f.Service().LeaveHive(S.Admin(), new LeaveHiveRequest(S.ClientId, scheduled.id))
+            assert.equal(view.Health, HiveHealth.Gone)
+            assert.equal(f.Placements.Get(scheduled.id)?.state, PlacementState.Removing)
+        })
+
+        it(`${backend}: a placement its host could not place shows degraded, no longer counts, and leaving removes it`, async () =>
+        {
+            const f = await CustomerFixture.Open(await makeSession())
+            await C.Ready(f)
+            const placement = (await f.Service().StartEnrolment(S.Admin(), C.Start(HiveLevel.Hosted))).PlacementId as string
+            await f.Placements.Schedule(placement, { HostId: 'hsaaaaaaaaaa', Label: C.TenantId + '-abcd', HiveHostName: C.TenantId + '-abcd.hives.pragmatic-tech.ai', EngineVersion: FakeDeployments.Release, ChartDigest: 'sha256:' + 'a'.repeat(64) })
+            await f.Placements.MarkFailed(placement, PlacementFailure.ClusterCreateFailed)
+            const hives = await f.Service().ListHives(S.Admin(), new ListHivesRequest(S.ClientId))
+            assert.deepEqual(hives.map(h => [h.HiveId, h.Health]), [[placement, HiveHealth.Degraded]])
+            assert.equal(f.Placements.OutstandingFor(S.ClientId, new Date()), 0)
+            await f.Service().LeaveHive(S.Admin(), new LeaveHiveRequest(S.ClientId, placement))
+            assert.equal(f.Placements.Get(placement)?.state, PlacementState.Removing)
         })
 
         it(`${backend}: an install release that is not a version is unavailable`, async () =>

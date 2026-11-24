@@ -41,7 +41,7 @@ describe('app.mu composition', () =>
         const nav = (shell as EditorShell).Services.get(NavigationService.Key)
         assert.ok(nav instanceof PortalNavigationService)
         assert.deepEqual(nav.Items.ToArray().map(i => (i as NavigationDestination).Label),
-            ['Fleet', 'Clients', 'Tenants', 'Hives', 'Registry & Releases', 'Release Policy', 'Activity', 'Settings'])
+            ['Fleet', 'Clients', 'Tenants', 'Hives', 'Hosts', 'Registry & Releases', 'Release Policy', 'Activity', 'Settings'])
         assert.equal(nav.SidePaneVisible, false)
         assert.ok(nav.ActiveService instanceof FleetSectionService)
     })

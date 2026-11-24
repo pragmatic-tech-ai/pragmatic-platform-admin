@@ -7,25 +7,35 @@ export interface IEnrolledHiveSource
     GetHive(id: string): PlatformHiveRecord | undefined
 }
 
+/** Where the directory reads an enrolled host's record (HostRegistry). */
+export interface IEnrolledHostSource
+{
+    Get(id: string): { publicKey: string } | undefined
+}
+
 /**
- * The agent keys the platform verifies with (C3.3): an enrolled hive's public key from its hive record, by hive id. A
- * hive its customer left still resolves (its report is then refused `hive-gone` by the handler, not as unverified); a
- * hive installed by push has no key (it holds an agent token on the v1 routes) and resolves to nothing, as do hosts
- * until host enrolment (C5.1) records their keys.
+ * The agent keys the platform verifies with (C3.3, C5.1): an enrolled hive's public key from its hive record, by hive
+ * id, and an enrolled host's from its host record, by host id. A hive its customer left still resolves (its report is
+ * then refused `hive-gone` by the handler, not as unverified); a hive installed by push has no key (it holds an agent
+ * token on the v1 routes) and resolves to nothing, as does every host while the console takes no hosts.
  */
 export class PlatformKeyDirectory implements IKeyResolver
 {
-    public constructor(private readonly hives: IEnrolledHiveSource)
+    public constructor(private readonly hives: IEnrolledHiveSource, private readonly hosts?: IEnrolledHostSource)
     {
     }
 
     public Resolve(issuer: Participant): Promise<SigningPublicKey | undefined>
     {
-        if (issuer.Role !== ParticipantRole.Hive)
+        let key: string | undefined
+        if (issuer.Role === ParticipantRole.Hive)
         {
-            return Promise.resolve(undefined)
+            key = this.hives.GetHive(issuer.Id)?.publicKey
         }
-        const key = this.hives.GetHive(issuer.Id)?.publicKey
+        else if (issuer.Role === ParticipantRole.Host)
+        {
+            key = this.hosts?.Get(issuer.Id)?.publicKey
+        }
         return Promise.resolve(key === undefined ? undefined : SigningPublicKey.Parse(key))
     }
 }

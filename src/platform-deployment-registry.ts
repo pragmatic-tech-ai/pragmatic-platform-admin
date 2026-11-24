@@ -6,7 +6,8 @@ import type { SelectionRecord, SelectionRegistry } from './selection-record.js'
 import type { HiveObservationRegistry } from './hive-observation-record.js'
 import type { RolloutRegistrationRegistry } from './rollout-registration-record.js'
 import type { IEnvironmentLookup } from './platform-directory.js'
-import { Channel } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { Channel, type ReleaseChart } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { ReleaseCharts } from './release/release-charts.js'
 import type { IManifestSigner } from './manifest-signer.js'
 import { ReleasePolicyRegistry, type ReleasePolicyRecord } from './release-policy-record.js'
 import { PolicyStoreUnavailableError, AgentUnauthorizedError, HiveNotRegisteredError, ManifestExistsError, ManifestNotGatedError, UnknownHiveError, UnknownManifestError, ManifestWithdrawnError, TenantOnHoldError, ChannelNotSubscribedError, VersionBelowFloorError, ReleaseRejectedError, ReleaseNotRejectedError, ReleaseNotRunnableYetError } from '@pragmatic-tech-ai/pragmatic-platform-link'
@@ -120,6 +121,20 @@ export class PlatformDeploymentRegistry
             ? { ...fresh, withdrawn: true, ...(existing.withdrawal === undefined ? {} : { withdrawal: existing.withdrawal }) }
             : fresh
         await this.manifests.Put(replacement)
+    }
+
+    /**
+     * Records the engine chart a verified release's signed descriptor carries (C5.1: the catalogue back-fills releases
+     * imported before it recorded charts), or (null) that it carries none. Any other record is refused, never changed.
+     */
+    public async RecordReleaseChart(version: string, chart: ReleaseChart | null): Promise<void>
+    {
+        const existing = this.manifests.Get(version)
+        if (existing?.release?.state !== ReleaseState.Verified)
+        {
+            throw new UnknownManifestError(version)
+        }
+        await this.manifests.Put({ ...existing, release: chart === null ? ReleaseCharts.Chartless(existing.release) : ReleaseCharts.With(existing.release, chart) })
     }
 
     /** Every published manifest, including withdrawn versions. */

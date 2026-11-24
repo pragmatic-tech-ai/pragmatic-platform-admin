@@ -8,9 +8,10 @@ import { OciRegistryClient, type OciFetch, Channel, ReleaseDescriptorCodec, type
 import { FakeOciRegistry } from '../../tests/fake-oci-registry.js'
 import { FakeImageLayout, FakeReleaseImage } from '../../tests/fake-release-image.js'
 import { RolloutFixture } from '../../tests/rollout-fixture.js'
+import { ReleaseCharts } from '../release-charts.js'
 import type { PlatformDeploymentRegistry } from '../../platform-deployment-registry.js'
 import type { PlatformDirectory } from '../../platform-directory.js'
-import { type HiveOrchestratorFactory, ReleaseState } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { type HiveOrchestratorFactory, type ManifestRecord, ReleaseState } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { ReleaseRegistryUnavailableError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { ReleaseCatalog } from '../release-catalog.js'
 import { PlatformReleaseCountersigner, type IReleaseCountersigner } from '../release-countersigner.js'
@@ -211,6 +212,17 @@ class CatalogFixture
      * ever tagged with the bare release version. The contract holds for the toolkit this repository installs; the release
      * repository installs the same `^0.17` range, so both resolve one toolkit.
      */
+    /** A schema-3 release (before the host agent image): the schema-4 one re-pushed signed without that image. */
+    public async PublishSchema3(version: string): Promise<ReleaseDescriptor>
+    {
+        const { descriptor } = await this.PublishManifest(version, true)
+        const images = { ...descriptor.images }
+        delete images[ReleaseApp.HostAgent]
+        const schema3: ReleaseDescriptor = { ...descriptor, schema: 3, images }
+        await this.PushDescriptor(version, ReleaseDescriptorCodec.Encode(schema3))
+        return schema3
+    }
+
     public async PublishManifest(version: string, withChart: boolean = false): Promise<{ descriptor: ReleaseDescriptor; descriptorDigest: string }>
     {
         const S = CatalogFixture
@@ -314,7 +326,7 @@ describe('ReleaseCatalog.Refresh', () =>
             assert.deepEqual(result, { imported: [CatalogFixture.V1], rejected: [], unchanged: 0, shadowed: [] })
             const envServer = descriptor.images[ReleaseApp.EnvServer].digest
             const images = Object.fromEntries(ReleaseDescriptorCodec.ImagesOf(descriptor).map(([app, image]) => [app, { repository: CatalogFixture.Repo(app), digest: image.digest, componentDigest: FakeReleaseImage.ComponentDigestOf(app) }]))
-            assert.equal(Object.keys(images).length, ReleaseApps.All.length)
+            assert.equal(Object.keys(images).length, ReleaseApps.Schema2Apps.length)
             assert.deepEqual(fx.Release(CatalogFixture.V1), {
                 id: CatalogFixture.V1,
                 channel: Channel.Stable,
@@ -329,6 +341,7 @@ describe('ReleaseCatalog.Refresh', () =>
                     builtAt: CatalogFixture.BuiltAt,
                     signingKeyId: CatalogFixture.TrustedId,
                     images,
+                    chartless: true,
                 },
             })
             const again = await fx.Catalog().Refresh()
@@ -341,12 +354,64 @@ describe('ReleaseCatalog.Refresh', () =>
     {
         await CatalogFixture.Run(async fx =>
         {
-            const { descriptor } = await fx.PublishManifest(CatalogFixture.Early, true)
+            const descriptor = await fx.PublishSchema3(CatalogFixture.Early)
             assert.equal(descriptor.schema, 3)
             assert.match(ReleaseDescriptorCodec.ChartOf(descriptor)?.reference ?? '', /\/pragmatic-tech-ai\/charts\/pragmatic-engine$/)
             const result = await fx.Catalog().Refresh()
             assert.deepEqual(result.imported, [CatalogFixture.Early])
-            assert.equal(fx.Release(CatalogFixture.Early)?.release?.state, ReleaseState.Verified)
+            const record = fx.Release(CatalogFixture.Early) as ManifestRecord
+            assert.equal(record.release?.state, ReleaseState.Verified)
+            assert.deepEqual(ReleaseCharts.Of(record), descriptor.chart, 'the signed chart is recorded: a hosted placement pins its digest')
+            assert.equal(record.release?.images?.[ReleaseApp.HostAgent], undefined)
+        })
+    })
+
+    it('verifies a schema-4 release, which adds the host agent image to schema 3', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const { descriptor } = await fx.PublishManifest(CatalogFixture.Early, true)
+            assert.equal(descriptor.schema, 4)
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result.imported, [CatalogFixture.Early])
+            const record = fx.Release(CatalogFixture.Early) as ManifestRecord
+            assert.equal(record.release?.state, ReleaseState.Verified)
+            assert.deepEqual(Object.keys(record.release?.images ?? {}).sort(), [...ReleaseApps.All].sort())
+            assert.equal(record.release?.images?.[ReleaseApp.HostAgent]?.digest, descriptor.images[ReleaseApp.HostAgent]?.digest)
+            assert.deepEqual(ReleaseCharts.Of(record), descriptor.chart)
+        })
+    })
+
+    it('a verified release imported before charts were recorded gets its signed chart once, and is never read again', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const descriptor = await fx.PublishSchema3(CatalogFixture.Early)
+            const server = descriptor.images[ReleaseApp.EnvServer]
+            await fx.Deployments.ImportRelease({
+                id: CatalogFixture.Early, image: 'ghcr.io/x@' + server.digest, digest: server.digest, signed: true, publishedAt: CatalogFixture.BuiltAt,
+                release: { state: ReleaseState.Verified, signingKeyId: CatalogFixture.TrustedId },
+            })
+            await fx.Catalog().Refresh()
+            assert.deepEqual(ReleaseCharts.Of(fx.Release(CatalogFixture.Early) as ManifestRecord), descriptor.chart)
+            const before = fx.Registry.Requests.length
+            await fx.Catalog().Refresh()
+            const pulls = fx.Registry.Requests.slice(before).filter(r => r.url.includes('/manifests/') || r.url.includes('/blobs/'))
+            assert.deepEqual(pulls, [])
+        })
+    })
+
+    it('a legacy record whose server image is not the one its descriptor names gets no chart', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            await fx.PublishSchema3(CatalogFixture.Early)
+            await fx.Deployments.ImportRelease({
+                id: CatalogFixture.Early, image: 'ghcr.io/x@' + CatalogFixture.SomeDigest, digest: CatalogFixture.SomeDigest, signed: true, publishedAt: CatalogFixture.BuiltAt,
+                release: { state: ReleaseState.Verified, signingKeyId: CatalogFixture.TrustedId },
+            })
+            await fx.Catalog().Refresh()
+            assert.equal(ReleaseCharts.Of(fx.Release(CatalogFixture.Early) as ManifestRecord), undefined)
         })
     })
 
@@ -608,7 +673,7 @@ describe('ReleaseCatalog.Refresh', () =>
         {
             await fx.PushDescriptor(CatalogFixture.V1, new TextEncoder().encode('{"schema":9}'))
             await fx.Catalog().Refresh()
-            assert.equal(fx.Reason(CatalogFixture.V1), 'descriptor invalid: schema must be 1, 2 or 3')
+            assert.equal(fx.Reason(CatalogFixture.V1), 'descriptor invalid: schema must be 1, 2, 3 or 4')
         })
     })
 
@@ -837,7 +902,7 @@ describe('ReleaseCatalog countersigning', () =>
                 const signer = new ImageSigner(new RegistryRefImageDigest(), store, new FileKeyStore(keysDir))
                 const { descriptor } = await fx.Publish(CatalogFixture.V1)
                 await fx.Catalog(undefined, undefined, new PlatformReleaseCountersigner(signer, PlatformSigningKey.DefaultRef)).Refresh()
-                assert.equal(ReleaseApps.All.length, 9)
+                assert.equal(ReleaseApps.Schema2Apps.length, 9)
                 for (const [app, image] of ReleaseDescriptorCodec.ImagesOf(descriptor))
                 {
                     assert.ok(await store.Get(image.digest, PlatformSigningKey.DefaultRef) !== undefined, app)
@@ -911,7 +976,7 @@ describe('ReleaseCatalog countersigning', () =>
                 const result = await fx.Catalog(undefined, undefined, new PlatformReleaseCountersigner(signer, PlatformSigningKey.DefaultRef, store)).Refresh()
                 assert.deepEqual(result.imported, [CatalogFixture.V1])
                 const images = fx.Release(CatalogFixture.V1)?.release?.images ?? {}
-                assert.deepEqual(Object.keys(images).sort(), [...ReleaseApps.NodeApps].sort())
+                assert.deepEqual(Object.keys(images).sort(), [...ReleaseApps.Schema1Apps].sort())
                 assert.equal(signer.Calls, 8)
             })
         }
@@ -929,7 +994,7 @@ describe('ReleaseCatalog countersigning', () =>
             await fx.Publish(CatalogFixture.V1)
             assert.deepEqual((await fx.Catalog().Refresh()).imported, [CatalogFixture.V1])
             const images = fx.Release(CatalogFixture.V1)?.release?.images ?? {}
-            for (const app of ReleaseApps.All)
+            for (const app of ReleaseApps.Schema2Apps)
             {
                 assert.equal(images[app]?.componentDigest, FakeReleaseImage.ComponentDigestOf(app), app)
             }

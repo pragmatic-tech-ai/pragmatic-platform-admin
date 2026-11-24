@@ -24,6 +24,15 @@ import { InfraTargetMode, InfraTargetModes } from './infra-target-mode.js'
 import { NoTargetEnvironmentRuntime, NoTargetHiveOrchestratorFactory, NoTargetIdpDriver } from './no-infra-target.js'
 import { HostedHiveOrchestratorFactory } from './hosted-hive-orchestrator-factory.js'
 import { HostedKubeconfig } from './hosted-kubeconfig.js'
+import type { IClusterCredentialSource } from './hosted-cluster-kubectl.js'
+import { HostChannel } from './hosts/host-channel.js'
+import { HostStore } from './hosts/host-record.js'
+import { HostRegistry } from './hosts/host-registry.js'
+import { HostRoutes } from './hosts/host-routes.js'
+import { PlatformSealingKey } from './hosts/platform-sealing-key.js'
+import { CatalogueOfferedReleases } from './placement/offered-releases.js'
+import { PlacementHiveLink } from './placement/placement-hive-link.js'
+import { PlacementQueueStore } from './placement/placement-queue.js'
 import { DevPlatformImages, PlatformImages, ReleasePlatformImages, type IPlatformImages } from './platform-images.js'
 import { fileURLToPath } from 'node:url'
 import { DockerEnv } from './environments/seed/docker.js'
@@ -251,6 +260,11 @@ export class ControlPlaneServer
         const staffSignIn = await ControlPlaneServer.StaffSignInOf(operatorOidc, database, sessions, new AuditTrail(await database.Audit(), { MaxTargetLength: ControlPlaneHost.MaxAuditTargetLength }))
         const masterKey = MasterKeyFile.Load(opts.masterKeyFile)
         const signatures = await database.Signatures()
+        // Secrets sealed under the master key: console keys, the dev CA, and the hosted clusters' credentials (C5.1), which the
+        // hosted orchestrators read per call.
+        const sealed = await SealedSecretStore.Open(await database.Map(PlatformAdminRegistry.SealedSecrets), masterKey)
+        // Read before any listener starts: a set but unusable file stops the start.
+        const sealingKey = PlatformSealingKey.Of(process.env)
         // Only `local` has a Docker engine. `none` (no target) and `hosted` (registered clusters on our machines, pushed over
         // the mesh) wire every docker/kind seam to a refusing stand-in (environments, IdP), read image digests from registry
         // references only, and keep tenants as records whose sign-in lives in their home hive.
@@ -293,7 +307,7 @@ export class ControlPlaneServer
         const idpService = new IdpService(new IdpRegistry(await database.Map(PlatformAdminRegistry.Idps)), noDocker
             ? new NoTargetIdpDriver()
             : new DockerIdpDriver(new PortAllocator(ControlPlaneServer.IdpPortFloor, new NetPortProbe()), new IdpContainerEnv(new ExecFileDockerExec()), dataRoot, ControlPlaneServer.DockerIdpImageOf(platformImages)))
-        const orchestrators = ControlPlaneServer.OrchestratorsOf(infra, dataRoot, digests, signatures)
+        const orchestrators = ControlPlaneServer.OrchestratorsOf(infra, dataRoot, digests, signatures, sealed)
         const placement = new EnvironmentPlacement(directory)
         // In-cluster environments are reached through pooled kubectl port-forwards; every tunnel dies with the process.
         const tunnels = new ClusterTunnelPool()
@@ -341,9 +355,18 @@ export class ControlPlaneServer
         // with the operator side: one usage count and one lock, so an operator's create and a customer's are decided in turn.
         const enrolmentCodes = new EnrolmentCodeRegistry(await database.Map(PlatformAdminRegistry.EnrolmentCodes))
         const placementStore = new PlacementStore(await database.Map(PlatformAdminRegistry.Placements))
-        await Promise.all([enrolmentCodes.Load(), placementStore.Load()])
+        const hostStore = new HostStore(await database.Map(PlatformAdminRegistry.Hosts))
+        const placementQueue = new PlacementQueueStore(await database.Map(PlatformAdminRegistry.PlacementQueue))
+        await Promise.all([enrolmentCodes.Load(), placementStore.Load(), hostStore.Load(), placementQueue.Load()])
         const codes = new EnrolmentCodeIssuer(enrolmentCodes)
         const hostedPlacements = new PlacementRegistry(placementStore)
+        // Hosts and hosted placements (C5.1): host agents enrol, report and pull their placements over the signed exchange; the
+        // scheduler fills their queues with the release the platform offers each tenant.
+        const hostRegistry = new HostRegistry(hostStore)
+        const hostChannel = new HostChannel({
+            Hosts: hostRegistry, Placements: hostedPlacements, QueueStore: placementQueue, Codes: codes, Releases: new CatalogueOfferedReleases(deployments),
+            Link: new PlacementHiveLink(hostedPlacements, directory), Credentials: sealed, SealingKey: sealingKey,
+        })
         const usage = new ClientUsage(directory, emailDomains, [codes, hostedPlacements])
         const clientLock = new ClientLock()
         const customerApi = new PlatformCustomerApiService({
@@ -360,7 +383,6 @@ export class ControlPlaneServer
         // Installs a Local hive's agent through the same cluster access the orchestrators already hold; off with the channel.
         const agentInstaller = new HiveAgentInstaller(directory, orchestrators, deployments, observations, agentChannelUrl, new SystemInstallClock(), HiveAgentInstaller.DefaultTiming, platformImages)
         // Console keys and the dev CA are sealed under the master key; discovery and the console installer share one fingerprint-key source.
-        const sealed = await SealedSecretStore.Open(await database.Map(PlatformAdminRegistry.SealedSecrets), masterKey)
         const fingerprintKeys = new ConsoleFingerprintKeys(sealed)
         const discoveryBackend = new LocalDesktopDiscoveryBackend(accountIndex, directory, ControlPlaneServer.DesktopTenantPlaneUrlOf(process.env),
             adverts, fingerprintKeys, approvals, registry)
@@ -370,6 +392,7 @@ export class ControlPlaneServer
         // signing key (the trust root every enrolled hive adopts).
         const exchange = internalSettings === undefined ? undefined : await HiveChannel.Compose({
             Session: database.Session, Hives: directory, Codes: codes, Observations: observations, Keys: keys, KeyRef: signing.PlatformSigner.KeyRef, ChannelUrl: agentChannelUrl,
+            Hosts: hostChannel,
         })
         const internalStart = internalSettings === undefined ? undefined
             : new InternalHost(internalSettings, {
@@ -391,6 +414,7 @@ export class ControlPlaneServer
             Adverts: adverts, Approvals: approvals, EmailDomains: emailDomains, Releases: releases?.Refresher, PlatformImages: platformImages,
             OperatorSignIn: staffSignIn?.SignIn, StaffOperators: staffSignIn?.Directory,
             Entitlements: new OperatorEntitlementGate(entitlements, usage, clientLock),
+            Hosts: new HostRoutes(hostRegistry, hostedPlacements, codes),
         })
         const port = ControlPlaneServer.ResolvePort(process.env[ControlPlaneServer.PortEnvVar])
         // Resolve (and validate) the tenant port + bind BEFORE binding the operator listener, so a misconfigured
@@ -417,6 +441,13 @@ export class ControlPlaneServer
         {
             releases.Poll.Start()
             ControlPlaneServer.StopOnShutdown(releases.Poll)
+        }
+        // The placement scheduler (composed with the exchange when hosts are on); its timer is unref'd too.
+        const scheduler = hostChannel.Scheduler
+        if (scheduler !== undefined)
+        {
+            scheduler.Start()
+            process.once(ControlPlaneServer.ExitEvent, () => scheduler.Stop())
         }
     }
 
@@ -470,8 +501,9 @@ export class ControlPlaneServer
         process.once(ControlPlaneServer.ExitEvent, () => poll.Stop())
     }
 
-    /** The hive drivers for the infra mode: none drives nothing, hosted drives registered clusters by context, local adds kind. */
-    public static OrchestratorsOf(infra: InfraTargetMode, dataRoot: string, digests: IImageDigest, signatures: ISignatureStore): HiveOrchestratorFactory
+    /** The hive drivers for the infra mode: none drives nothing, hosted drives registered clusters (by their own credential, or by
+     *  context for legacy records), local adds kind. */
+    public static OrchestratorsOf(infra: InfraTargetMode, dataRoot: string, digests: IImageDigest, signatures: ISignatureStore, credentials?: IClusterCredentialSource): HiveOrchestratorFactory
     {
         if (infra === InfraTargetMode.None)
         {
@@ -479,7 +511,7 @@ export class ControlPlaneServer
         }
         if (infra === InfraTargetMode.Hosted)
         {
-            return new HostedHiveOrchestratorFactory(undefined, dataRoot, digests, signatures)
+            return new HostedHiveOrchestratorFactory(undefined, dataRoot, digests, signatures, credentials)
         }
         return new PlatformHiveOrchestratorFactory(undefined, dataRoot, digests, signatures)
     }

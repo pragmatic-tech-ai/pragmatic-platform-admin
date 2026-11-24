@@ -1,5 +1,5 @@
 import {
-    AgentExchangeRefusal, EnvelopeSigner, EnvelopeVerifier, MessageKind, ProtocolDecodeError, ProtocolVerificationError, VerificationFailure,
+    AgentExchangeRefusal, EnvelopeSigner, EnvelopeVerifier, MessageKind, ProtocolDecodeError, ProtocolVerificationError, VerificationFailure, type ParticipantRole,
     type IAgentChannel, type IBodyDecoder, type IMessageBody, type SignedEnvelope, type SigningPublicKey, type VerifiedMessage,
 } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 
@@ -54,11 +54,14 @@ export class AgentAnswer
 /**
  * One kind of agent message the platform takes. `Decoder` decodes its body; `KeyOf` is set for a self-signed kind (an
  * enrolment request: the key is in the body); otherwise the issuer's registered key verifies it. `Handle` runs only
- * on a message that passed every check, nonce claimed.
+ * on a message that passed every check, nonce claimed. `Issuer`, when set, narrows the handler to messages from that
+ * role (a kind both agents send, like `Pull`: a hive pulls intents, a host placements); a handler for the issuer's
+ * role is preferred over one without.
  */
 export interface IAgentMessageHandler<T = unknown>
 {
     readonly Kind: MessageKind
+    readonly Issuer?: ParticipantRole
     readonly Decoder: IBodyDecoder<T>
     KeyOf?(body: T): SigningPublicKey
     Handle(message: VerifiedMessage<T>): Promise<AgentAnswer | null>
@@ -72,22 +75,37 @@ export interface IAgentMessageHandler<T = unknown>
  */
 export class PlatformAgentExchange implements IAgentChannel
 {
-    private readonly handlers: ReadonlyMap<MessageKind, IAgentMessageHandler>
+    private static readonly AnyIssuer = '*'
+    private static readonly KeySeparator = '|'
+    private static readonly DuplicateText = 'two handlers for one message kind and issuer: '
+    private readonly handlers: ReadonlyMap<string, IAgentMessageHandler>
 
     public constructor(private readonly verifier: EnvelopeVerifier, private readonly signer: EnvelopeSigner, handlers: readonly IAgentMessageHandler[])
     {
-        this.handlers = new Map(handlers.map(handler => [handler.Kind, handler]))
+        const P = PlatformAgentExchange
+        const map = new Map<string, IAgentMessageHandler>()
+        for (const handler of handlers)
+        {
+            const key = P.KeyOf(handler.Kind, handler.Issuer ?? P.AnyIssuer)
+            if (map.has(key))
+            {
+                throw new Error(P.DuplicateText + key)
+            }
+            map.set(key, handler)
+        }
+        this.handlers = map
     }
 
     /** The kinds this exchange takes. */
     public get Kinds(): readonly MessageKind[]
     {
-        return [...this.handlers.keys()]
+        return [...new Set([...this.handlers.values()].map(handler => handler.Kind))]
     }
 
     public async Exchange(request: SignedEnvelope): Promise<SignedEnvelope | null>
     {
-        const handler = this.handlers.get(request.Kind)
+        const P = PlatformAgentExchange
+        const handler = this.handlers.get(P.KeyOf(request.Kind, request.Issuer.Role)) ?? this.handlers.get(P.KeyOf(request.Kind, P.AnyIssuer))
         if (handler === undefined)
         {
             throw new AgentExchangeRefusedError(AgentExchangeRefusal.UnsupportedKind)
@@ -97,5 +115,10 @@ export class PlatformAgentExchange implements IAgentChannel
             : await this.verifier.VerifySelfSigned(request, handler.Kind, handler.Decoder, body => handler.KeyOf!(body))
         const answer = await handler.Handle(verified)
         return answer === null ? null : this.signer.Sign(answer.Kind, request.Issuer, answer.Body)
+    }
+
+    private static KeyOf(kind: MessageKind, issuer: string): string
+    {
+        return kind + PlatformAgentExchange.KeySeparator + issuer
     }
 }

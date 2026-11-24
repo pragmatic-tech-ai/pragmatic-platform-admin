@@ -1,8 +1,9 @@
-import { OciProtocolError, OciProtocolFault, OciResponseError, OciUnavailableError, type OciRegistryClient, ComponentImageLabel, ComponentLabelError, ReleaseDescriptorCodec, ReleaseDescriptorInvalidError, type ReleaseDescriptor, type ReleaseImage, ReleaseManifest, ReleasePublisher, ReleaseRegistry, ReleaseSignature, ReleaseApp, ReleaseApps, ReleaseTag, ReleaseTagInvalidError, type ReleaseTrustKeys } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
+import { OciProtocolError, OciProtocolFault, OciResponseError, OciUnavailableError, type OciRegistryClient, ComponentImageLabel, ComponentLabelError, ReleaseDescriptorCodec, ReleaseDescriptorInvalidError, type ReleaseChart, type ReleaseDescriptor, type ReleaseImage, ReleaseManifest, ReleasePublisher, ReleaseRegistry, ReleaseSignature, ReleaseApp, ReleaseApps, ReleaseTag, ReleaseTagInvalidError, type ReleaseTrustKeys } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ReleaseState, type ManifestRecord, type ManifestRelease } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import type { PlatformDeploymentRegistry } from '../platform-deployment-registry.js'
 import { ManifestExistsError, ReleaseNotRejectedError, ReleaseRegistryUnavailableError, UnknownManifestError } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import type { IReleaseCountersigner } from './release-countersigner.js'
+import { ReleaseCharts } from './release-charts.js'
 
 /**
  * Versions imported by one refresh, split by outcome; how many listed versions were already imported releases; and the
@@ -50,6 +51,9 @@ export class ReleaseCatalog
     private static readonly ComponentMissing = 'component descriptor label missing: '
     private static readonly ComponentMismatch = 'component descriptor digest mismatch: '
     private static readonly ComponentUnreadable = 'component descriptor label unreadable: '
+
+    /** Verified records whose chart was looked for in this process (BackfillCharts). */
+    private readonly chartsChecked = new Set<string>()
 
     /**
      * @param imageHost the registry host the by-digest image references are recorded under (`ghcr.io`, or the host of
@@ -164,6 +168,7 @@ export class ReleaseCatalog
             }
             result.imported.push(record.id)
         }
+        await this.BackfillCharts()
         for (const record of this.deployments.AllManifests())
         {
             if (record.release?.state === ReleaseState.Verified)
@@ -358,14 +363,73 @@ export class ReleaseCatalog
             digest: server.digest,
             signed: true,
             publishedAt: descriptor.builtAt,
-            release: {
-                state: ReleaseState.Verified,
-                serverCommit: descriptor.serverCommit,
-                siblingCommits: descriptor.siblingCommits,
-                builtAt: descriptor.builtAt,
-                signingKeyId: descriptor.signingKeyId,
-                images,
-            },
+            release: ReleaseCatalog.ReleaseOf(descriptor, images),
+        }
+    }
+
+    /** The verified provenance, with the engine chart when the descriptor signs one (schema 3 on). */
+    private static ReleaseOf(descriptor: ReleaseDescriptor, images: NonNullable<ManifestRelease['images']>): ManifestRelease
+    {
+        const release: ManifestRelease = {
+            state: ReleaseState.Verified,
+            serverCommit: descriptor.serverCommit,
+            siblingCommits: descriptor.siblingCommits,
+            builtAt: descriptor.builtAt,
+            signingKeyId: descriptor.signingKeyId,
+            images,
+        }
+        return descriptor.chart === undefined ? ReleaseCharts.Chartless(release) : ReleaseCharts.With(release, descriptor.chart)
+    }
+
+    /**
+     * Verified records imported before the console recorded the engine chart (C5.1): each is read once from its signed
+     * descriptor (signature by a trusted key, same version, same server image digest as the record) and its chart, or
+     * that it carries none, recorded, so it is never read again. One that cannot be read now (or no longer verifies) is
+     * left as it is and asked again at most once per process.
+     */
+    private async BackfillCharts(): Promise<void>
+    {
+        const S = ReleaseCatalog
+        for (const record of this.deployments.AllManifests())
+        {
+            if (record.release?.state !== ReleaseState.Verified || ReleaseCharts.Known(record) || this.chartsChecked.has(record.id))
+            {
+                continue
+            }
+            this.chartsChecked.add(record.id)
+            const tag = S.ReleaseTagFor(record.id)
+            const chart = tag === undefined ? undefined : await this.SignedChartOf(tag, record)
+            if (chart !== undefined)
+            {
+                await this.deployments.RecordReleaseChart(record.id, chart)
+            }
+        }
+    }
+
+    /**
+     * The chart the release's descriptor signs (null: it signs none), when it verifies against the trust keys and names
+     * the record's version and server image; undefined when it cannot be read or does not verify.
+     */
+    private async SignedChartOf(tag: ReleaseTag, record: ManifestRecord): Promise<ReleaseChart | null | undefined>
+    {
+        try
+        {
+            const pulled = await this.registry.PullArtifactLayer(this.Repo(ReleasePublisher.DescriptorRepository), tag.Version)
+            const descriptor = ReleaseDescriptorCodec.Decode(pulled.layer)
+            const keyId = pulled.annotations[ReleasePublisher.KeyAnnotation]
+            const publicKey = keyId === undefined ? undefined : this.trust.KeyFor(keyId)
+            const signature = pulled.annotations[ReleasePublisher.SignatureAnnotation]
+            if (publicKey === undefined || signature === undefined || !ReleaseSignature.Verifies(pulled.layerDigest, signature, publicKey)
+                || descriptor.signingKeyId !== keyId || descriptor.version !== record.id || descriptor.images[ReleaseApp.EnvServer].digest !== record.digest)
+            {
+                return undefined
+            }
+            return descriptor.chart ?? null
+        }
+        catch
+        {
+            // Unreadable now: the record stays as it is (the next process start asks again).
+            return undefined
         }
     }
 

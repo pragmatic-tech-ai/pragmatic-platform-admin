@@ -62,6 +62,8 @@ export type PlatformHiveRecord = HiveRecord & {
     enrolledAt?: string
     /** The subject key of the customer admin whose one-time code enrolled the hive. */
     enrolledBy?: string
+    /** The hosted placement the hive was placed by (C5.1), once its host placed it. */
+    placementId?: string
 }
 
 /** An enrolled hive's console address (the hive protocol's ConsoleAddress, kept in the record's own casing). */

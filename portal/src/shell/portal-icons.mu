@@ -11,6 +11,7 @@ resources PortalIcons {
     include "icons/clients.svg"        as ClientsIcon
     include "icons/tenants.svg"        as TenantsIcon
     include "icons/hives.svg"          as HivesIcon
+    include "icons/hosts.svg"          as HostsIcon
     include "icons/releases.svg"       as ReleasesIcon
     include "icons/release-policy.svg" as ReleasePolicyIcon
     include "icons/activity.svg"       as ActivityIcon

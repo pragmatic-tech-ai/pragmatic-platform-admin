@@ -153,6 +153,7 @@ export enum ReleaseApp
     TenantIdp = 'pragmatic-tenant-idp',
     UiUnpack = 'pragmatic-ui-unpack',
     Postgres = 'pragmatic-postgres',
+    HostAgent = 'pragmatic-host-agent',
 }
 
 // Provenance of a version imported from the release registry (mirrors the server's ManifestRelease); absent on
@@ -206,6 +207,21 @@ export type ProvisionResultDto = { client: ClientDto; tenant: TenantDto; hive: H
 export type PolicyDto = { tenantId: string; hiveId?: string; channels?: ('stable' | 'early')[]; minVersion?: string; hold?: { reason: string; actor: string; at: string } }
 
 // note: what the operation kept or skipped, when it says (e.g. a hive delete's retained objects).
+// A hosting machine's resources, in whole units (the host agent's report).
+export type HostResourcesDto = { CpuMillicores: number; MemoryMiB: number; StorageGiB: number }
+// One hosted placement on a host, as GET /api/hosts lists it.
+export type HostPlacementDto = {
+    id: string; tenantId: string; state: string; label: string | null; hiveHostName: string | null; hiveId: string | null
+    engineVersion: string | null; placedEngineVersion: string | null; failure: string | null; credentialRotation: number | null
+}
+// An enrolled host agent (GET /api/hosts): capacity, free slots, its last report and the placements on it.
+export type HostDto = {
+    id: string; machine: string; clusterKind: string; meshAddress: string; agentVersion: string; keyId: string; enrolledAt: string; enrolledBy: string
+    fresh: boolean; health: string | null; lastReportAt: string | null; capacity: HostResourcesDto | null; allocatable: HostResourcesDto | null
+    hiveSlots: number | null; freeSlots: number; placements: HostPlacementDto[]
+}
+// A host enrolment code, answered once by POST /api/hosts/enrolment-code.
+export type HostCodeDto = { code: string; expiresAt: string }
 export type ActivityDto = { id: string; actor: string; method: string; path: string; status: number; at: string; note?: string }
 export type ObservationDto = { id: string; hiveId: string; environments: { environmentName: string; ready: boolean; runningImage?: string; detail: string }[]; reportedAt: string }
 export type LedgerDto = { id: string; tenantId?: string; hiveId?: string; version: string; action: string; at: string }

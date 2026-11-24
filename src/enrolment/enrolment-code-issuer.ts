@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
-import type { HiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
+import { HiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
 import type { IHiveReservations } from '../customer/client-usage.js'
-import type { EnrolmentAgentKind, EnrolmentCodeRecord, EnrolmentCodeRegistry } from './enrolment-code-record.js'
+import { EnrolmentAgentKind, type EnrolmentCodeRecord, type EnrolmentCodeRegistry } from './enrolment-code-record.js'
 
 /** Why a code did not redeem. */
 export enum EnrolmentCodeRefusal
@@ -34,6 +34,8 @@ export interface EnrolmentCodeRequest
     AgentKind: EnrolmentAgentKind
     /** The subject key of the customer admin asking. */
     IssuedBy: string
+    /** The hosted placement the code is for (the scheduler's codes): the placement reserves the hive, the code does not. */
+    PlacementId?: string
 }
 
 /** What a code must match when it is redeemed. */
@@ -64,6 +66,8 @@ export class EnrolmentCodeIssuer implements IHiveReservations
     private static readonly CharacterMask = 31n
     private static readonly HashAlgorithm = 'sha256'
     private static readonly HashEncoding = 'hex'
+    /** The client and tenant of a host code: the platform's own, never a customer's (customer ids are never empty). */
+    public static readonly PlatformScope = ''
     /** Expired or redeemed records are kept a day (for the operators), then pruned when the next code is issued. */
     private static readonly RetainMs = 24 * 60 * 60 * 1000
 
@@ -73,11 +77,42 @@ export class EnrolmentCodeIssuer implements IHiveReservations
 
     public async Issue(request: EnrolmentCodeRequest): Promise<{ Code: string; ExpiresAt: Date }>
     {
+        return this.Record(request, false)
+    }
+
+    /**
+     * A host code (C5.1), issued by an operator: agent kind host, no client and no tenant (empty), level hosted. It enrols
+     * one host agent and nothing else; it never counts against a customer's hives.
+     */
+    public IssueHostCode(issuedBy: string): Promise<{ Code: string; ExpiresAt: Date }>
+    {
+        const I = EnrolmentCodeIssuer
+        return this.Record({ ClientId: I.PlatformScope, TenantId: I.PlatformScope, Level: HiveLevel.Hosted, AgentKind: EnrolmentAgentKind.Host, IssuedBy: issuedBy }, false)
+    }
+
+    /** What a host code redeems against. */
+    public static HostExpectation(): EnrolmentCodeExpectation
+    {
+        const I = EnrolmentCodeIssuer
+        return { TenantId: I.PlatformScope, Level: HiveLevel.Hosted, AgentKind: EnrolmentAgentKind.Host }
+    }
+
+    /**
+     * A code recorded as already redeemed: it fills the code member of a placement request that installs nothing new
+     * (an engine upgrade of a placed hive), so nothing can ever enrol with it.
+     */
+    public IssueSpent(request: EnrolmentCodeRequest): Promise<{ Code: string; ExpiresAt: Date }>
+    {
+        return this.Record(request, true)
+    }
+
+    private async Record(request: EnrolmentCodeRequest, spent: boolean): Promise<{ Code: string; ExpiresAt: Date }>
+    {
         const now = this.now()
         await this.Prune(now)
         const code = EnrolmentCodeIssuer.NewCode()
         const expiresAt = new Date(now.getTime() + EnrolmentCodeIssuer.LifetimeMs)
-        await this.codes.Put({
+        const record: EnrolmentCodeRecord = {
             id: EnrolmentCodeIssuer.HashOf(code),
             clientId: request.ClientId,
             tenantId: request.TenantId,
@@ -86,18 +121,33 @@ export class EnrolmentCodeIssuer implements IHiveReservations
             issuedBy: request.IssuedBy,
             issuedAt: now.toISOString(),
             expiresAt: expiresAt.toISOString(),
-        })
+        }
+        if (request.PlacementId !== undefined)
+        {
+            record.placementId = request.PlacementId
+        }
+        if (spent)
+        {
+            record.redeemedAt = now.toISOString()
+        }
+        await this.codes.Put(record)
         return { Code: code, ExpiresAt: expiresAt }
     }
 
     /**
-     * Redeems a code once: the check and the marking happen before the first await, so two concurrent redeems of one code
-     * cannot both pass (one process). Throws EnrolmentCodeRefusedError: unknown, used, expired or mismatch (a mismatch
+     * Redeems a code once: the check and the marking happen with no await between them, so two concurrent redeems of one
+     * code cannot both pass (one process). A code this process does not hold is first looked up in the record map. Throws EnrolmentCodeRefusedError: unknown, used, expired or mismatch (a mismatch
      * does not consume the code).
      */
     public async Redeem(code: string, expect: EnrolmentCodeExpectation): Promise<EnrolmentCodeRecord>
     {
         const I = EnrolmentCodeIssuer
+        if (I.CodePattern.test(code) && this.codes.Get(I.HashOf(code)) === undefined)
+        {
+            // Issued by another process over the same database (the admin image's host-code command).
+            await this.codes.Fetch(I.HashOf(code))
+        }
+        // From here to the marking nothing awaits.
         const record = I.CodePattern.test(code) ? this.codes.Get(I.HashOf(code)) : undefined
         if (record === undefined)
         {
@@ -121,10 +171,11 @@ export class EnrolmentCodeIssuer implements IHiveReservations
         return redeemed
     }
 
-    /** The client's unexpired, unredeemed codes. */
+    /** The client's unexpired, unredeemed hive codes; a placement's code is not counted (its placement is). */
     public OutstandingFor(clientId: string, now: Date): number
     {
-        return this.codes.List().filter(record => record.clientId === clientId && record.redeemedAt === undefined && Date.parse(record.expiresAt) > now.getTime()).length
+        return this.codes.List().filter(record => record.clientId === clientId && record.agentKind === EnrolmentAgentKind.Hive && record.placementId === undefined
+            && record.redeemedAt === undefined && Date.parse(record.expiresAt) > now.getTime()).length
     }
 
     private async Prune(now: Date): Promise<void>

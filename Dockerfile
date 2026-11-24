@@ -56,12 +56,13 @@ FROM compile AS build
 RUN npm prune --omit=dev --no-audit --no-fund \
     && find . -type f \( -name '*.map' -o -name '*.tsbuildinfo' \) -delete
 
-# The provisioning CLIs the admin drives remote targets with (spec D26): kubectl, kind and the docker CLI (client only;
-# no daemon runs in or next to admin). Each download is checked against a pinned sha256 for the build's TARGETARCH.
-# Upstream checksums: dl.k8s.io/release/<v>/bin/linux/<arch>/kubectl.sha256 and the kind release's
-# kind-linux-<arch>.sha256sum. download.docker.com publishes no checksums for the static bundles, so those two are pinned
-# from a verified download (2026-11-19).
-FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS platform-admin-tools
+# The provisioning CLIs the app drives clusters with (spec D26; the host agent, C5.1): kubectl, kind and the docker CLI
+# (client only; no daemon runs in the image), and helm 3 where the profile asks for it. Each download is checked against a
+# pinned sha256 for the build's TARGETARCH. Upstream checksums: dl.k8s.io/release/<v>/bin/linux/<arch>/kubectl.sha256, the
+# kind release's kind-linux-<arch>.sha256sum and get.helm.sh/helm-<v>-linux-<arch>.tar.gz.sha256sum.
+# download.docker.com publishes no checksums for the static bundles, so those two are pinned from a verified download
+# (2026-11-19).
+FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS provisioning-tools
 ARG TARGETARCH
 ARG KUBECTL_VERSION=v1.37.2
 ARG KUBECTL_SHA256_AMD64=c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
@@ -98,9 +99,9 @@ WORKDIR /workspace/pragmatic-platform-admin
 
 FROM runtime AS pragmatic-platform-admin
 RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
-COPY --from=platform-admin-tools /tools/kubectl /usr/local/bin/kubectl
-COPY --from=platform-admin-tools /tools/kind /usr/local/bin/kind
-COPY --from=platform-admin-tools /tools/docker-cli /usr/local/bin/docker
+COPY --from=provisioning-tools /tools/kubectl /usr/local/bin/kubectl
+COPY --from=provisioning-tools /tools/kind /usr/local/bin/kind
+COPY --from=provisioning-tools /tools/docker-cli /usr/local/bin/docker
 COPY --from=build /workspace/pragmatic-platform-admin/package.json /workspace/pragmatic-platform-admin/package.json
 COPY --from=build /workspace/pragmatic-platform-admin/node_modules /workspace/pragmatic-platform-admin/node_modules
 COPY --from=build /workspace/pragmatic-platform-admin/dist /workspace/pragmatic-platform-admin/dist

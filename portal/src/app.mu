@@ -24,6 +24,7 @@ import FleetModule from "./sections/fleet/fleet.module.mu.js"
 import ClientsModule from "./sections/clients/clients.module.mu.js"
 import TenantsModule from "./sections/tenants/tenants.module.mu.js"
 import HivesModule from "./sections/hives/hives.module.mu.js"
+import HostsModule from "./sections/hosts/hosts.module.mu.js"
 import ReleasesModule from "./sections/releases/releases.module.mu.js"
 import ReleasePolicyModule from "./sections/release-policy/release-policy.module.mu.js"
 import ActivityModule from "./sections/activity/activity.module.mu.js"
@@ -56,6 +57,7 @@ Application [ Theme = Pragmatic, Scheme = PragmaticDark ] {
         ClientsModule
         TenantsModule
         HivesModule
+        HostsModule
         ReleasesModule
         ReleasePolicyModule
         ActivityModule

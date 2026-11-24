@@ -206,6 +206,20 @@ describe('ControlPlaneClient activity and history', () =>
         assert.equal(FetchStub.Calls[1]!.route, '/api/activity?limit=25')
     })
 
+    it('ListHosts GETs /api/hosts; IssueHostCode POSTs /api/hosts/enrolment-code and answers the code', async () =>
+    {
+        FetchStub.Install([])
+        await new ControlPlaneClient().ListHosts()
+        assert.equal(FetchStub.Calls[0]!.route, '/api/hosts')
+        assert.equal(FetchStub.Calls[0]!.init?.method, 'GET')
+        FetchStub.Restore()
+        FetchStub.Install({ code: 'pe1-CODE', expiresAt: 't' })
+        const issued = await new ControlPlaneClient().IssueHostCode()
+        assert.equal(FetchStub.Calls[0]!.route, '/api/hosts/enrolment-code')
+        assert.equal(FetchStub.Calls[0]!.init?.method, 'POST')
+        assert.equal(issued.code, 'pe1-CODE')
+    })
+
     it('ListHiveObservations GETs the hive observations route', async () =>
     {
         FetchStub.Install([{ id: 'o1', hiveId: 'h 1', environments: [], reportedAt: 't' }])

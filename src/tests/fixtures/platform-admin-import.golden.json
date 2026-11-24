@@ -204,6 +204,8 @@
     "operator_directory": {},
     "enrolment_codes": {},
     "placements": {},
+    "hosts": {},
+    "placement_queue": {},
     "entitlements": {}
   },
   "audit": [
