@@ -105,13 +105,14 @@ describe('TenantConsoleInstaller over an existing hive agent', () =>
         fx.Installer.Start('h1')
         assert.equal((await fx.Installer.WhenSettled('h1'))?.state, ConsoleInstallState.Deployed)
         const held = fx.Kubectl.ServerApplied.map(m => JSON.parse(m) as { items?: Obj[] }).flatMap(l => l.items ?? []).filter(i => i.kind === 'Deployment' && i.metadata.name === OldAgent.Name)
-        assert.equal(held.length, 1, 'the agent is held once, server-side')
+        assert.equal(held.length, 2, 'the agent is held server-side once, then its roll goes server-side too (row 4)')
         assert.equal(held[0].spec.template.spec.containers[0].image, OldAgent.Image)
         assert.equal(held[0].metadata.labels['component.pragmatic-tech.ai/pragmatic-hive-agent'], 'agent')
         const created = fx.Kubectl.Created.map(m => JSON.parse(m) as Obj).map(i => i.metadata.name)
         assert.ok(created.includes('pragmatic-config-pragmatic-hive-agent') && created.includes('pragmatic-secrets-pragmatic-hive-agent'))
-        // Then, after the console restarted, the agent moves onto the release's agent image: applied client-side (kubectl's record
-        // of the earlier bundle prunes the token variable), its configuration hash kept, awaited before the IdP.
+        // Then, after the console restarted, the agent moves onto the release's agent image: applied server-side under the
+        // hold's manager (which owns the token variable the hold kept, so it goes) and then client-side, its configuration
+        // hash kept, awaited before the IdP.
         const rolls = fx.Kubectl.Applied.map(m => JSON.parse(m) as { items?: Obj[] }).flatMap(l => l.items ?? []).filter(i => i.kind === 'Deployment' && i.metadata?.name === OldAgent.Name)
         assert.equal(rolls.length, 1)
         const container = rolls[0].spec.template.spec.containers[0]
@@ -226,5 +227,149 @@ describe('ConsoleReleaseDescriptors.SameRelease (the agent rolls with the consol
         assert.equal(descriptors.SameRelease(ReleaseApp.HiveAgent), false)
         releases.set('pragmatic-hive-agent', '0.1.0-early.12')
         assert.equal(descriptors.SameRelease(ReleaseApp.HiveAgent), true)
+    })
+})
+
+/**
+ * Which agent environment variables a Deployment keeps after a series of applies, by field ownership as the API server
+ * keeps it (C3.1 live proof early.13, row 4). A server-side apply by a manager owns exactly the entries it applied and
+ * drops an entry it owned before and no longer applies when no other manager owns it; kubectl's server-side apply first
+ * moves what kubectl's client-side apply owned to its own manager and drops kubectl's record of that apply (the live
+ * agent's managed fields after the early.13 install: `pragmatic-control-plane` owns PRAGMATIC_AGENT_TOKEN, the client-side
+ * manager only what the roll applied). A client-side apply deletes only what its record lists and the new object does not.
+ */
+class AgentEnvOwnership
+{
+    public static readonly ServerManager = 'pragmatic-control-plane'
+    public static readonly ClientManager = 'kubectl-client-side-apply'
+
+    private readonly owners = new Map<string, Set<string>>()
+    private record: string[] | undefined
+
+    public constructor(owned: Record<string, readonly string[]>, record: readonly string[] | undefined)
+    {
+        for (const [manager, names] of Object.entries(owned))
+        {
+            for (const name of names) this.Owners(name).add(manager)
+        }
+        this.record = record === undefined ? undefined : [...record]
+    }
+
+    public get Names(): string[]
+    {
+        return [...this.owners.keys()].sort()
+    }
+
+    public ServerSide(names: readonly string[]): void
+    {
+        const M = AgentEnvOwnership
+        for (const owners of this.owners.values())
+        {
+            if (owners.delete(M.ClientManager)) owners.add(M.ServerManager)
+        }
+        this.record = undefined
+        for (const [name, owners] of [...this.owners])
+        {
+            if (!names.includes(name) && owners.delete(M.ServerManager) && owners.size === 0) this.owners.delete(name)
+        }
+        for (const name of names) this.Owners(name).add(M.ServerManager)
+    }
+
+    public ClientSide(names: readonly string[]): void
+    {
+        for (const name of this.record ?? [])
+        {
+            if (!names.includes(name)) this.owners.delete(name)
+        }
+        for (const name of names) this.Owners(name).add(AgentEnvOwnership.ClientManager)
+        this.record = [...names]
+    }
+
+    /** Replays the installer's applies of the agent Deployment, in call order. */
+    public Replay(fx: ConsoleInstallFixture, deployment: string): this
+    {
+        let server = 0
+        let client = 0
+        for (const [verb] of fx.Kubectl.Calls)
+        {
+            if (verb === 'ApplyServerSide') this.Apply(fx.Kubectl.ServerApplied[server++]!, deployment, names => this.ServerSide(names))
+            if (verb === 'Apply') this.Apply(fx.Kubectl.Applied[client++]!, deployment, names => this.ClientSide(names))
+        }
+        return this
+    }
+
+    private Apply(manifest: string, deployment: string, apply: (names: string[]) => void): void
+    {
+        const items = (JSON.parse(manifest) as { items?: Obj[] }).items ?? []
+        const agent = items.find(i => i.kind === 'Deployment' && i.metadata?.name === deployment)
+        if (agent === undefined) return
+        apply(((agent.spec.template.spec.containers as Obj[]).find(c => c.name === 'agent')?.env ?? []).map((e: Obj) => e.name as string))
+    }
+
+    private Owners(name: string): Set<string>
+    {
+        let owners = this.owners.get(name)
+        if (owners === undefined)
+        {
+            owners = new Set()
+            this.owners.set(name, owners)
+        }
+        return owners
+    }
+}
+
+describe('a console install leaves no plain agent token variable on an existing agent (live proof row 4)', () =>
+{
+    let fx: ConsoleInstallFixture | undefined
+    afterEach(() => fx?.Dispose())
+
+    const Token = 'PRAGMATIC_AGENT_TOKEN'
+    const TokenFile = 'PRAGMATIC_AGENT_TOKEN_FILE'
+    const Wiring = ['PRAGMATIC_AGENT_HIVE_ID', 'PRAGMATIC_AGENT_REGISTRY_URL']
+
+    const Running = (env: readonly string[]): Obj =>
+    {
+        const live = OldAgent.Live()
+        live.spec.template.spec.containers[0].env = env.map(name => name === Token
+            ? { name, valueFrom: { secretKeyRef: { name: K8sManifestBuilder.AgentTokenSecretNameOf('h1'), key: 'token' } } }
+            : { name, value: 'x' })
+        return live
+    }
+
+    it('an agent the first bundle rendered (the token variable recorded by kubectl\'s client-side apply) ends with the token as a file only', async () =>
+    {
+        fx = await ConsoleInstallFixture.Create()
+        fx.Kubectl.Put('pragmatic-system', 'deployment/' + OldAgent.Name, Running([...Wiring, Token]))
+        fx.Installer.Start('h1')
+        assert.equal((await fx.Installer.WhenSettled('h1'))?.state, ConsoleInstallState.Deployed)
+        const env = new AgentEnvOwnership({ [AgentEnvOwnership.ClientManager]: [...Wiring, Token] }, [...Wiring, Token]).Replay(fx, OldAgent.Name)
+        assert.deepEqual(env.Names, [...Wiring, TokenFile].sort())
+    })
+
+    it('the agent the early.13 install left (the token variable owned by the hold\'s server-side manager) loses it on the next install', async () =>
+    {
+        fx = await ConsoleInstallFixture.Create()
+        fx.Kubectl.Put('pragmatic-system', 'deployment/' + OldAgent.Name, Running([...Wiring, TokenFile, Token]))
+        fx.Installer.Start('h1')
+        assert.equal((await fx.Installer.WhenSettled('h1'))?.state, ConsoleInstallState.Deployed)
+        const env = new AgentEnvOwnership({ [AgentEnvOwnership.ServerManager]: [...Wiring, Token], [AgentEnvOwnership.ClientManager]: [TokenFile] }, [...Wiring, TokenFile])
+            .Replay(fx, OldAgent.Name)
+        assert.deepEqual(env.Names, [...Wiring, TokenFile].sort())
+    })
+
+    it('the roll is applied server-side, under the hold\'s manager, then client-side: the same template, after the hold', async () =>
+    {
+        fx = await ConsoleInstallFixture.Create()
+        fx.Kubectl.Put('pragmatic-system', 'deployment/' + OldAgent.Name, Running([...Wiring, Token]))
+        fx.Installer.Start('h1')
+        assert.equal((await fx.Installer.WhenSettled('h1'))?.state, ConsoleInstallState.Deployed)
+        const agentApplies = (list: string[]) => list.filter(m => ((JSON.parse(m) as { items?: Obj[] }).items ?? []).some(i => i.kind === 'Deployment' && i.metadata?.name === OldAgent.Name))
+        const server = agentApplies(fx.Kubectl.ServerApplied)
+        assert.equal(server.length, 2, 'the hold, then the roll')
+        assert.deepEqual(agentApplies(fx.Kubectl.Applied), [server[1]], 'the roll both ways')
+        const serverCalls = fx.Kubectl.Calls.map((c, i) => c[0] === 'ApplyServerSide' ? i : -1).filter(i => i >= 0)
+        const rollServerAt = serverCalls[fx.Kubectl.ServerApplied.indexOf(server[1]!)]!
+        const agentWait = fx.Kubectl.Calls.findIndex(c => c.join(' ') === 'RolloutStatus pragmatic-system ' + OldAgent.Name)
+        assert.ok(rollServerAt >= 0 && rollServerAt < agentWait)
     })
 })

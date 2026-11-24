@@ -919,9 +919,14 @@ export class TenantConsoleInstaller
 
     /**
      * The hive agent onto the release's agent image (AgentConfigurationHold.ReleaseRoll: the hive's token Secret reused, the
-     * running template's configuration annotations kept), applied client-side and awaited. The agent surges with a readiness
-     * gate, so a new agent that does not start leaves the old one serving; the install then stops before the IdP is
-     * touched, saying so. Nothing to roll without an agent Deployment or a release agent image.
+     * running template's configuration annotations kept), applied server-side, then client-side, and awaited. The hold
+     * (HoldAgent) applied the running agent server-side, so kubectl moved what its client-side apply owned to the hold's
+     * field manager and dropped its record of that apply: a client-side apply alone can no longer remove what the earlier
+     * bundle rendered and the release's no longer does (the token as an environment variable, C3.1 live proof row 4). The
+     * server-side apply under that same manager drops it; the client-side apply of the same template that follows changes
+     * nothing and records it. One revision. The agent surges with a readiness gate, so a new agent that does not start
+     * leaves the old one serving; the install then stops before the IdP is touched, saying so. Nothing to roll without an
+     * agent Deployment or a release agent image.
      */
     private async RollOutAgent(kubectl: IKubectl, hiveId: string, channelUrl: string, image: string | undefined): Promise<void>
     {
@@ -931,6 +936,7 @@ export class TenantConsoleInstaller
         const name = K8sManifestBuilder.HiveAgentNameOf(hiveId)
         const roll = AgentConfigurationHold.ReleaseRoll(await kubectl.Find(system, C.DeploymentPrefix + name), hiveId, channelUrl, image)
         if (roll === undefined) return
+        await kubectl.ApplyServerSide(roll)
         await kubectl.Apply(roll)
         try
         {

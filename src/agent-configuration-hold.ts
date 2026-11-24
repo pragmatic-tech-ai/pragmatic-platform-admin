@@ -63,8 +63,9 @@ export class AgentConfigurationHold
      * The release's agent Deployment for `hiveId` (the builder's, on `image`, reading the hive's existing token Secret),
      * keeping the running template's console annotations (configuration hash, secrets revision) and replicas, so applying it
      * moves the agent onto the release without dropping its applied configuration; undefined without a running agent.
-     * Applied client-side: what the earlier bundle rendered and this one no longer does (the token as an environment
-     * value) is pruned through kubectl's record of that apply.
+     * Applied server-side under the hold's field manager, then client-side (TenantConsoleInstaller.RollOutAgent): what the
+     * earlier bundle rendered and this one no longer does (the token as an environment value) is owned by that manager
+     * since the hold, so the server-side apply drops it.
      */
     public static ReleaseRoll(live: string | undefined, hiveId: string, channelUrl: string, image: string): string | undefined
     {

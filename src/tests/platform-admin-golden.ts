@@ -9,5 +9,5 @@ export class PlatformAdminGolden
 {
     public static readonly Fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'pragmatic-platform-admin.component.json')
     /** At 0.1.4: tenantPlane.desktopRealmSignIn (Plexus signs in at the tenant realm, E.s S4) and the version. */
-    public static readonly Digest = 'sha256:32d97edd2a4cc21c7167845f42816883f40aee3076622bf4e51774216b5a56c5'
+    public static readonly Digest = 'sha256:8737bdd22d68331b7b0e90bda886a760ac2bc84ef613adf50d8f41447fae82fa'
 }
