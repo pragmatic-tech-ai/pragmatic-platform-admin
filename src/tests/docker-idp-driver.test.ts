@@ -1,11 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { X509Certificate } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DockerIdpDriver } from '../docker-idp-driver.js'
 import { IdpDatabaseSecret, type PortAllocator } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import type { IdpContainerEnv, IdpContainerSpec } from '../idp-container-env.js'
+import { LegacyDevCa } from './legacy-dev-ca.js'
 
 /** Records what the driver hands the container seam, and what the database files held when the volume was seeded. */
 class DatabaseContainers
@@ -128,6 +130,35 @@ test('a failed launch removes the database files with the rest of the tenant dir
         fx.Containers.Healthy = false
         await assert.rejects(fx.Driver.EnsureRunning({ tenantId: 't1', displayName: 'T', takenPorts: [] }))
         assert.ok(!existsSync(fx.File('database-password')))
+    }
+    finally
+    {
+        fx.Dispose()
+    }
+})
+
+test('a healthy IdP still serving a pre-0.18.14 leaf (no localhost) is recovered with a re-minted tls dir; the old set is kept beside it', async () =>
+{
+    const fx = new DriverFixture()
+    try
+    {
+        const first = await fx.Driver.EnsureRunning({ tenantId: 't1', displayName: 'T', takenPorts: [] })
+        const tlsDir = join(fx.Root, 'idp', 't1', 'tls')
+        assert.equal(DockerIdpDriver.HasLegacyLeaf(tlsDir), false, 'a fresh launch mints a current leaf')
+        // The tls dir as an older install left it.
+        rmSync(tlsDir, { recursive: true, force: true })
+        mkdirSync(tlsDir, { recursive: true })
+        const oldCa = readFileSync(LegacyDevCa.MintAt(tlsDir, 'host.docker.internal').caFile)
+        assert.equal(DockerIdpDriver.HasLegacyLeaf(tlsDir), true)
+
+        const again = new DatabaseContainers()
+        const result = await new DockerIdpDriver({ Allocate: async () => 12100 } as unknown as PortAllocator, again as unknown as IdpContainerEnv, fx.Root, 'img:1')
+            .EnsureRunning({ tenantId: 't1', displayName: 'T', takenPorts: [], existing: first.record })
+        assert.equal(DockerIdpDriver.HasLegacyLeaf(tlsDir), false, 're-minted')
+        assert.ok(new X509Certificate(readFileSync(join(tlsDir, 'server.crt'))).subjectAltName?.includes('DNS:localhost'))
+        assert.deepEqual(readFileSync(join(tlsDir + '.pre-0.18.14', 'ca.crt')), oldCa, 'the old set is kept')
+        assert.equal(again.Specs.length, 1, 'the container was brought up again on the re-seeded volume')
+        assert.notDeepEqual(result.connection.ca, oldCa, 'the connection pins the new CA')
     }
     finally
     {

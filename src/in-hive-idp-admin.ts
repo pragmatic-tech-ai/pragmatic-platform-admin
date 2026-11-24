@@ -3,6 +3,7 @@ import { IdpAdminClient, type IdpConnection, K8sManifestBuilder, type HiveRecord
 import { type SealedSecretStore } from './sealed-secret-store.js'
 import { KubectlCli, NodeProcessSpawner, type IProcessSpawner } from '@pragmatic-tech-ai/pragmatic-kube'
 import { OwnerNotRecordedError, OwnerResetInProgressError, TenantProvisioningService } from './tenant-provisioning-service.js'
+import { IdpLoopbackHost } from './idp-loopback-host.js'
 
 /** A fresh in-hive Owner password, returned once to the operator (never logged, audited or stored). */
 export type InHiveOwnerPassword = { ownerEmail: string; ownerPassword: string }
@@ -42,7 +43,8 @@ export interface IInHiveIdpAdmin
 
 /**
  * Reaches the in-hive IdP's `/_admin/` API through `kubectl port-forward svc/<idp> 9443` on the hive's own kubectl context (the IdP
- * certificate carries the IP SAN 127.0.0.1), with the CA and admin token sealed in the control plane's store. The tunnel is closed
+ * certificate names localhost, or for an IdP minted before pragmatic-shared 0.18.14 the IP 127.0.0.1: IdpLoopbackHost reads which from
+ * the pinned CA), with the CA and admin token sealed in the control plane's store. The tunnel is closed
  * after every call, failed or not. Credentials and passwords never appear in errors or logs.
  */
 export class InHiveIdpAdmin implements IInHiveIdpAdmin
@@ -52,7 +54,8 @@ export class InHiveIdpAdmin implements IInHiveIdpAdmin
     private static readonly OwnerRefPrefix = 'in-hive-idp-owner-hive/'
     private static readonly IdpPort = 9443
     private static readonly ServicePrefix = 'svc/'
-    private static readonly LoopbackPrefix = 'https://127.0.0.1:'
+    private static readonly HttpsPrefix = 'https://'
+    private static readonly PortSeparator = ':'
     private static readonly Utf8 = 'utf8'
     /** The CA comes from the sealed store as bytes; there is no on-disk CA directory for an in-hive IdP. */
     private static readonly NoCaDir = ''
@@ -178,7 +181,7 @@ export class InHiveIdpAdmin implements IInHiveIdpAdmin
         const tunnel = await kubectl.PortForward(idp, InHiveIdpAdmin.ServicePrefix + idp, InHiveIdpAdmin.IdpPort, this.spawner)
         try
         {
-            const baseUrl = InHiveIdpAdmin.LoopbackPrefix + String(tunnel.LocalPort)
+            const baseUrl = InHiveIdpAdmin.HttpsPrefix + IdpLoopbackHost.For(ca) + InHiveIdpAdmin.PortSeparator + String(tunnel.LocalPort)
             const conn: IdpConnection = {
                 baseUrl,
                 browserBaseUrl: baseUrl,

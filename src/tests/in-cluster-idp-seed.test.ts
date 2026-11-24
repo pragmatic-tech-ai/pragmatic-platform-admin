@@ -102,6 +102,13 @@ describe('InClusterIdpSeedSource', () =>
             writeFileSync(crt, Buffer.from(tls.data['server.crt']!, 'base64'))
             const text = execFileSync('openssl', ['x509', '-in', crt, '-noout', '-text']).toString()
             assert.ok(text.includes(`DNS:${host}`))
+            // The in-hive admin reaches it over a port-forward as localhost; no IP SAN (Electron's BoringSSL, shared 0.18.14).
+            assert.ok(text.includes('DNS:localhost'))
+            assert.ok(!text.includes('IP Address:'))
+            const caFile = join(dir, 'ca.crt')
+            writeFileSync(caFile, Buffer.from(tls.data['ca.crt']!, 'base64'))
+            const constraints = execFileSync('openssl', ['x509', '-in', caFile, '-noout', '-ext', 'nameConstraints']).toString()
+            assert.match(constraints, /Excluded:\s+IP:0\.0\.0\.0\/0\.0\.0\.0/, 'a re-minted seed CA excludes every IP address')
         }
         finally
         {

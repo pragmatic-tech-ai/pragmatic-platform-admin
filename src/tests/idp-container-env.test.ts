@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ExecFileDockerExec, IdpContainerEnv, type IDockerExec, type IdpContainerSpec } from '../idp-container-env.js'
 import { DevCa, IdpTlsMaterial } from '@pragmatic-tech-ai/pragmatic-identity-source-oidc'
+import { LegacyDevCa } from './legacy-dev-ca.js'
 
 class FakeExec implements IDockerExec
 {
@@ -36,9 +37,9 @@ class TlsFixture
     public Ca: Buffer = Buffer.alloc(0)
     public Port = 0
 
-    public async Start(status: number): Promise<void>
+    public async Start(status: number, legacy: boolean = false): Promise<void>
     {
-        const files = DevCa.EnsureAt(this.Dir, 'host.docker.internal')
+        const files = legacy ? LegacyDevCa.MintAt(this.Dir, 'host.docker.internal') : DevCa.EnsureAt(this.Dir, 'host.docker.internal')
         this.Ca = readFileSync(files.caFile)
         const tls = IdpTlsMaterial.Load(files)
         const server = createServer({ key: tls.key, cert: tls.cert }, (req, res) =>
@@ -129,6 +130,35 @@ test('WaitHealthy resolves on 200 over verified TLS', async () =>
     {
         await fx.Start(200)
         await new IdpContainerEnv(new FakeExec()).WaitHealthy(fx.Port, fx.Ca, 3, 10)
+    }
+    finally
+    {
+        await fx.Stop()
+    }
+})
+
+test('WaitHealthy verifies an IdP minted before pragmatic-shared 0.18.14 by its loopback IP (its leaf names no localhost)', async () =>
+{
+    const fx = new TlsFixture()
+    try
+    {
+        await fx.Start(200, true)
+        assert.deepEqual(IdpContainerEnv.ServerNameFor(fx.Ca), {}, 'no TLS name: the connection checks 127.0.0.1 against the IP SAN')
+        await new IdpContainerEnv(new FakeExec()).WaitHealthy(fx.Port, fx.Ca, 3, 10)
+    }
+    finally
+    {
+        await fx.Stop()
+    }
+})
+
+test('WaitHealthy verifies a current IdP by localhost', async () =>
+{
+    const fx = new TlsFixture()
+    try
+    {
+        await fx.Start(200)
+        assert.deepEqual(IdpContainerEnv.ServerNameFor(fx.Ca), { servername: 'localhost' })
     }
     finally
     {

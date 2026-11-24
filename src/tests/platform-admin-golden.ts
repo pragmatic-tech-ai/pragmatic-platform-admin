@@ -8,6 +8,6 @@ import { fileURLToPath } from 'node:url'
 export class PlatformAdminGolden
 {
     public static readonly Fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'pragmatic-platform-admin.component.json')
-    /** At 0.1.4: tenantPlane.desktopRealmSignIn (Plexus signs in at the tenant realm, E.s S4) and the version. */
-    public static readonly Digest = 'sha256:8737bdd22d68331b7b0e90bda886a760ac2bc84ef613adf50d8f41447fae82fa'
+    /** At 0.1.8 (the descriptor changes only with the version since 0.1.4's tenantPlane.desktopRealmSignIn, E.s S4). */
+    public static readonly Digest = 'sha256:7dd860ad0a4abaa1498dd02f77066a11e21bc53bd4127e6ad27bb763575fd6f9'
 }

@@ -1,7 +1,7 @@
 import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -11,6 +11,7 @@ import { InHiveIdpAdmin, InHiveIdpUnavailableError } from '../in-hive-idp-admin.
 import type { IProcessSpawner, ISpawnedProcess, PortForwardResult } from '@pragmatic-tech-ai/pragmatic-kube'
 import { OwnerAccountMissingError, OwnerNotRecordedError } from '../tenant-provisioning-service.js'
 import { ConsoleFakeKubectl, ConsoleFakeOrchestrators, ConsoleInstallFixture } from './console-install-fakes.js'
+import { LegacyDevCa } from './legacy-dev-ca.js'
 
 class FakeTunnel implements ISpawnedProcess
 {
@@ -113,6 +114,23 @@ describe('InHiveIdpAdmin', () =>
         fx?.Dispose()
     })
 
+    it('reaches an IdP minted before pragmatic-shared 0.18.14 (its CA permits 127.0.0.1, its leaf names no localhost) by its IP', async () =>
+    {
+        fx = await Fixture.Create()
+        const dir = mkdtempSync(join(tmpdir(), 'in-hive-legacy-'))
+        try
+        {
+            const legacy = LegacyDevCa.MintAt(dir, 'pragmatic-idp-acme.pragmatic-idp-acme.svc.cluster.local')
+            await fx.Admin.Remember('acme', readFileSync(legacy.caFile), 'admin.token.Zq')
+            await fx.Admin.ResetOwnerPassword(ConsoleInstallFixture.Hive('h1'), Fixture.Tenant())
+            assert.equal(fx.Connections[0]?.baseUrl, 'https://127.0.0.1:41000', 'the old leaf carries the IP SAN, so the pinned chain verifies by the IP')
+        }
+        finally
+        {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+
     it('ResetOwnerPassword resets over a loopback tunnel and returns the password once', async () =>
     {
         fx = await Fixture.Create()
@@ -120,7 +138,7 @@ describe('InHiveIdpAdmin', () =>
         const result = await fx.Admin.ResetOwnerPassword(ConsoleInstallFixture.Hive('h1'), Fixture.Tenant())
         const idp = K8sManifestBuilder.IdpNameOf('acme')
         assert.deepEqual(fx.Kubectl.Forwards, [[idp, 'svc/' + idp, 9443]])
-        assert.equal(fx.Connections[0]?.baseUrl, 'https://127.0.0.1:41000')
+        assert.equal(fx.Connections[0]?.baseUrl, 'https://localhost:41000', 'the IdP certificate names localhost, never an IP (DevCa, shared 0.18.14)')
         assert.equal(fx.Connections[0]?.adminToken, 'admin.token.Zq')
         assert.equal(fx.Connections[0]?.ca.toString(), 'CA PEM')
         assert.deepEqual(fx.Client.Calls, [['ResetPassword', 'acme', 'owner', result.ownerPassword]])

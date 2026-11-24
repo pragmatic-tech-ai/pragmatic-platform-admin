@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { randomBytes, X509Certificate } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DevCa } from '@pragmatic-tech-ai/pragmatic-identity-source-oidc'
 import { IdpContainerEnv, type StaleImage } from './idp-container-env.js'
@@ -22,6 +22,10 @@ export class DockerIdpDriver implements IIdpWorkloadDriver
     private static readonly TlsDirName = 'tls'
     private static readonly SecretsDirName = 'secrets'
     private static readonly CaFileName = 'ca.crt'
+    private static readonly CertFileName = 'server.crt'
+    /** Where a pre-0.18.14 tls dir is kept when it is re-minted (its CA stays readable for whoever trusted it). */
+    private static readonly LegacyTlsSuffix = '.pre-0.18.14'
+    private static readonly LoopbackDnsName = 'DNS:localhost'
     private static readonly AdminTokenRef = 'admin-token'
     private static readonly VolumePrefix = `${IdpWorkloadNames.NamePrefix}data-`
     private static readonly TokenBytes = 32
@@ -136,6 +140,13 @@ export class DockerIdpDriver implements IIdpWorkloadDriver
         {
             const adminToken = readFileSync(join(dir, DockerIdpDriver.SecretsDirName, record.adminTokenRef), DockerIdpDriver.FileEncoding)
             const tlsDir = join(dir, DockerIdpDriver.TlsDirName)
+            if (record.caDir === tlsDir && DockerIdpDriver.HasLegacyLeaf(tlsDir))
+            {
+                // A pre-0.18.14 leaf (no localhost, an IP subtree in its CA) Plexus cannot verify: development material, so it
+                // is re-minted here and the old set kept beside it (environments that copied the old CA are recreated).
+                rmSync(tlsDir + DockerIdpDriver.LegacyTlsSuffix, { recursive: true, force: true })
+                renameSync(tlsDir, tlsDir + DockerIdpDriver.LegacyTlsSuffix)
+            }
             if (record.caDir === tlsDir && !existsSync(tlsDir))
             {
                 DevCa.EnsureAt(tlsDir, IdpContainerEnv.ContainerHost, this.openssl)
@@ -157,6 +168,25 @@ export class DockerIdpDriver implements IIdpWorkloadDriver
         }
     }
 
+    /** Whether the tls dir holds a server cert minted before pragmatic-shared 0.18.14 (no `localhost` among its names). A
+     *  missing or unreadable cert is no legacy leaf (the dir is then minted or fails as before). */
+    public static HasLegacyLeaf(tlsDir: string): boolean
+    {
+        const file = join(tlsDir, DockerIdpDriver.CertFileName)
+        if (!existsSync(file))
+        {
+            return false
+        }
+        try
+        {
+            return new X509Certificate(readFileSync(file)).subjectAltName?.includes(DockerIdpDriver.LoopbackDnsName) !== true
+        }
+        catch
+        {
+            return false
+        }
+    }
+
     private TenantDir(tenantId: string): string
     {
         return join(this.dataRoot, DockerIdpDriver.IdpDirName, tenantId)
@@ -175,6 +205,11 @@ export class DockerIdpDriver implements IIdpWorkloadDriver
         }
         catch
         {
+            return {}
+        }
+        if (record.caDir === join(this.TenantDir(record.tenantId), DockerIdpDriver.TlsDirName) && DockerIdpDriver.HasLegacyLeaf(record.caDir))
+        {
+            // Healthy or not, a pre-0.18.14 leaf is recovered: Recover re-mints it.
             return {}
         }
         try

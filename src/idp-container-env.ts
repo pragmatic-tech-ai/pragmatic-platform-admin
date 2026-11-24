@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { get } from 'node:https'
 import { DockerEnv } from './environments/seed/docker.js'
 import { IdpDatabaseSecret, IdpWorkloadNames } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
+import { IdpLoopbackHost } from './idp-loopback-host.js'
 
 export interface IdpContainerSpec
 {
@@ -313,11 +314,19 @@ export class IdpContainerEnv
         }
     }
 
+    /** The TLS name the probe verifies the IdP by: `localhost` (a DevCa leaf of 0.18.14 or later), or none, so the
+     *  connection's own 127.0.0.1 is checked against an older leaf's IP SAN (IdpLoopbackHost reads which from the CA). */
+    public static ServerNameFor(ca: string | Buffer): { servername?: string }
+    {
+        const name = IdpLoopbackHost.For(ca)
+        return name === IdpLoopbackHost.Localhost ? { servername: name } : {}
+    }
+
     private Probe(port: number, ca: string | Buffer): Promise<boolean>
     {
         return new Promise<boolean>(resolve =>
         {
-            const req = get({ host: IdpContainerEnv.LocalHost, port, path: IdpContainerEnv.HealthPath, ca, rejectUnauthorized: true, timeout: IdpContainerEnv.RequestTimeoutMs }, res =>
+            const req = get({ host: IdpContainerEnv.LocalHost, ...IdpContainerEnv.ServerNameFor(ca), port, path: IdpContainerEnv.HealthPath, ca, rejectUnauthorized: true, timeout: IdpContainerEnv.RequestTimeoutMs }, res =>
             {
                 res.resume()
                 resolve(res.statusCode === 200)
