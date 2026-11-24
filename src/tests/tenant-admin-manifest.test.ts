@@ -366,7 +366,7 @@ describe('K8sManifestBuilder.RenderTenantAdmin console exposure and RBAC', () =>
         const role = TenantAdminFixture.Items().find(i => i.kind === 'ClusterRole' && i.metadata.name === K8sManifestBuilder.TenantConsoleEnvRoleNameOf('acme'))
         assert.equal(role.metadata.labels['pragmatic/hive'], 'hive-a')
         assert.deepEqual(role.rules, [
-            { apiGroups: [''], resources: ['secrets', 'configmaps', 'services', 'persistentvolumeclaims'], verbs: ['*'] },
+            { apiGroups: [''], resources: ['secrets', 'configmaps', 'services', 'persistentvolumeclaims', 'serviceaccounts'], verbs: ['*'] },
             { apiGroups: ['apps'], resources: ['deployments', 'deployments/scale', 'statefulsets', 'statefulsets/scale'], verbs: ['*'] },
             { apiGroups: ['networking.k8s.io'], resources: ['ingresses'], verbs: ['*'] },
         ])
