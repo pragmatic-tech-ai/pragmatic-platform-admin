@@ -1,4 +1,6 @@
+import { AgentConfigurationHold } from '../agent-configuration-hold.js'
 import { describe, it } from 'node:test'
+import { AgentEnvOwnership } from './agent-env-ownership.js'
 import assert from 'node:assert/strict'
 import { type IInstallClock, KubectlError, type IKubectl } from '@pragmatic-tech-ai/pragmatic-kube'
 import { AgentInstallInProgressError, AgentInstallUnavailableError, HiveAgentInstaller, InstallState, InstallStep } from '../hive-agent-installer.js'
@@ -281,6 +283,24 @@ describe('HiveAgentInstaller', () =>
         assert.equal(deployment?.spec?.template?.spec?.containers?.[0].image, ref)
     })
 
+    it('an install over a running agent applies its Deployment server-side under the control plane manager first, so what that manager owned and the bundle no longer renders goes (review I4)', async () =>
+    {
+        const ref = 'ghcr.io/pragmatic-tech-ai/pragmatic-hive-agent@sha256:' + 'd'.repeat(64)
+        const fx = new Fixture(true, new FixedImages(ref))
+        const name = K8sManifestBuilder.HiveAgentNameOf('h1')
+        fx.Kubectl.Live.set('deployment/' + name, JSON.stringify({ kind: 'Deployment', spec: { template: { metadata: { annotations: {} } } } }))
+        fx.CheckInAfter(1)
+        fx.Installer.Start('h1')
+        await fx.Installer.WhenSettled('h1')
+        assert.deepEqual(fx.Kubectl.Calls.slice(0, 3).map(c => c[0]), ['ApplyServerSide', 'Apply', 'ApplyServerSide'], 'the Deployment server-side, the bundle, then the token Secret')
+        const deployment = JSON.parse(fx.Kubectl.ServerApplied[0]!) as { items: { kind: string }[] }
+        assert.deepEqual(deployment.items.map(i => i.kind), ['Deployment'], 'only the Deployment goes server-side: never the empty configuration objects (R8)')
+        // A console install (before R25) left a variable its hold's manager owns: the agent install removes it.
+        const env = new AgentEnvOwnership({ [AgentEnvOwnership.ServerManager]: ['PRAGMATIC_AGENT_HIVE_ID', 'PRAGMATIC_AGENT_REGISTRY_URL', 'PRAGMATIC_AGENT_TOKEN'], [AgentEnvOwnership.ClientManager]: ['PRAGMATIC_AGENT_TOKEN_FILE'] }, undefined)
+            .Replay(fx.Kubectl, name)
+        assert.deepEqual(env.Names, ['PRAGMATIC_AGENT_HIVE_ID', 'PRAGMATIC_AGENT_REGISTRY_URL', 'PRAGMATIC_AGENT_TOKEN_FILE'])
+    })
+
     it('an install over an agent whose template carries an applied configuration keeps it (hash and secrets revision)', async () =>
     {
         const ref = 'ghcr.io/pragmatic-tech-ai/pragmatic-hive-agent@sha256:' + 'd'.repeat(64)
@@ -293,6 +313,7 @@ describe('HiveAgentInstaller', () =>
         await fx.Installer.WhenSettled('h1')
         const items = (JSON.parse(fx.Kubectl.Applied[0]) as { items: Array<{ kind: string; spec?: { template?: { metadata?: { annotations?: Record<string, string> } } } }> }).items
         const kept = items.find(i => i.kind === 'Deployment')?.spec?.template?.metadata?.annotations ?? {}
+        assert.equal(fx.Kubectl.ServerApplied[0], AgentConfigurationHold.DeploymentOf(fx.Kubectl.Applied[0]!), 'the same Deployment, with the kept annotations, server-side')
         assert.equal(kept['pragmatic-tech.ai/configuration-hash'], hash)
         assert.equal(kept['pragmatic-tech.ai/secrets-revision'], '12')
         assert.equal(kept.other, undefined, 'only the console annotations are kept')

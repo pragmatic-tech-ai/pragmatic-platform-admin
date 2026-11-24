@@ -256,6 +256,7 @@ export class TenantConsoleInstaller
     private static readonly AgentRefusedWhere = ' in the tenant admin console (Configuration, ' + ReleaseApp.HiveAgent + '), then install again. The hive agent was not moved onto this release and the identity provider was not changed. ('
     private static readonly AgentNotPreparedPrefix = "The tenant admin console did not prepare the hive agent's configuration for this release within "
     private static readonly AgentNotPreparedSuffix = ' minutes. The hive agent was not moved onto this release and the identity provider was not changed. The console prepares it when it starts: its Configuration page for ' + ReleaseApp.HiveAgent + ' shows a refusal or an error. Then install again.'
+    private static readonly AgentNotAppliedMessage = 'The hive agent could not be moved onto this release: the cluster refused its Deployment (applied server-side, then client-side; a refusal of the second leaves the server-side one rolling, which surges, so the previous pod keeps serving until the new one is ready), and the identity provider was not changed. Check the agent in the cluster, then install again.'
     private static readonly AgentNotRolledMessage = 'The hive agent did not finish rolling onto this release; its previous pod keeps serving (it surges), and the identity provider was not changed. Check the agent in the cluster, then install again.'
     private static readonly NoIdpDigestMessage = "The release's component descriptors name no descriptor for the identity provider, so its configuration cannot be prepared; the identity provider was not changed. Publish a complete release."
     private static readonly MinuteMs = 60_000
@@ -936,8 +937,15 @@ export class TenantConsoleInstaller
         const name = K8sManifestBuilder.HiveAgentNameOf(hiveId)
         const roll = AgentConfigurationHold.ReleaseRoll(await kubectl.Find(system, C.DeploymentPrefix + name), hiveId, channelUrl, image)
         if (roll === undefined) return
-        await kubectl.ApplyServerSide(roll)
-        await kubectl.Apply(roll)
+        try
+        {
+            await kubectl.ApplyServerSide(roll)
+            await kubectl.Apply(roll)
+        }
+        catch (refused)
+        {
+            throw new ConsoleInstallStepError(C.WithDetail(C.AgentNotAppliedMessage, C.KubectlText(refused)))
+        }
         try
         {
             await kubectl.RolloutStatus(system, name)

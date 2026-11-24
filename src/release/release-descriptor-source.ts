@@ -1,4 +1,4 @@
-import { ComponentDescriptorCodec, type ComponentDescriptor } from '@pragmatic-tech-ai/pragmatic-component'
+import { ComponentDescriptorCodec, ComponentDescriptorError, type ComponentDescriptor } from '@pragmatic-tech-ai/pragmatic-component'
 import { ComponentAssetUnavailableError, ComponentDescriptorSet, type IComponentAssetSource, OciProtocolError, OciRegistryClient, OciResponseError, OciUnavailableError, ReleaseApp, ReleaseApps, ReleaseDescriptorMismatchError, ReleaseDescriptorsAbsentError, type ReleaseManifestComponent, type ReleaseManifestDocument } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ReleaseState, type ManifestRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { GitHubRateLimit } from './github-rate-limit.js'
@@ -69,6 +69,7 @@ export class ReleaseDescriptorSource implements IReleaseDescriptorSource
     private static readonly UnsignedPrefix = 'the artifact carries a descriptor the release does not sign: '
     private static readonly RegistryUnreachable = 'the release registry is unreachable'
     private static readonly ArtifactMalformed = 'its components artifact is malformed'
+    private static readonly ArtifactUnreadable = 'it carries a component descriptor this platform admin console cannot read (a later console is needed)'
     private static readonly RegistryStatusPrefix = 'the release registry answered HTTP '
     private static readonly GitHubPrefix = 'GitHub could not be asked for the component.json of '
     private static readonly ReasonSeparator = ': '
@@ -124,6 +125,10 @@ export class ReleaseDescriptorSource implements IReleaseDescriptorSource
             if (error instanceof OciProtocolError)
             {
                 throw new ReleaseDescriptorsUnavailableError(version, S.ArtifactMalformed)
+            }
+            if (error instanceof ComponentDescriptorError)
+            {
+                throw new ReleaseDescriptorsUnavailableError(version, S.ArtifactUnreadable)
             }
             if (error instanceof OciResponseError)
             {

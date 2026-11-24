@@ -1,3 +1,4 @@
+import { ComponentDescriptorError } from '@pragmatic-tech-ai/pragmatic-component'
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { ComponentAssetUnavailableError, ComponentDescriptorSet, OciResponseError, OciUnavailableError, ReleaseApp, ReleaseApps, ReleaseDescriptorMismatchError } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
@@ -206,5 +207,12 @@ describe('ReleaseDescriptorSource', () =>
         fx.Artifact.Error = new OciResponseError(SourceFixture.StatusForbidden, SourceFixture.StatusForbiddenText)
         await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(SourceFixture.ForbiddenPattern))
         assert.deepEqual(fx.Manifests.Asked, [])
+    })
+
+    it('an artifact carrying a descriptor this console cannot decode (a later descriptor member) is unavailable with its own sentence (review I3)', async () =>
+    {
+        const { fx } = SourceFixture.WithArtifact()
+        fx.Artifact.Error = new ComponentDescriptorError("unknown key 'minimum' in descriptor member 'settings'")
+        await assert.rejects(fx.Source.DescriptorsOf(F.Version), SourceFixture.Unavailable(/cannot read \(a later console is needed\)$/))
     })
 })

@@ -8,6 +8,7 @@ import { ConsoleReleaseDescriptors } from '../console-release-descriptors.js'
 import { ReleaseApp } from '@pragmatic-tech-ai/pragmatic-release-toolkit'
 import { ConsoleInstallState } from '../tenant-console-installer.js'
 import { ConsoleInstallFixture } from './console-install-fakes.js'
+import { AgentEnvOwnership } from './agent-env-ownership.js'
 
 type Obj = Record<string, any>
 
@@ -230,94 +231,6 @@ describe('ConsoleReleaseDescriptors.SameRelease (the agent rolls with the consol
     })
 })
 
-/**
- * Which agent environment variables a Deployment keeps after a series of applies, by field ownership as the API server
- * keeps it (C3.1 live proof early.13, row 4). A server-side apply by a manager owns exactly the entries it applied and
- * drops an entry it owned before and no longer applies when no other manager owns it; kubectl's server-side apply first
- * moves what kubectl's client-side apply owned to its own manager and drops kubectl's record of that apply (the live
- * agent's managed fields after the early.13 install: `pragmatic-control-plane` owns PRAGMATIC_AGENT_TOKEN, the client-side
- * manager only what the roll applied). A client-side apply deletes only what its record lists and the new object does not.
- */
-class AgentEnvOwnership
-{
-    public static readonly ServerManager = 'pragmatic-control-plane'
-    public static readonly ClientManager = 'kubectl-client-side-apply'
-
-    private readonly owners = new Map<string, Set<string>>()
-    private record: string[] | undefined
-
-    public constructor(owned: Record<string, readonly string[]>, record: readonly string[] | undefined)
-    {
-        for (const [manager, names] of Object.entries(owned))
-        {
-            for (const name of names) this.Owners(name).add(manager)
-        }
-        this.record = record === undefined ? undefined : [...record]
-    }
-
-    public get Names(): string[]
-    {
-        return [...this.owners.keys()].sort()
-    }
-
-    public ServerSide(names: readonly string[]): void
-    {
-        const M = AgentEnvOwnership
-        for (const owners of this.owners.values())
-        {
-            if (owners.delete(M.ClientManager)) owners.add(M.ServerManager)
-        }
-        this.record = undefined
-        for (const [name, owners] of [...this.owners])
-        {
-            if (!names.includes(name) && owners.delete(M.ServerManager) && owners.size === 0) this.owners.delete(name)
-        }
-        for (const name of names) this.Owners(name).add(M.ServerManager)
-    }
-
-    public ClientSide(names: readonly string[]): void
-    {
-        for (const name of this.record ?? [])
-        {
-            if (!names.includes(name)) this.owners.delete(name)
-        }
-        for (const name of names) this.Owners(name).add(AgentEnvOwnership.ClientManager)
-        this.record = [...names]
-    }
-
-    /** Replays the installer's applies of the agent Deployment, in call order. */
-    public Replay(fx: ConsoleInstallFixture, deployment: string): this
-    {
-        let server = 0
-        let client = 0
-        for (const [verb] of fx.Kubectl.Calls)
-        {
-            if (verb === 'ApplyServerSide') this.Apply(fx.Kubectl.ServerApplied[server++]!, deployment, names => this.ServerSide(names))
-            if (verb === 'Apply') this.Apply(fx.Kubectl.Applied[client++]!, deployment, names => this.ClientSide(names))
-        }
-        return this
-    }
-
-    private Apply(manifest: string, deployment: string, apply: (names: string[]) => void): void
-    {
-        const items = (JSON.parse(manifest) as { items?: Obj[] }).items ?? []
-        const agent = items.find(i => i.kind === 'Deployment' && i.metadata?.name === deployment)
-        if (agent === undefined) return
-        apply(((agent.spec.template.spec.containers as Obj[]).find(c => c.name === 'agent')?.env ?? []).map((e: Obj) => e.name as string))
-    }
-
-    private Owners(name: string): Set<string>
-    {
-        let owners = this.owners.get(name)
-        if (owners === undefined)
-        {
-            owners = new Set()
-            this.owners.set(name, owners)
-        }
-        return owners
-    }
-}
-
 describe('a console install leaves no plain agent token variable on an existing agent (live proof row 4)', () =>
 {
     let fx: ConsoleInstallFixture | undefined
@@ -342,7 +255,7 @@ describe('a console install leaves no plain agent token variable on an existing 
         fx.Kubectl.Put('pragmatic-system', 'deployment/' + OldAgent.Name, Running([...Wiring, Token]))
         fx.Installer.Start('h1')
         assert.equal((await fx.Installer.WhenSettled('h1'))?.state, ConsoleInstallState.Deployed)
-        const env = new AgentEnvOwnership({ [AgentEnvOwnership.ClientManager]: [...Wiring, Token] }, [...Wiring, Token]).Replay(fx, OldAgent.Name)
+        const env = new AgentEnvOwnership({ [AgentEnvOwnership.ClientManager]: [...Wiring, Token] }, [...Wiring, Token]).Replay(fx.Kubectl, OldAgent.Name)
         assert.deepEqual(env.Names, [...Wiring, TokenFile].sort())
     })
 
@@ -353,8 +266,39 @@ describe('a console install leaves no plain agent token variable on an existing 
         fx.Installer.Start('h1')
         assert.equal((await fx.Installer.WhenSettled('h1'))?.state, ConsoleInstallState.Deployed)
         const env = new AgentEnvOwnership({ [AgentEnvOwnership.ServerManager]: [...Wiring, Token], [AgentEnvOwnership.ClientManager]: [TokenFile] }, [...Wiring, TokenFile])
-            .Replay(fx, OldAgent.Name)
+            .Replay(fx.Kubectl, OldAgent.Name)
         assert.deepEqual(env.Names, [...Wiring, TokenFile].sort())
+    })
+
+    it('a refused agent roll apply stops the install before the IdP with its own sentence, the kubectl text attached (review M8)', async () =>
+    {
+        const rollAt = async (): Promise<number> =>
+        {
+            const probe = await ConsoleInstallFixture.Create()
+            try
+            {
+                probe.Kubectl.Put('pragmatic-system', 'deployment/' + OldAgent.Name, Running([...Wiring, Token]))
+                probe.Installer.Start('h1')
+                await probe.Installer.WhenSettled('h1')
+                return probe.Kubectl.Applied.findIndex(m => ((JSON.parse(m) as { items?: Obj[] }).items ?? []).some(i => i.kind === 'Deployment' && i.metadata?.name === OldAgent.Name))
+            }
+            finally
+            {
+                probe.Dispose()
+            }
+        }
+        const at = await rollAt()
+        assert.ok(at >= 0)
+        fx = await ConsoleInstallFixture.Create()
+        fx.Kubectl.Put('pragmatic-system', 'deployment/' + OldAgent.Name, Running([...Wiring, Token]))
+        fx.Kubectl.ApplyFailures.add(at)
+        fx.Installer.Start('h1')
+        const status = await fx.Installer.WhenSettled('h1')
+        assert.equal(status?.state, ConsoleInstallState.Failed)
+        assert.match(status?.error ?? '', /^The hive agent could not be moved onto this release: the cluster refused its Deployment/)
+        assert.match(status?.error ?? '', /apply refused/)
+        const idp = K8sManifestBuilder.IdpNameOf('acme')
+        assert.ok(!fx.Kubectl.Calls.some(c => c[0] === 'RolloutStatus' && c[1] === idp), 'the IdP was not touched')
     })
 
     it('the roll is applied server-side, under the hold\'s manager, then client-side: the same template, after the hold', async () =>

@@ -270,7 +270,16 @@ export class HiveAgentInstaller
             this.Enter(run, InstallStep.ApplyingAgent)
             // The running agent's applied configuration stays on its pod template (a console install recorded it there).
             const live = await orchestrator.Kubectl.Find(K8sManifestBuilder.SystemNamespace, HiveAgentInstaller.DeploymentPrefix + K8sManifestBuilder.HiveAgentNameOf(hive.id))
-            await orchestrator.Kubectl.Apply(AgentConfigurationHold.KeepingAnnotations(bundle.manifest, live))
+            const agent = AgentConfigurationHold.KeepingAnnotations(bundle.manifest, live)
+            // Over a running agent a console install may have applied server-side (its hold and roll, under the control
+            // plane's field manager): a client-side apply cannot remove what that manager owns, so the Deployment goes
+            // server-side under it first (the same template; the client-side apply then records the bundle, C3.1 R25).
+            const deployment = live === undefined ? undefined : AgentConfigurationHold.DeploymentOf(agent)
+            if (deployment !== undefined)
+            {
+                await orchestrator.Kubectl.ApplyServerSide(deployment)
+            }
+            await orchestrator.Kubectl.Apply(agent)
             this.Enter(run, InstallStep.StoringToken)
             // Store first, commit after: a failed store leaves the hive's previous token valid.
             token = this.tokens.NewAgentToken()

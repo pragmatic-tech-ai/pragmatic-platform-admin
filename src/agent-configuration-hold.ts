@@ -106,6 +106,18 @@ export class AgentConfigurationHold
         return JSON.stringify(list)
     }
 
+    /**
+     * The Deployment of an agent bundle alone (a List of it), to apply server-side under the hold's field manager before the
+     * bundle's client-side apply: what an earlier server-side apply (a console install's hold or roll) owns and the bundle no
+     * longer renders goes (C3.1 Ledger R25). Undefined for a bundle without a Deployment.
+     */
+    public static DeploymentOf(bundle: string): string | undefined
+    {
+        const H = AgentConfigurationHold
+        const deployment = ((JSON.parse(bundle) as { items?: ManifestItem[] }).items ?? []).find(i => i.kind === H.DeploymentKind)
+        return deployment === undefined ? undefined : H.List([deployment])
+    }
+
     /** The agent's empty configuration ConfigMap and Secret (one manifest each), as its bundle renders them for `hiveId`. */
     public static ConfigurationObjects(hiveId: string): string[]
     {
