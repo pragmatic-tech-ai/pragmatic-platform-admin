@@ -11,7 +11,7 @@ import { PlatformImageSigner } from '../platform-signing-key.js'
 class Fx
 {
     public static readonly Secret = 'kubectl stderr SECRET-VALUE'
-    public static readonly Workload = { environmentName: 'e1', hiveId: 'h1', serverPort: 8080 } as unknown as EnvironmentWorkload
+    public static readonly Workload = { environmentName: 'e1', hiveId: 'h1', serverPort: 8080, serverDatabase: { image: 'pragmatic-postgres:local', secretName: 'e1-postgres' } } as unknown as EnvironmentWorkload
     public static readonly DbWorkload = { ...Fx.Workload, database: { image: 'postgres:16', user: 'u', database: 'd', passwordRef: 'p' } } as unknown as EnvironmentWorkload
     public static readonly Hive = { id: 'h1' } as unknown as HiveRecord
     public static readonly Def = { name: 'e1', environmentId: 'env-1' } as unknown as EnvDefinition

@@ -9,7 +9,7 @@ import { DomainTakenError, type PlatformEmailDomains } from '../platform-email-d
 import { ClientLockTimeoutError, type ClientLock } from './client-lock.js'
 import type { ClientUsage } from './client-usage.js'
 import { HiveViews } from './hive-views.js'
-import { EngineInstallCommand, InvalidInstallReleaseError } from '../enrolment/engine-install-command.js'
+import { EngineInstallCommand, InvalidInstallReleaseError, InvalidInstallTenantError } from '../enrolment/engine-install-command.js'
 import { EnrolmentAgentKind } from '../enrolment/enrolment-code-record.js'
 import type { EnrolmentCodeIssuer } from '../enrolment/enrolment-code-issuer.js'
 import type { PlacementRegistry } from '../placement/placement-registry.js'
@@ -248,7 +248,7 @@ export class PlatformCustomerApiService implements ICustomerApiService
         }
         try
         {
-            return EngineInstallCommand.For(level, release)
+            return EngineInstallCommand.For(level, release, tenantId)
         }
         catch (err)
         {
@@ -321,7 +321,7 @@ export class PlatformCustomerApiService implements ICustomerApiService
         {
             return new CustomerApiError(CustomerErrorCode.RateLimited)
         }
-        if (err instanceof UnknownClientError || err instanceof DomainVerificationUnavailableError || err instanceof InvalidInstallReleaseError || err instanceof ClientLockTimeoutError)
+        if (err instanceof UnknownClientError || err instanceof DomainVerificationUnavailableError || err instanceof InvalidInstallReleaseError || err instanceof InvalidInstallTenantError || err instanceof ClientLockTimeoutError)
         {
             return new CustomerApiError(CustomerErrorCode.Unavailable)
         }

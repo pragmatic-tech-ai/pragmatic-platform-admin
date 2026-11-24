@@ -13,10 +13,24 @@ export class InvalidInstallReleaseError extends Error
     }
 }
 
+/** The tenant named in an install command is not a chart `tenant.id` (it would not be safe on a command line). */
+export class InvalidInstallTenantError extends Error
+{
+    private static readonly ErrorName = 'InvalidInstallTenantError'
+    private static readonly Text = 'Not a tenant id the engine chart takes'
+
+    public constructor()
+    {
+        super(InvalidInstallTenantError.Text)
+        this.name = InvalidInstallTenantError.ErrorName
+    }
+}
+
 /**
  * The public, secret-free command a customer runs to install the engine: the pragmatic-engine Helm chart at the
- * platform release the tenant admits, into `pragmatic-system`; a Standalone hive also sets `level=standalone`. It never
- * carries a code or a secret (the enrolment code is typed into the engine's console).
+ * platform release the tenant admits, into `pragmatic-system`, naming the tenant (the realm id of the engine's sign-in
+ * service from its first start) and a placeholder for the console host the customer chooses; a Standalone hive also sets
+ * `level=standalone`. It never carries a code or a secret (the enrolment code is typed into the engine's console).
  */
 export class EngineInstallCommand
 {
@@ -25,16 +39,26 @@ export class EngineInstallCommand
     private static readonly VersionFlag = ' --version '
     private static readonly Namespace = ' --namespace pragmatic-system --create-namespace'
     private static readonly StandaloneFlag = ' --set level=standalone'
+    private static readonly TenantFlag = ' --set tenant.id='
+    /** The literal placeholder the customer replaces with the host their console answers on. */
+    public static readonly ConsoleHostPlaceholder = '<your-console-host>'
+    private static readonly ConsoleHostFlag = ' --set console.host='
     private static readonly ReleasePattern = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/
+    /** The chart's `tenant.id` (values.schema.json). */
+    private static readonly TenantPattern = /^[a-z][a-z0-9-]{1,30}[a-z0-9]$/
 
-    public static For(level: HiveLevel, release: string): string
+    public static For(level: HiveLevel, release: string, tenantId: string): string
     {
         const E = EngineInstallCommand
         if (!E.ReleasePattern.test(release))
         {
             throw new InvalidInstallReleaseError()
         }
-        const command = E.Install + E.Chart + E.VersionFlag + release + E.Namespace
+        if (!E.TenantPattern.test(tenantId))
+        {
+            throw new InvalidInstallTenantError()
+        }
+        const command = E.Install + E.Chart + E.VersionFlag + release + E.Namespace + E.TenantFlag + tenantId + E.ConsoleHostFlag + E.ConsoleHostPlaceholder
         return level === HiveLevel.Standalone ? command + E.StandaloneFlag : command
     }
 }

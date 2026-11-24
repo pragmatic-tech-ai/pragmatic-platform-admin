@@ -176,7 +176,7 @@ SqlTestSessions.Describe(E2e.Label, (makeSession, backend) => describe(backend, 
     it('starts enrolment for each level', async () =>
     {
         const standalone = await client.StartEnrolment(token, new StartEnrolmentRequest(S.ClientId, C.TenantId, HiveLevel.Standalone))
-        assert.equal(standalone.InstallCommand, EngineInstallCommand.For(HiveLevel.Standalone, f.Deployments.Release as string))
+        assert.equal(standalone.InstallCommand, EngineInstallCommand.For(HiveLevel.Standalone, f.Deployments.Release as string, C.TenantId))
         for (const level of [HiveLevel.Enrolled, HiveLevel.Delegated])
         {
             const connected = await client.StartEnrolment(token, new StartEnrolmentRequest(S.ClientId, C.TenantId, level))

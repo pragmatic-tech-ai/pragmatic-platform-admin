@@ -211,9 +211,13 @@ class CatalogFixture
      * ever tagged with the bare release version. The contract holds for the toolkit this repository installs; the release
      * repository installs the same `^0.17` range, so both resolve one toolkit.
      */
-    public async PublishManifest(version: string): Promise<{ descriptor: ReleaseDescriptor; descriptorDigest: string }>
+    public async PublishManifest(version: string, withChart: boolean = false): Promise<{ descriptor: ReleaseDescriptor; descriptorDigest: string }>
     {
         const S = CatalogFixture
+        // A schema-3 release: the engine chart pushed at the release version before the descriptor that binds its digest.
+        const chartDigest = withChart
+            ? this.Registry.PutManifest(S.Namespace + '/' + ReleasePublisher.ChartRepository, version, new TextEncoder().encode(JSON.stringify({ schemaVersion: 2, chart: version })), S.ManifestType)
+            : undefined
         const assets = new FakeComponentAssets()
         const components: Partial<Record<ReleaseApp, ReleaseManifestComponent>> = {}
         for (const app of ReleaseApps.All)
@@ -236,6 +240,7 @@ class CatalogFixture
             SigningKeyId: this.Trusted.Id,
             PrivateKeyPem: this.Trusted.Private,
             TrustedPublicKeyPem: this.Trusted.Public,
+            ChartDigest: chartDigest,
         })
     }
 
@@ -329,6 +334,19 @@ describe('ReleaseCatalog.Refresh', () =>
             const again = await fx.Catalog().Refresh()
             assert.deepEqual(again, { imported: [], rejected: [], unchanged: 1, shadowed: [] })
             assert.equal(fx.Deployments.AllManifests().length, 1)
+        })
+    })
+
+    it('verifies a schema-3 release, which binds the engine chart', async () =>
+    {
+        await CatalogFixture.Run(async fx =>
+        {
+            const { descriptor } = await fx.PublishManifest(CatalogFixture.Early, true)
+            assert.equal(descriptor.schema, 3)
+            assert.equal(ReleaseDescriptorCodec.ChartOf(descriptor)?.reference, 'ghcr.io/pragmatic-tech-ai/charts/pragmatic-engine')
+            const result = await fx.Catalog().Refresh()
+            assert.deepEqual(result.imported, [CatalogFixture.Early])
+            assert.equal(fx.Release(CatalogFixture.Early)?.release?.state, ReleaseState.Verified)
         })
     })
 
@@ -588,9 +606,9 @@ describe('ReleaseCatalog.Refresh', () =>
     {
         await CatalogFixture.Run(async fx =>
         {
-            await fx.PushDescriptor(CatalogFixture.V1, new TextEncoder().encode('{"schema":3}'))
+            await fx.PushDescriptor(CatalogFixture.V1, new TextEncoder().encode('{"schema":9}'))
             await fx.Catalog().Refresh()
-            assert.equal(fx.Reason(CatalogFixture.V1), 'descriptor invalid: schema must be 1 or 2')
+            assert.equal(fx.Reason(CatalogFixture.V1), 'descriptor invalid: schema must be 1, 2 or 3')
         })
     })
 
