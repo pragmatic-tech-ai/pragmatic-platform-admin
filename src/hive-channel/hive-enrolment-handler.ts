@@ -21,7 +21,9 @@ export interface IEnrolledHives
 {
     GetHive(id: string): PlatformHiveRecord | undefined
     HiveByKeyId(keyId: string): PlatformHiveRecord | undefined
+    HasTenant(id: string): boolean
     EnrolHive(input: EnrolledHiveInput): Promise<PlatformHiveRecord>
+    ReEnrolHive(id: string, input: EnrolledHiveInput): Promise<PlatformHiveRecord>
 }
 
 /** Whether a hive has ever reported (the observation registry). */
@@ -81,9 +83,15 @@ export class HiveEnrolmentHandler implements IAgentMessageHandler<HiveEnrolmentR
         {
             throw new AgentExchangeRefusedError(AgentExchangeRefusal.KeyRegistered)
         }
+        // Everything that could still fail before the record is written is settled first, so a spent code always made a hive.
+        if (!this.parts.Hives.HasTenant(request.Tenant))
+        {
+            throw new AgentExchangeRefusedError(AgentExchangeRefusal.Mismatch)
+        }
+        const id = existing?.id ?? this.parts.Ids.Next()
         const code = await this.Redeem(request, level)
-        const hive = existing ?? await this.parts.Hives.EnrolHive({
-            id: this.parts.Ids.Next(),
+        const input: EnrolledHiveInput = {
+            id,
             tenantId: request.Tenant,
             level,
             publicKey: request.PublicKey.ToJson(),
@@ -91,7 +99,9 @@ export class HiveEnrolmentHandler implements IAgentMessageHandler<HiveEnrolmentR
             engineVersion: request.EngineVersion,
             consoleAddress: { Option: request.ConsoleAddress.Option, Host: request.ConsoleAddress.HostName, IngressAddress: request.ConsoleAddress.IngressAddress },
             enrolledBy: code.issuedBy,
-        })
+        }
+        // The recovery keeps the hive (its id and key) and records this enrolment's details and who asked.
+        const hive = existing === undefined ? await this.parts.Hives.EnrolHive(input) : await this.parts.Hives.ReEnrolHive(existing.id, input)
         const response = HiveEnrolmentResponse.Create({
             HiveId: hive.id, Tenant: request.Tenant, Level: request.Level, TrustRoot: this.parts.TrustRoot, ChannelUrl: this.parts.ChannelUrl, RequestNonce: message.Envelope.Nonce,
         })

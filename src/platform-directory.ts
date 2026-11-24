@@ -374,6 +374,27 @@ export class PlatformDirectory implements ITenantRecordSource
         return record
     }
 
+    public HasTenant(id: string): boolean
+    {
+        return this.tenants.Get(id) !== undefined
+    }
+
+    /**
+     * Records a repeated enrolment of a hive that never confirmed the first (HiveEnrolmentHandler's lost-answer
+     * recovery): the same id, key, tenant and level; the engine version, console address, time and admin of this one.
+     */
+    public async ReEnrolHive(id: string, input: EnrolledHiveInput): Promise<PlatformHiveRecord>
+    {
+        const hive = this.hives.Get(id) as PlatformHiveRecord | undefined
+        if (hive === undefined)
+        {
+            throw new UnknownHiveError(id)
+        }
+        const updated: PlatformHiveRecord = { ...hive, engineVersion: input.engineVersion, consoleAddress: input.consoleAddress, enrolledAt: this.Stamp(), enrolledBy: input.enrolledBy }
+        await this.hives.Put(updated)
+        return updated
+    }
+
     /** The hive enrolled with this key id, when one is (whether or not its customer left it). */
     public HiveByKeyId(keyId: string): PlatformHiveRecord | undefined
     {

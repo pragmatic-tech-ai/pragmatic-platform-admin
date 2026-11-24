@@ -11,6 +11,7 @@ import type { IAgentChannelBackend, IDesktopDiscoveryBackend } from '@pragmatic-
 import { InternalApiRoutes } from '@pragmatic-tech-ai/pragmatic-platform-link'
 import { InternalHost, InternalLink } from '../../internal/internal-host.js'
 import { InternalSettings } from '../../internal/internal-settings.js'
+import { HiveChannel } from '../hive-channel.js'
 import { HiveChannelWorld } from './hive-channel-world.js'
 
 class RouteReply
@@ -112,6 +113,18 @@ describe('AgentExchangeRoute', () =>
         const again = await F.Post(host, bearer, signed.Encode())
         assert.equal(again.Status, AgentExchangeLink.StatusOf(AgentExchangeRefusal.Replayed))
         assert.deepEqual(JSON.parse(again.Text), AgentExchangeLink.RefusalBody(AgentExchangeRefusal.Replayed))
+    })
+
+    it('without an https channel URL the exchange is not composed, and the start says so', async () =>
+    {
+        const warnings: string[] = []
+        const composed = await HiveChannel.Compose({
+            Session: undefined as never, Hives: world.Directory, Codes: world.Codes, Observations: world.Observations, Keys: undefined as never, KeyRef: 'platform-signing',
+            ChannelUrl: 'http://agent.pragmatic.test', Warn: line => warnings.push(line),
+        })
+        assert.equal(composed, undefined)
+        assert.deepEqual(warnings, [HiveChannel.NoChannelWarning])
+        assert.match(HiveChannel.NoChannelWarning, /PRAGMATIC_AGENT_CHANNEL_URL/)
     })
 
     it('over 1 MiB is 413 and garbage is malformed, codes only', async () =>

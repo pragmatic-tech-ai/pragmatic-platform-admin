@@ -21,6 +21,8 @@ export interface HiveChannelParts
     /** PRAGMATIC_AGENT_CHANNEL_URL: where hives reach the platform's edge. */
     ChannelUrl: string | undefined
     Clock?: IProtocolClock
+    /** Where the start warning goes when the exchange cannot be composed. */
+    Warn?: (line: string) => void
 }
 
 /**
@@ -31,10 +33,13 @@ export interface HiveChannelParts
  */
 export class HiveChannel
 {
+    public static readonly NoChannelWarning = 'The signed agent exchange is off: PRAGMATIC_AGENT_CHANNEL_URL must be the https URL of the platform edge, so engines cannot enrol (POST /internal/v2/agent/exchange is absent).'
+
     public static async Compose(parts: HiveChannelParts): Promise<PlatformAgentExchange | undefined>
     {
         if (parts.ChannelUrl === undefined || !ProtocolNames.HttpsUrl.test(parts.ChannelUrl))
         {
+            (parts.Warn ?? (line => console.warn(line)))(HiveChannel.NoChannelWarning)
             return undefined
         }
         const clock = parts.Clock ?? new SystemProtocolClock()

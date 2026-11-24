@@ -2,8 +2,36 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { Participant } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { FakeClock } from '@pragmatic-tech-ai/pragmatic-hive-protocol/testing'
+import type { ISqlSession, SqlRow } from '@pragmatic-tech-ai/todl'
+import { PgSession } from '@pragmatic-tech-ai/pragmatic-realm-adapters'
 import { SqlTestSessions } from '@pragmatic-tech-ai/pragmatic-realm-adapters/testing'
 import { SqlNonceLedger } from '../sql-nonce-ledger.js'
+
+/** A session that records each statement it executes. */
+class RecordingSession implements ISqlSession
+{
+    public readonly Executed: string[] = []
+
+    public constructor(private readonly inner: ISqlSession)
+    {
+    }
+
+    public Query(sql: string, params: readonly unknown[]): Promise<readonly SqlRow[]>
+    {
+        return this.inner.Query(sql, params)
+    }
+
+    public Execute(sql: string, params: readonly unknown[]): Promise<number>
+    {
+        this.Executed.push(sql)
+        return this.inner.Execute(sql, params)
+    }
+
+    public Transaction<T>(work: (tx: ISqlSession) => Promise<T>): Promise<T>
+    {
+        return this.inner.Transaction!(work)
+    }
+}
 
 class NonceCases
 {
@@ -46,6 +74,23 @@ describe('SqlNonceLedger', () =>
             await ledger.Claim(NonceCases.Hive, 'another-nonce-another-n', NonceCases.Later(clock, 5))
             assert.equal(await ledger.Size(), 1)
         })
+    })
+
+    it('sweeps expired rows at most once a minute, not on every claim', async () =>
+    {
+        const recording = new RecordingSession(new PgSession(SqlTestSessions.MemPool()))
+        const clock = new FakeClock()
+        const ledger = await SqlNonceLedger.Open(recording, clock)
+        const statements = recording.Executed
+        statements.length = 0
+        for (let i = 0; i < 5; i++)
+        {
+            await ledger.Claim(NonceCases.Hive, NonceCases.Nonce + '-' + i, NonceCases.Later(clock, 5))
+        }
+        assert.equal(statements.filter(sql => sql.startsWith('DELETE')).length, 1)
+        clock.Advance(SqlNonceLedger.SweepIntervalMs)
+        await ledger.Claim(NonceCases.Hive, NonceCases.Nonce + '-x', NonceCases.Later(clock, 5))
+        assert.equal(statements.filter(sql => sql.startsWith('DELETE')).length, 2)
     })
 
     SqlTestSessions.DescribeLive('SqlNonceLedger', makeDatabase =>

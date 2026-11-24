@@ -15,6 +15,7 @@ class EnrolmentCases
 {
     public static readonly Version = '0.1.7'
     public static readonly ConsoleHost = 'console.acme.example'
+    public static readonly OtherAdmin = 'https://login.example.test/realms/central\nsub-2'
 
     public static async CodeOf(work: Promise<unknown>): Promise<AgentExchangeRefusal>
     {
@@ -131,6 +132,31 @@ describe('HiveEnrolmentHandler', () =>
             .AcceptHive(reply, SignedEnvelope.Decode(world.Channel.Sent.at(-1) as string))
         assert.equal(verified.Body.HiveId, first?.id)
         assert.equal(world.Codes.Redeemed, 2, 'the new code is used')
+    })
+
+    it('the recovery records the details of the repeated enrolment and admin on the same hive', async () =>
+    {
+        const world = await HiveChannelWorld.Create()
+        const key = SigningKeyPair.Generate()
+        await world.Channel.SendText(EnrolmentCases.Request(world, key, await world.IssueCode(), HiveChannelWorld.TenantA, HiveLevel.Enrolled))
+        const [first] = world.Directory.ListHives() as PlatformHiveRecord[]
+        world.Clock.Advance(60_000)
+        const code = (await world.Codes.Issuer.Issue({ ClientId: HiveChannelWorld.ClientId, TenantId: HiveChannelWorld.TenantA, Level: CustomerHiveLevel.Enrolled, AgentKind: EnrolmentAgentKind.Hive, IssuedBy: EnrolmentCases.OtherAdmin })).Code
+        await world.Channel.SendText(EnrolmentCases.Request(world, key, code, HiveChannelWorld.TenantA, HiveLevel.Enrolled))
+        const again = world.Directory.GetHive(first!.id) as PlatformHiveRecord
+        assert.equal(again.enrolledBy, EnrolmentCases.OtherAdmin)
+        assert.equal(again.publicKey, first!.publicKey)
+        assert.equal(world.Directory.ListHives().length, 1)
+    })
+
+    it('a code for a tenant that no longer exists is refused before it is spent', async () =>
+    {
+        const world = await HiveChannelWorld.Create()
+        const code = await world.IssueCode(HiveChannelWorld.TenantB)
+        await world.Directory.DeleteTenant(HiveChannelWorld.TenantB)
+        assert.equal(await EnrolmentCases.CodeOf(new FakeHiveAgent(world.Channel, world.Clock).Enrol(code, HiveChannelWorld.TenantB, HiveLevel.Enrolled)), AgentExchangeRefusal.Mismatch)
+        assert.equal(world.Codes.Redeemed, 0, 'the code is not touched')
+        assert.equal(world.Directory.ListHives().length, 0)
     })
 
     it('two concurrent enrolments of one key record one hive', async () =>
