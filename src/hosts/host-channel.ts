@@ -7,7 +7,7 @@ import { PlacementPullHandler } from '../placement/placement-pull-handler.js'
 import { PlacementQueue, type PlacementQueueStore } from '../placement/placement-queue.js'
 import { PlacementResultHandler } from '../placement/placement-result-handler.js'
 import type { PlacementRegistry } from '../placement/placement-registry.js'
-import { PlacementScheduler, type IPlacementCodes } from '../placement/placement-scheduler.js'
+import { PlacementScheduler, type ILabelledHives, type IPlacementCodes } from '../placement/placement-scheduler.js'
 import { CredentialHandoverHandler } from './credential-handover-handler.js'
 import { HostEnrolmentHandler } from './host-enrolment-handler.js'
 import type { HostRegistry } from './host-registry.js'
@@ -31,9 +31,13 @@ export interface HostChannelParts
     Releases: IOfferedReleases
     Link: PlacementHiveLink
     Credentials: IClusterCredentialStore
+    /** The enrolled hives (their console host names): a new hive label never takes one. */
+    Hives?: ILabelledHives
     /** PRAGMATIC_ADMIN_SEALING_KEY_FILE's key; undefined: the console takes no hosts. */
     SealingKey: SealingKeyPair | undefined
     Now?: () => Date
+    /** The scheduler's label draws (tests); default crypto random. */
+    Random?: (size: number) => Buffer
     Warn?: (line: string) => void
 }
 
@@ -79,14 +83,16 @@ export class HostChannel
         const queue = new PlacementQueue(parts.QueueStore, parts.Hosts, signer, parts.Now)
         this.scheduler = new PlacementScheduler({
             Placements: parts.Placements, Hosts: parts.Hosts, Queue: queue, Codes: parts.Codes, Releases: parts.Releases, Link: parts.Link,
+            ...(parts.Hives === undefined ? {} : { Hives: parts.Hives }),
             ...(parts.Now === undefined ? {} : { Now: parts.Now }),
+            ...(parts.Random === undefined ? {} : { Random: parts.Random }),
         })
         return [
             new HostEnrolmentHandler({ Codes: parts.Codes, Hosts: parts.Hosts, TrustRoot: trustRoot, SealingKey: parts.SealingKey.PublicKey, ChannelUrl: channelUrl }),
             new HostReportHandler(parts.Hosts),
             new PlacementPullHandler(parts.Hosts, queue),
-            new PlacementResultHandler(parts.Placements, parts.Link, parts.Credentials),
-            new CredentialHandoverHandler(parts.Placements, parts.Credentials, parts.SealingKey),
+            new PlacementResultHandler(parts.Placements, parts.Link, parts.Credentials, parts.Hosts, queue),
+            new CredentialHandoverHandler(parts.Placements, parts.Credentials, parts.SealingKey, parts.Hosts),
         ]
     }
 }

@@ -26,18 +26,18 @@ class QueueCases
     public static readonly Host = 'hsaaaaaaaaaa'
     public static readonly Other = 'hsbbbbbbbbbb'
 
-    public static async Queue(): Promise<{ Queue: PlacementQueue; Clock: FakeClock; Key: SigningKeyPair }>
+    public static async Queue(): Promise<{ Queue: PlacementQueue; Clock: FakeClock; Key: SigningKeyPair; Store: PlacementQueueStore }>
     {
         const clock = new FakeClock()
         const key = SigningKeyPair.Generate()
         const store = new PlacementQueueStore(new MemoryRecordMap<PlacementQueueRecord>())
         await store.Load()
-        return { Queue: new PlacementQueue(store, new QueueSequences(), new EnvelopeSigner(key, Participant.Platform, clock), () => clock.Now()), Clock: clock, Key: key }
+        return { Queue: new PlacementQueue(store, new QueueSequences(), new EnvelopeSigner(key, Participant.Platform, clock), () => clock.Now()), Clock: clock, Key: key, Store: store }
     }
 
     public static Place(id: string, version: string = '0.1.0-early.20'): PlacementRequest
     {
-        return PlacementRequest.Place({ PlacementId: id, Tenant: 'acme', EnrolmentCode: 'pe1-AAAAAAAAAAAAAAAAAAAAAAAAAA', EngineVersion: version, ChartDigest: 'sha256:' + 'a'.repeat(64), HiveHostName: 'acme-abcd.hives.pragmatic-tech.ai' })
+        return PlacementRequest.Place({ PlacementId: id, Version: 1, Tenant: 'acme', EnrolmentCode: 'pe1-AAAAAAAAAAAAAAAAAAAAAAAAAA', EngineVersion: version, ChartDigest: 'sha256:' + 'a'.repeat(64), HiveHostName: 'acme-abcd.hives.pragmatic-tech.ai' })
     }
 }
 
@@ -64,7 +64,7 @@ describe('PlacementQueue', () =>
         const { Queue } = await C.Queue()
         await Queue.Publish(C.Host, C.Place('pl-a'))
         await Queue.Publish(C.Host, C.Place('pl-b'))
-        await Queue.Publish(C.Host, PlacementRequest.Remove('pl-a', 'acme'))
+        await Queue.Publish(C.Host, PlacementRequest.Remove('pl-a', 'acme', 2))
         const one = Queue.After(C.Host, 0, 1)
         assert.equal(one.Items.length, 1)
         assert.equal((one.Items[0]?.Body as { PlacementId: string }).PlacementId, 'pl-b')
@@ -81,11 +81,26 @@ describe('PlacementQueue', () =>
 
     it('an expired request is no longer answered and is pruned on the next publish', async () =>
     {
-        const { Queue, Clock } = await C.Queue()
-        const sequence = await Queue.Publish(C.Host, C.Place('pl-a'))
-        assert.equal(Queue.Holds(C.Host, sequence), true)
+        const { Queue, Clock, Store } = await C.Queue()
+        const published = await Queue.Publish(C.Host, C.Place('pl-a'))
+        assert.equal(published.ExpiresAt.getTime() - Clock.Now().getTime(), PlacementQueue.RequestLifetimeMs)
+        assert.equal(Queue.After(C.Host, 0, 100).Items.length, 1)
         Clock.Advance(8 * 24 * 60 * 60 * 1000)
-        assert.equal(Queue.Holds(C.Host, sequence), false)
         assert.equal(Queue.After(C.Host, 0, 100).Items.length, 0)
+        await Queue.Publish(C.Host, C.Place('pl-b'))
+        assert.deepEqual(Store.List().map(r => r.placementId), ['pl-b'], 'the expired row is pruned')
+    })
+
+    it('a superseded request leaves the queue, and Settle drops the answered ones (they carry the hive code)', async () =>
+    {
+        const { Queue, Store } = await C.Queue()
+        await Queue.Publish(C.Host, C.Place('pl-a'))
+        const second = await Queue.Publish(C.Host, C.Place('pl-a', '0.1.0-early.21'))
+        await Queue.Publish(C.Host, C.Place('pl-b'))
+        assert.deepEqual(Store.List().map(r => [r.placementId, r.sequence]).sort(), [['pl-a', second.Sequence], ['pl-b', second.Sequence + 1]])
+        await Queue.Settle(C.Host, 'pl-a', second.Sequence)
+        assert.deepEqual(Store.List().map(r => r.placementId), ['pl-b'])
+        await Queue.Settle(C.Other, 'pl-b', 1000)
+        assert.equal(Store.List().length, 1, 'another host settle touches nothing')
     })
 })

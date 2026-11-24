@@ -1,12 +1,13 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { HiveLevel as CustomerHiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
-import { ConsoleAddress, HiveLevel, HostHealth, PlacementOperation } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { ConsoleAddress, ConsoleAddressOption, HiveLevel, HostHealth, PlacementOperation } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import { FakeHiveAgent } from '@pragmatic-tech-ai/pragmatic-hive-protocol/testing'
 import { EnrolmentCodeRefusal, EnrolmentCodeRefusedError } from '../../enrolment/enrolment-code-issuer.js'
 import { EnrolmentAgentKind } from '../../enrolment/enrolment-code-record.js'
 import { HostRegistry } from '../../hosts/host-registry.js'
 import { HostWorld } from '../../hosts/tests/host-world.js'
+import { PlacementQueue } from '../placement-queue.js'
 import { PlacementState } from '../placement-record.js'
 
 class SchedulerCases
@@ -103,7 +104,7 @@ describe('PlacementScheduler', () =>
         const record = world.Placement(placement.id)
         assert.match(record.label ?? '', C.LabelPattern)
         assert.equal(request.HiveHostName, record.label + '.' + ConsoleAddress.HiveDomain)
-        assert.equal(record.requestSequence, 1)
+        assert.equal(record.requestSequence, world.Host(agent).lastSequence)
         assert.equal((await agent.PullPlacements()).length, 0, 'the cursor moved past it')
     })
 
@@ -158,12 +159,74 @@ describe('PlacementScheduler', () =>
         const agent = await world.ReportingHost()
         const placement = await world.Request()
         await world.Scheduler.Tick()
+        const first = world.Placement(placement.id).requestSequence as number
         world.Clock.Advance(8 * 24 * 60 * 60 * 1000)
         await agent.Report(HostWorld.Report())
         await world.Scheduler.Tick()
-        assert.equal(world.Placement(placement.id).requestSequence, 2)
+        assert.ok((world.Placement(placement.id).requestSequence as number) > first)
         const items = await agent.PullPlacements()
         assert.equal(items.length, 1)
         assert.equal(items[0]?.Body.PlacementId, placement.id)
+    })
+
+    it('a placement pulled 40 min after publish still enrols (its code lives as long as its request)', async () =>
+    {
+        const world = await HostWorld.Create()
+        const agent = await world.ReportingHost()
+        const placement = await world.Request()
+        await world.Scheduler.Tick()
+        world.Clock.Advance(40 * 60 * 1000)
+        const request = (await agent.PullPlacements())[0]?.Body
+        assert.ok(request !== undefined)
+        const hive = new FakeHiveAgent(world.Channel, world.Clock, world.TrustRoot.PublicKey)
+        const response = await hive.Enrol(request.EnrolmentCode as string, HostWorld.TenantA, HiveLevel.Hosted, ConsoleAddress.RelayedHiveSubdomain(world.Placement(placement.id).label as string))
+        assert.equal(world.Placement(placement.id).hiveId, response.HiveId)
+        const record = world.CodeRecord(r => r.placementId === placement.id)
+        assert.equal(Date.parse(record?.expiresAt ?? '') - Date.parse(record?.issuedAt ?? ''), PlacementQueue.RequestLifetimeMs)
+    })
+
+    it('restore, publish two, pull with the old cursor delivers both', async () =>
+    {
+        const world = await HostWorld.Create()
+        const agent = await world.ReportingHost(4)
+        await world.Request()
+        await world.Request()
+        await world.Scheduler.Tick()
+        assert.equal((await agent.PullPlacements()).length, 2, 'the host\'s cursor is past both')
+        // A restore from an older backup: the queue and the host's last sequence are back to before these.
+        const host = world.Host(agent)
+        for (const row of world.Queue())
+        {
+            await world.QueueStore.Remove(row.id)
+        }
+        await world.HostStore.Put({ ...host, lastSequence: 0 })
+        for (const placement of world.Placements.List())
+        {
+            await world.Placements.BeginRemoval(placement.id)
+            await world.Placements.MarkRemoved(placement.id)
+        }
+        world.Clock.Advance(60_000)
+        await agent.Report(HostWorld.Report(4))
+        const third = await world.Request()
+        const fourth = await world.Request()
+        await world.Scheduler.Tick()
+        const pulled = (await agent.PullPlacements()).map(item => item.Body.PlacementId).sort()
+        assert.deepEqual(pulled, [third.id, fourth.id].sort())
+    })
+
+    it('a new label never takes one an enrolled hive\'s console answers at', async () =>
+    {
+        const world = await HostWorld.Create()
+        await world.ReportingHost()
+        // Every random draw spells "aaaa" first, then "bbbb".
+        let draw = 0
+        world.Random = (size: number) => Buffer.alloc(size, draw++ === 0 ? 0 : 1)
+        await world.Directory.EnrolHive({
+            id: 'hvaaaaaaaaaa', tenantId: HostWorld.TenantA, level: HostWorld.HostedLevel, publicKey: 'k', keyId: 'kid', engineVersion: '0.1.0',
+            consoleAddress: { Option: ConsoleAddressOption.RelayedHiveSubdomain, Host: 'acme-aaaa.' + ConsoleAddress.HiveDomain, IngressAddress: null }, enrolledBy: 'x',
+        })
+        const placement = await world.Request()
+        await world.Scheduler.Tick()
+        assert.equal(world.Placement(placement.id).label, 'acme-bbbb')
     })
 })

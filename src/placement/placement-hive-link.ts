@@ -1,4 +1,4 @@
-import { ClusterCredentialHandover } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { ClusterCredentialHandover, ConsoleAddressOption, type ConsoleAddress } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { PlatformHiveRecord } from '../platform-records.js'
 import { PlacementState, type PlacementRecord } from './placement-record.js'
 import type { PlacementRegistry } from './placement-registry.js'
@@ -13,8 +13,11 @@ export interface IHostedHives
 /** What the hive enrolment handler tells about a hive enrolled with a placement's code. */
 export interface IPlacementEnrolments
 {
-    /** Whether a hive may still enrol from the placement (it is scheduled, placed or failed: not removed or cancelled). */
-    Accepts(placementId: string): boolean
+    /**
+     * Whether hive `hiveId` may enrol from the placement: it still stands (scheduled, placed, failed or removing; not
+     * removed or cancelled), links no other hive, and the console answers at its relayed hive subdomain.
+     */
+    Accepts(placementId: string, hiveId: string, consoleAddress: ConsoleAddress): boolean
     HiveEnrolled(placementId: string, hiveId: string): Promise<void>
 }
 
@@ -33,10 +36,12 @@ export class PlacementHiveLink implements IPlacementEnrolments
     {
     }
 
-    public Accepts(placementId: string): boolean
+    public Accepts(placementId: string, hiveId: string, consoleAddress: ConsoleAddress): boolean
     {
         const placement = this.placements.Get(placementId)
         return placement !== undefined && PlacementHiveLink.Linkable.has(placement.state)
+            && (placement.hiveId === undefined || placement.hiveId === hiveId)
+            && consoleAddress.Option === ConsoleAddressOption.RelayedHiveSubdomain && placement.hiveHostName !== undefined && consoleAddress.HostName === placement.hiveHostName
     }
 
     public async HiveEnrolled(placementId: string, hiveId: string): Promise<void>

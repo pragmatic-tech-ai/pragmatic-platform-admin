@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { KubectlCli, NodeExecFile, type IExecFile, type IProcessSpawner, type ISpawnedProcess, type PortForwardResult } from '@pragmatic-tech-ai/pragmatic-kube'
@@ -61,6 +61,25 @@ export class PrivateKubeconfig
     public async Remove(): Promise<void>
     {
         await rm(this.dir, { recursive: true, force: true })
+    }
+
+    /**
+     * Removes every kubeconfig directory a previous process left under `root` (it died mid-use, before its finally ran),
+     * so no credential outlives the process that wrote it. Run once at start, before any use. Answers how many it removed.
+     */
+    public static async Sweep(root: string = tmpdir()): Promise<number>
+    {
+        const P = PrivateKubeconfig
+        let removed = 0
+        for (const entry of await readdir(root, { withFileTypes: true }))
+        {
+            if (entry.isDirectory() && entry.name.startsWith(P.DirPrefix))
+            {
+                await rm(join(root, entry.name), { recursive: true, force: true })
+                removed++
+            }
+        }
+        return removed
     }
 }
 

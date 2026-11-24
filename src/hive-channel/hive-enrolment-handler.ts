@@ -15,6 +15,8 @@ import { AgentAnswer, AgentExchangeRefusedError, type IAgentMessageHandler } fro
 export interface IEnrolmentCodes
 {
     Redeem(code: string, expect: EnrolmentCodeExpectation): Promise<EnrolmentCodeRecord>
+    /** What the code is for, without spending it (undefined: unknown). */
+    Peek(code: string): Promise<EnrolmentCodeRecord | undefined>
 }
 
 /** Where enrolled hives are recorded (PlatformDirectory). */
@@ -94,9 +96,15 @@ export class HiveEnrolmentHandler implements IAgentMessageHandler<HiveEnrolmentR
             throw new AgentExchangeRefusedError(AgentExchangeRefusal.Mismatch)
         }
         const id = existing?.id ?? this.parts.Ids.Next()
+        // A placement's code enrols only the hive its placement is for (checked before the code is spent): the placement
+        // still stands, links no other hive, and the console answers at the placement's relayed hive subdomain.
+        const placementId = (await this.parts.Codes.Peek(request.EnrolmentCode))?.placementId
+        if (placementId !== undefined && this.parts.Placements?.Accepts(placementId, id, request.ConsoleAddress) !== true)
+        {
+            throw new AgentExchangeRefusedError(AgentExchangeRefusal.Mismatch)
+        }
         const code = await this.Redeem(request, level)
-        // A placement's code enrols only while its placement still stands (never once it is removed or cancelled).
-        if (code.placementId !== undefined && this.parts.Placements?.Accepts(code.placementId) !== true)
+        if (code.placementId !== placementId)
         {
             throw new AgentExchangeRefusedError(AgentExchangeRefusal.Mismatch)
         }
@@ -133,7 +141,7 @@ export class HiveEnrolmentHandler implements IAgentMessageHandler<HiveEnrolmentR
     {
         try
         {
-            return await this.parts.Codes.Redeem(request.EnrolmentCode, { TenantId: request.Tenant, Level: level, AgentKind: EnrolmentAgentKind.Hive })
+            return await this.parts.Codes.Redeem(request.EnrolmentCode, { TenantId: request.Tenant, Level: level, AgentKind: EnrolmentAgentKind.Hive, KeyId: request.PublicKey.KeyId })
         }
         catch (error)
         {

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { HostHealth, type HostReport } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { HostHealth, PlacementState as HostPlacementState, type HostReport } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 import type { HostRecord, HostStore } from './host-record.js'
 
 /** No host record by that id. */
@@ -92,11 +92,15 @@ export class HostRegistry
         return record
     }
 
-    /** The next sequence of the host's placement queue, taken (staged before the first await). */
+    /**
+     * The next sequence of the host's placement queue, taken (staged before the first await): one more than the last,
+     * and never below the clock's milliseconds, so a platform restored from an older backup (its last sequence behind
+     * the host's cursor) still numbers new requests above every cursor the host holds.
+     */
     public async TakeSequence(id: string): Promise<number>
     {
         const host = this.Require(id)
-        const sequence = (host.lastSequence ?? 0) + 1
+        const sequence = Math.max((host.lastSequence ?? 0) + 1, this.now().getTime())
         await this.store.Put({ ...host, lastSequence: sequence })
         return sequence
     }
@@ -111,7 +115,8 @@ export class HostRegistry
         return host.lastReport.Health === HostHealth.Healthy && now.getTime() - Date.parse(host.lastReportAt) <= HostRegistry.FreshMs
     }
 
-    /** The reported hive slots less the placements holding one (the platform's count or the host's, whichever is more). */
+    /** The reported hive slots less the placements holding one (the platform's count or the host's, whichever is more; a
+     *  placement the host reports failed holds none). */
     public static FreeSlots(host: HostRecord, holding: number): number
     {
         const report = host.lastReport
@@ -119,7 +124,8 @@ export class HostRegistry
         {
             return 0
         }
-        return Math.max(0, report.HiveSlots - Math.max(holding, report.Placements.length))
+        const reported = report.Placements.filter(placement => placement.State !== HostPlacementState.Failed).length
+        return Math.max(0, report.HiveSlots - Math.max(holding, reported))
     }
 
     private Require(id: string): HostRecord

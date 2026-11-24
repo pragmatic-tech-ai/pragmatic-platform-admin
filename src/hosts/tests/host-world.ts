@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { HiveLevel as CustomerHiveLevel } from '@pragmatic-tech-ai/pragmatic-customer-api-contract'
 import {
     EnvelopeSigner, EnvelopeVerifier, HostHealth, HostReport, InMemoryNonceLedger, Participant, PlacementStatus, Resources, SealingKeyPair, SigningKeyPair,
@@ -30,6 +31,41 @@ import { TenantRegistry } from '../../tenant-registry.js'
 import { HostChannel } from '../host-channel.js'
 import { HostStore, type HostRecord } from '../host-record.js'
 import { HostRegistry } from '../host-registry.js'
+
+/** Kubeconfigs of the shape a host agent hands over (ClusterCredentialIssuer.Kubeconfig), and broken ones. */
+export class HostKubeconfigs
+{
+    public static readonly Port = 16444
+    public static readonly Ca = Buffer.from(['-----BEGIN CERTIFICATE-----', 'MIIBfakecertificate', '-----END CERTIFICATE-----', ''].join('\n')).toString('base64')
+    public static readonly Token = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJwcmFnbWF0aWMifQ.c2lnbmF0dXJl'
+
+    /** The agent's kubeconfig object; `mutate` breaks it for a refusal case. */
+    public static Object(port: number = HostKubeconfigs.Port, host: string = FakeHostAgent.DefaultMeshAddress): Record<string, unknown>
+    {
+        const K = HostKubeconfigs
+        return {
+            apiVersion: 'v1',
+            kind: 'Config',
+            clusters: [{ name: 'clusters-pl', cluster: { server: 'https://' + host + ':' + String(port), 'certificate-authority-data': K.Ca } }],
+            users: [{ name: 'pragmatic-platform', user: { token: K.Token } }],
+            contexts: [{ name: 'pragmatic-platform', context: { cluster: 'clusters-pl', user: 'pragmatic-platform' } }],
+            'current-context': 'pragmatic-platform',
+        }
+    }
+
+    public static Valid(port: number = HostKubeconfigs.Port, tag: string = ''): Buffer
+    {
+        const value = HostKubeconfigs.Object(port)
+        const users = value.users as Array<{ user: { token: string } }>
+        ;(users[0] as { user: { token: string } }).user.token = HostKubeconfigs.Token + tag
+        return Buffer.from(JSON.stringify(value))
+    }
+
+    public static Of(value: unknown): Buffer
+    {
+        return Buffer.from(JSON.stringify(value))
+    }
+}
 
 /** The release a test offers every tenant; unset, none. */
 export class FakeOfferedReleases implements IOfferedReleases
@@ -74,6 +110,9 @@ export class HostWorld
     public Placements!: PlacementRegistry
     public Hosts!: HostRegistry
     public QueueStore!: PlacementQueueStore
+    public HostStore!: HostStore
+    /** The label draws (PlacementScheduler.Random); undefined: crypto random. */
+    public Random: ((size: number) => Buffer) | undefined
     public Sealed!: SealedSecretStore
     public Link!: PlacementHiveLink
     public HostChannel!: HostChannel
@@ -180,6 +219,7 @@ export class HostWorld
         this.Placements = new PlacementRegistry(placements, now)
         const hosts = new HostStore(new MemoryRecordMap<HostRecord>())
         await hosts.Load()
+        this.HostStore = hosts
         this.Hosts = new HostRegistry(hosts, now)
         this.QueueStore = new PlacementQueueStore(new MemoryRecordMap<PlacementQueueRecord>())
         await this.QueueStore.Load()
@@ -189,7 +229,7 @@ export class HostWorld
         this.Link = new PlacementHiveLink(this.Placements, this.Directory)
         this.HostChannel = new HostChannel({
             Hosts: this.Hosts, Placements: this.Placements, QueueStore: this.QueueStore, Codes: this.Codes, Releases: this.Releases, Link: this.Link,
-            Credentials: this.Sealed, SealingKey: withSealingKey ? this.SealingKey : undefined, Now: now, Warn: line => this.Logs.push(line),
+            Credentials: this.Sealed, SealingKey: withSealingKey ? this.SealingKey : undefined, Hives: this.Directory, Now: now, Random: size => (this.Random ?? randomBytes)(size), Warn: line => this.Logs.push(line),
         })
         const verifier = new EnvelopeVerifier({ Self: Participant.Platform, Keys: new PlatformKeyDirectory(this.Directory, this.Hosts), Nonces: new InMemoryNonceLedger(this.Clock), Clock: this.Clock })
         const signer = new EnvelopeSigner(this.TrustRoot, Participant.Platform, this.Clock)

@@ -72,6 +72,11 @@ export class CountingCodes
         this.Redeemed += 1
         return this.Issuer.Redeem(code, expect)
     }
+
+    public Peek(code: string): Promise<EnrolmentCodeRecord | undefined>
+    {
+        return this.Issuer.Peek(code)
+    }
 }
 
 /** The platform's side of the agent channel over in-memory stores, with a real code issuer and directory. */

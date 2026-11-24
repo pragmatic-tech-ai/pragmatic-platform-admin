@@ -16,7 +16,8 @@ export class SealingKeyFileError extends Error
 
 /**
  * The platform's X25519 sealing key (C5.1): what host agents seal cluster credentials to. One key, one purpose: it is
- * never the Ed25519 signing key. Read once at start from the PKCS#8 PEM file PRAGMATIC_ADMIN_SEALING_KEY_FILE (a
+ * never the Ed25519 signing key, and there is exactly one: rotating it means re-enrolling every host (each was handed
+ * the public half at enrolment), and a handover sealed to any other key is refused. Read once at start from the PKCS#8 PEM file PRAGMATIC_ADMIN_SEALING_KEY_FILE (a
  * mounted secret); unset, the console takes no hosts (the host kinds are absent from the exchange). A file that is
  * set but unusable stops the start, naming the setting only.
  */

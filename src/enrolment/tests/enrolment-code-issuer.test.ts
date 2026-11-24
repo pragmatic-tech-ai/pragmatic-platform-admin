@@ -112,4 +112,40 @@ describe('EnrolmentCodeIssuer', () =>
         assert.equal(Issuer.OutstandingFor(C.ClientId, Clock.now), 1)
         assert.equal(Issuer.OutstandingFor(C.ClientId, new Date(C.Start.getTime() + EnrolmentCodeIssuer.LifetimeMs)), 0)
     })
+
+    it('a code this process does not hold is one row looked up, never the whole table', async () =>
+    {
+        const asked: string[] = []
+        const map = new MemoryRecordMap<EnrolmentCodeRecord>()
+        const writer = new EnrolmentCodeRegistry(map)
+        await writer.Load()
+        const loads = { count: 0 }
+        const counting = { Location: map.Location, Load: async () => { loads.count++; return map.Load() }, Save: (all: ReadonlyMap<string, EnrolmentCodeRecord>, changed: ReadonlySet<string>) => map.Save(all, changed) }
+        const reader = new EnrolmentCodeRegistry(counting, { Find: async id => { asked.push(id); return (await map.Load()).get(id) } })
+        await reader.Load()
+        const issued = await new EnrolmentCodeIssuer(writer, () => C.Start).IssueHostCode('machine:frontdoor-cli')
+        const before = loads.count
+        const record = await new EnrolmentCodeIssuer(reader, () => C.Start).Redeem(issued.Code, EnrolmentCodeIssuer.HostExpectation())
+        assert.equal(record.agentKind, EnrolmentAgentKind.Host)
+        assert.equal(asked.length, 1)
+        assert.equal(loads.count, before, 'the registry never reloads its map')
+        assert.equal(await new EnrolmentCodeIssuer(reader, () => C.Start).Peek('pe1-AAAAAAAAAAAAAAAAAAAAAAAAAA'), undefined)
+        assert.equal(asked.length, 2, 'an unknown well-formed code: one row asked')
+        assert.equal(await new EnrolmentCodeIssuer(reader, () => C.Start).Peek('not-a-code'), undefined)
+        assert.equal(asked.length, 2, 'a malformed code asks nothing')
+    })
+
+    it('a placement code re-presented by its redeeming key answers again; by another key it is used', async () =>
+    {
+        const { Issuer } = await C.Issuer()
+        const { Code } = await Issuer.Issue({ ClientId: C.ClientId, TenantId: C.TenantA, Level: HiveLevel.Hosted, AgentKind: EnrolmentAgentKind.Hive, IssuedBy: C.IssuedBy, PlacementId: 'pl-a', LifetimeMs: 7 * 24 * 60 * 60 * 1000 })
+        const expect = { TenantId: C.TenantA, Level: HiveLevel.Hosted, AgentKind: EnrolmentAgentKind.Hive, KeyId: 'k1' }
+        const first = await Issuer.Redeem(Code, expect)
+        assert.equal(first.redeemedByKeyId, 'k1')
+        assert.equal((await Issuer.Redeem(Code, expect)).id, first.id)
+        assert.equal(await C.Reason(Issuer.Redeem(Code, { ...expect, KeyId: 'k2' })), EnrolmentCodeRefusal.Used)
+        const plain = await C.Issue(Issuer)
+        await Issuer.Redeem(plain.Code, { ...C.Expect, KeyId: 'k1' })
+        assert.equal(await C.Reason(Issuer.Redeem(plain.Code, { ...C.Expect, KeyId: 'k1' })), EnrolmentCodeRefusal.Used, 'only a placement code')
+    })
 })

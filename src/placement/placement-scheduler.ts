@@ -4,11 +4,12 @@ import { ConsoleAddress, PlacementRequest } from '@pragmatic-tech-ai/pragmatic-h
 import type { EnrolmentCodeRequest } from '../enrolment/enrolment-code-issuer.js'
 import { EnrolmentAgentKind } from '../enrolment/enrolment-code-record.js'
 import type { HostRecord } from '../hosts/host-record.js'
+import type { PlatformHiveRecord } from '../platform-records.js'
 import { HostRegistry } from '../hosts/host-registry.js'
 import { VersionOrder } from '../version-order.js'
 import type { IOfferedReleases } from './offered-releases.js'
 import type { PlacementHiveLink } from './placement-hive-link.js'
-import type { PlacementQueue } from './placement-queue.js'
+import { PlacementQueue } from './placement-queue.js'
 import { PlacementState, type PlacementRecord } from './placement-record.js'
 import { PlacementRegistry } from './placement-registry.js'
 
@@ -25,6 +26,12 @@ export interface ISchedulingHosts
     List(): readonly HostRecord[]
 }
 
+/** The enrolled hives, whose console host names a new hive label must not take (PlatformDirectory). */
+export interface ILabelledHives
+{
+    ListHives(): readonly PlatformHiveRecord[]
+}
+
 export interface PlacementSchedulerParts
 {
     Placements: PlacementRegistry
@@ -33,6 +40,7 @@ export interface PlacementSchedulerParts
     Codes: IPlacementCodes
     Releases: IOfferedReleases
     Link: PlacementHiveLink
+    Hives?: ILabelledHives
     Now?: () => Date
     Random?: (size: number) => Buffer
     /** Where a placement's failed step is logged (a fixed sentence, the placement id and the error's name). */
@@ -60,6 +68,7 @@ export class PlacementScheduler
     private static readonly LabelAlphabet = 'abcdefghijklmnopqrstuvwxyz234567'
     private static readonly LabelCharacters = 4
     private static readonly LabelSeparator = '-'
+    private static readonly LabelHostSeparator = '.'
     private static readonly LabelTries = 32
     private static readonly Mask = 31
     private static readonly FailedLogPrefix = '[placement-scheduler] a step failed for placement '
@@ -146,7 +155,8 @@ export class PlacementScheduler
     /** A published request that expired before its host pulled it is owed again (a confirmed placement needs none). */
     private async RepublishExpired(placement: PlacementRecord): Promise<void>
     {
-        if (placement.requestSequence === undefined || placement.hostId === undefined || this.parts.Queue.Holds(placement.hostId, placement.requestSequence))
+        const now = (this.parts.Now ?? (() => new Date()))().getTime()
+        if (placement.requestSequence === undefined || placement.requestExpiresAt === undefined || Date.parse(placement.requestExpiresAt) > now)
         {
             return
         }
@@ -194,15 +204,15 @@ export class PlacementScheduler
         {
             return
         }
-        const sequence = await this.parts.Queue.Publish(hostId, request)
-        await this.parts.Placements.RecordPublished(placement.id, sequence)
+        const published = await this.parts.Queue.Publish(hostId, request)
+        await this.parts.Placements.RecordPublished(placement.id, published.Sequence, published.ExpiresAt)
     }
 
     private async RequestFor(placement: PlacementRecord): Promise<PlacementRequest | undefined>
     {
         if (placement.state === PlacementState.Removing)
         {
-            return PlacementRequest.Remove(placement.id, placement.tenantId)
+            return PlacementRequest.Remove(placement.id, placement.tenantId, placement.version ?? 1)
         }
         if (placement.label === undefined || placement.hiveHostName === undefined || placement.engineVersion === undefined || placement.chartDigest === undefined)
         {
@@ -210,12 +220,12 @@ export class PlacementScheduler
         }
         const codeRequest: EnrolmentCodeRequest = {
             ClientId: placement.clientId, TenantId: placement.tenantId, Level: HiveLevel.Hosted, AgentKind: EnrolmentAgentKind.Hive,
-            IssuedBy: placement.requestedBy, PlacementId: placement.id,
+            IssuedBy: placement.requestedBy, PlacementId: placement.id, LifetimeMs: PlacementQueue.RequestLifetimeMs,
         }
         // An upgrade installs nothing that enrols: the hive is enrolled already, so its code can never be redeemed.
         const code = placement.state === PlacementState.Placed ? await this.parts.Codes.IssueSpent(codeRequest) : await this.parts.Codes.Issue(codeRequest)
         return PlacementRequest.Place({
-            PlacementId: placement.id, Tenant: placement.tenantId, EnrolmentCode: code.Code, EngineVersion: placement.engineVersion,
+            PlacementId: placement.id, Version: placement.version ?? 1, Tenant: placement.tenantId, EnrolmentCode: code.Code, EngineVersion: placement.engineVersion,
             ChartDigest: placement.chartDigest, HiveHostName: placement.hiveHostName,
         })
     }
@@ -232,6 +242,13 @@ export class PlacementScheduler
         return candidates[0]?.host
     }
 
+    /** Whether an enrolled hive's console answers at this label already (its host name's first label). */
+    private HiveLabelTaken(label: string): boolean
+    {
+        const prefix = label + PlacementScheduler.LabelHostSeparator
+        return (this.parts.Hives?.ListHives() ?? []).some(hive => hive.consoleAddress?.Host.startsWith(prefix) === true)
+    }
+
     private NewLabel(tenantId: string): string
     {
         const S = PlacementScheduler
@@ -245,7 +262,7 @@ export class PlacementScheduler
                 suffix += S.LabelAlphabet[(bytes[i] as number) & S.Mask]
             }
             const label = tenantId + S.LabelSeparator + suffix
-            if (!this.parts.Placements.LabelTaken(label))
+            if (!this.parts.Placements.LabelTaken(label) && !this.HiveLabelTaken(label))
             {
                 return label
             }

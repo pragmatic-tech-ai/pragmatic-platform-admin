@@ -17,14 +17,14 @@ import { ClientLock } from './customer/client-lock.js'
 import { ClientUsage } from './customer/client-usage.js'
 import { PlatformCustomerApiService } from './customer/platform-customer-api-service.js'
 import { EnrolmentCodeIssuer } from './enrolment/enrolment-code-issuer.js'
-import { EnrolmentCodeRegistry } from './enrolment/enrolment-code-record.js'
+import { EnrolmentCodeRegistry, SqlEnrolmentCodeLookup } from './enrolment/enrolment-code-record.js'
 import { PlacementRegistry } from './placement/placement-registry.js'
 import { PlacementStore } from './placement/placement-record.js'
 import { InfraTargetMode, InfraTargetModes } from './infra-target-mode.js'
 import { NoTargetEnvironmentRuntime, NoTargetHiveOrchestratorFactory, NoTargetIdpDriver } from './no-infra-target.js'
 import { HostedHiveOrchestratorFactory } from './hosted-hive-orchestrator-factory.js'
 import { HostedKubeconfig } from './hosted-kubeconfig.js'
-import type { IClusterCredentialSource } from './hosted-cluster-kubectl.js'
+import { PrivateKubeconfig, type IClusterCredentialSource } from './hosted-cluster-kubectl.js'
 import { HostChannel } from './hosts/host-channel.js'
 import { HostStore } from './hosts/host-record.js'
 import { HostRegistry } from './hosts/host-registry.js'
@@ -265,6 +265,8 @@ export class ControlPlaneServer
         const sealed = await SealedSecretStore.Open(await database.Map(PlatformAdminRegistry.SealedSecrets), masterKey)
         // Read before any listener starts: a set but unusable file stops the start.
         const sealingKey = PlatformSealingKey.Of(process.env)
+        // No per-call kubeconfig of a previous process survives it (one that died mid-call left its directory).
+        await PrivateKubeconfig.Sweep()
         // Only `local` has a Docker engine. `none` (no target) and `hosted` (registered clusters on our machines, pushed over
         // the mesh) wire every docker/kind seam to a refusing stand-in (environments, IdP), read image digests from registry
         // references only, and keep tenants as records whose sign-in lives in their home hive.
@@ -353,7 +355,9 @@ export class ControlPlaneServer
         const emailDomains = new PlatformEmailDomains(directory, adverts, approvals, domainVerifier)
         // The customer API's records (one-time enrolment codes, hosted placements) and the per-client decisions it shares
         // with the operator side: one usage count and one lock, so an operator's create and a customer's are decided in turn.
-        const enrolmentCodes = new EnrolmentCodeRegistry(await database.Map(PlatformAdminRegistry.EnrolmentCodes))
+        // A code issued by the admin image's host-code command (another process) is read row by row on a miss.
+        const enrolmentCodes = new EnrolmentCodeRegistry(await database.Map(PlatformAdminRegistry.EnrolmentCodes),
+            await SqlEnrolmentCodeLookup.Open(database.Session, PlatformAdminRegistry.EnrolmentCodes))
         const placementStore = new PlacementStore(await database.Map(PlatformAdminRegistry.Placements))
         const hostStore = new HostStore(await database.Map(PlatformAdminRegistry.Hosts))
         const placementQueue = new PlacementQueueStore(await database.Map(PlatformAdminRegistry.PlacementQueue))
@@ -365,7 +369,7 @@ export class ControlPlaneServer
         const hostRegistry = new HostRegistry(hostStore)
         const hostChannel = new HostChannel({
             Hosts: hostRegistry, Placements: hostedPlacements, QueueStore: placementQueue, Codes: codes, Releases: new CatalogueOfferedReleases(deployments),
-            Link: new PlacementHiveLink(hostedPlacements, directory), Credentials: sealed, SealingKey: sealingKey,
+            Link: new PlacementHiveLink(hostedPlacements, directory), Credentials: sealed, SealingKey: sealingKey, Hives: directory,
         })
         const usage = new ClientUsage(directory, emailDomains, [codes, hostedPlacements])
         const clientLock = new ClientLock()

@@ -1,13 +1,13 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { HiveBackend, InfraMode, KubectlHiveOrchestrator, type HiveRecord } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
 import { KubectlCli, type IExecFile, type IProcessSpawner, type ISpawnedProcess } from '@pragmatic-tech-ai/pragmatic-kube'
 import { ClusterCredentialHandover } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
-import { CredentialKubeconfigExec, HostedClusterKubectl, type IClusterCredentialSource } from '../hosted-cluster-kubectl.js'
+import { CredentialKubeconfigExec, HostedClusterKubectl, PrivateKubeconfig, type IClusterCredentialSource } from '../hosted-cluster-kubectl.js'
 import { HostedHiveOrchestratorFactory } from '../hosted-hive-orchestrator-factory.js'
 import { RegistryRefImageDigest } from '../image-digest.js'
 
@@ -159,6 +159,25 @@ describe('HostedClusterKubectl', () =>
             await new Promise(resolve => setTimeout(resolve, 20))
             assert.deepEqual(readdirSync(root), [])
             assert.ok(!existsSync(spawner.Args[1] as string))
+        }
+        finally
+        {
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
+
+    it('the start sweep removes kubeconfig directories a dead process left, and nothing else', async () =>
+    {
+        const root = C.Root()
+        try
+        {
+            mkdirSync(join(root, 'pragmatic-kubeconfig-left1'))
+            writeFileSync(join(root, 'pragmatic-kubeconfig-left1', 'kubeconfig'), 'secret')
+            mkdirSync(join(root, 'pragmatic-kubeconfig-left2'))
+            mkdirSync(join(root, 'other-dir'))
+            writeFileSync(join(root, 'pragmatic-kubeconfig-file'), 'not a dir')
+            assert.equal(await PrivateKubeconfig.Sweep(root), 2)
+            assert.deepEqual(readdirSync(root).sort(), ['other-dir', 'pragmatic-kubeconfig-file'])
         }
         finally
         {

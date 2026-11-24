@@ -45,13 +45,16 @@ export type PlacementRecord = {
     /** The hive's label (`<tenant>-<4 base32>`) and its host name `<label>.hives.pragmatic-tech.ai`. */
     label?: string
     hiveHostName?: string
-    /** The placement version: 1 when first scheduled, one more for each engine upgrade published. */
+    /** The placement version: 1 when first scheduled, one more for each new request (an engine upgrade, the removal);
+     *  every request carries it and a host result must answer it. */
     version?: number
     /** The engine version and chart digest of the newest placement request published. */
     engineVersion?: string
     chartDigest?: string
     /** The host queue sequence of the newest request published for this placement; absent while one is still owed. */
     requestSequence?: number
+    /** When that request expires unpulled (it is then owed again). */
+    requestExpiresAt?: string
     /** The engine version the host last answered placed for. */
     placedEngineVersion?: string
     placedAt?: string
@@ -61,6 +64,8 @@ export type PlacementRecord = {
     /** The newest cluster credential rotation opened into the secret store, and when that credential expires. */
     credentialRotation?: number
     credentialExpiresAt?: string
+    /** The API server port on the host's mesh address, fixed by the first credential handed over (or the placed result). */
+    apiPort?: number
     /** Why the host could not place it (state failed), or why an engine upgrade failed (still placed). */
     failure?: PlacementFailure
     failedAt?: string

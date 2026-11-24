@@ -157,10 +157,10 @@ export class PlacementRegistry implements IHiveReservations
         })
     }
 
-    /** The newest request of the placement is in its host's queue at `sequence`. */
-    public RecordPublished(id: string, sequence: number): Promise<PlacementRecord>
+    /** The newest request of the placement is in its host's queue at `sequence`, until `expiresAt`. */
+    public RecordPublished(id: string, sequence: number, expiresAt: Date): Promise<PlacementRecord>
     {
-        return this.Move(id, [PlacementState.Scheduled, PlacementState.Placed, PlacementState.Removing], record => ({ ...record, requestSequence: sequence }))
+        return this.Move(id, [PlacementState.Scheduled, PlacementState.Placed, PlacementState.Removing], record => ({ ...record, requestSequence: sequence, requestExpiresAt: expiresAt.toISOString() }))
     }
 
     /** The newest request left the host's queue unpulled (it expired): it is owed again. */
@@ -189,7 +189,7 @@ export class PlacementRegistry implements IHiveReservations
         return this.Move(id, [PlacementState.Scheduled, PlacementState.Placed], record =>
         {
             const { upgradeFailure: _failure, ...rest } = record
-            const placed: PlacementRecord = { ...rest, state: PlacementState.Placed, apiServer, placedAt: this.Stamp() }
+            const placed: PlacementRecord = { ...rest, state: PlacementState.Placed, apiServer, apiPort: apiServer.port, placedAt: this.Stamp() }
             if (record.engineVersion !== undefined)
             {
                 placed.placedEngineVersion = record.engineVersion
@@ -222,10 +222,10 @@ export class PlacementRegistry implements IHiveReservations
         })
     }
 
-    /** A credential rotation opened into the secret store. */
-    public RecordCredential(id: string, rotation: number, expiresAt: Date): Promise<PlacementRecord>
+    /** A credential rotation opened into the secret store, for the API server at `port`. */
+    public RecordCredential(id: string, rotation: number, expiresAt: Date, port: number): Promise<PlacementRecord>
     {
-        return this.Move(id, [PlacementState.Scheduled, PlacementState.Placed], record => ({ ...record, credentialRotation: rotation, credentialExpiresAt: expiresAt.toISOString() }))
+        return this.Move(id, [PlacementState.Scheduled, PlacementState.Placed], record => ({ ...record, credentialRotation: rotation, credentialExpiresAt: expiresAt.toISOString(), apiPort: port }))
     }
 
     /** scheduled, placed or failed → removing; its removal request owed. */
@@ -234,7 +234,8 @@ export class PlacementRegistry implements IHiveReservations
         return this.Move(id, [...PlacementRegistry.Removable], record =>
         {
             const { requestSequence: _owed, ...rest } = record
-            return { ...rest, state: PlacementState.Removing, removingAt: this.Stamp() }
+            // The removal is the placement's next version: a late answer to an older request never completes it.
+            return { ...rest, state: PlacementState.Removing, removingAt: this.Stamp(), version: (record.version ?? 0) + 1 }
         })
     }
 

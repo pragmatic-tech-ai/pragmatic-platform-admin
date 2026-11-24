@@ -34,7 +34,7 @@ class HostCodeBinFixture
     {
         const map = new MemoryRecordMap<EnrolmentCodeRecord>()
         const commandRegistry = new EnrolmentCodeRegistry(map)
-        const consoleRegistry = new EnrolmentCodeRegistry(map)
+        const consoleRegistry = new EnrolmentCodeRegistry(map, { Find: async id => (await map.Load()).get(id) })
         await consoleRegistry.Load()
         await commandRegistry.Load()
         return { Command: new EnrolmentCodeIssuer(commandRegistry), Console: new EnrolmentCodeIssuer(consoleRegistry), ConsoleRegistry: consoleRegistry }

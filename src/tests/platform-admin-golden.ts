@@ -8,6 +8,6 @@ import { fileURLToPath } from 'node:url'
 export class PlatformAdminGolden
 {
     public static readonly Fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'pragmatic-platform-admin.component.json')
-    /** At 0.1.11 with core.sealingKey (C5.1: PRAGMATIC_ADMIN_SEALING_KEY_FILE). */
-    public static readonly Digest = 'sha256:d0664744fec6abc4ad9020471f5f5c3a6c01e350e8fd18ee5dfa557a26f7c2eb'
+    /** At 0.1.12 (core.sealingKey since 0.1.12's C5.1: PRAGMATIC_ADMIN_SEALING_KEY_FILE). */
+    public static readonly Digest = 'sha256:d960b4758154077e01a70a89f78ccbd75fe215a64b1b7b484cfbf32d3b66d814'
 }

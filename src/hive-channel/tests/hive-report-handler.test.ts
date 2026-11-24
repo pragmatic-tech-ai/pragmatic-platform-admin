@@ -21,7 +21,7 @@ class ReportCases
             EngineVersion: ReportCases.Version,
             Components: [new ComponentReport(ReportCases.Agent, state, ReportCases.Version)],
             Environments: [new EnvironmentStatus(ReportCases.Environment, readiness, ReportCases.Version)],
-            Intents: [new IntentStatus('intent-1', IntentProgress.Applied)],
+            Intents: [IntentStatus.Of('intent-1', IntentProgress.Applied)],
         })
     }
 

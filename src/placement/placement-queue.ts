@@ -1,5 +1,5 @@
 import { JsonRecordStore, type IRecordMap } from '@pragmatic-tech-ai/pragmatic-tenant-plane'
-import { MessageKind, Participant, SignedEnvelope, type EnvelopeSigner, type PlacementRequest } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
+import { FreshnessPolicy, MessageKind, Participant, SignedEnvelope, type EnvelopeSigner, type PlacementRequest } from '@pragmatic-tech-ai/pragmatic-hive-protocol'
 
 /** One signed placement request waiting in a host's queue (its wire text, verified by the host item by item). */
 export type PlacementQueueRecord = {
@@ -43,30 +43,42 @@ export type PlacementQueueBatch = { Items: readonly SignedEnvelope[]; Cursor: nu
  */
 export class PlacementQueue
 {
+    /** A placement request stands seven days (the standing default); its hive code lives exactly as long. */
+    public static readonly RequestLifetimeMs = FreshnessPolicy.Standing.DefaultLifetimeMs
     private static readonly IdSeparator = '.'
 
     public constructor(private readonly store: PlacementQueueStore, private readonly sequences: IQueueSequences, private readonly signer: EnvelopeSigner, private readonly now: () => Date = () => new Date())
     {
     }
 
-    /** Signs and enqueues `request` for the host; answers its sequence. */
-    public async Publish(hostId: string, request: PlacementRequest): Promise<number>
+    /** Signs and enqueues `request` for the host; answers its sequence and expiry. */
+    public async Publish(hostId: string, request: PlacementRequest): Promise<{ Sequence: number; ExpiresAt: Date }>
     {
         await this.Prune()
-        const envelope = this.signer.Sign(MessageKind.PlacementRequest, Participant.Host(hostId), request)
+        const envelope = this.signer.Sign(MessageKind.PlacementRequest, Participant.Host(hostId), request, PlacementQueue.RequestLifetimeMs)
         const sequence = await this.sequences.TakeSequence(hostId)
+        // An older request of the placement is superseded: it would never be answered again, and it may carry a hive code.
+        await this.Settle(hostId, request.PlacementId, sequence - 1)
         await this.store.Put({
             id: hostId + PlacementQueue.IdSeparator + String(sequence), hostId, sequence, placementId: request.PlacementId, envelope: envelope.Encode(),
             issuedAt: envelope.IssuedAt.toISOString(), expiresAt: envelope.ExpiresAt.toISOString(),
         })
-        return sequence
+        return { Sequence: sequence, ExpiresAt: envelope.ExpiresAt }
     }
 
-    /** Whether the placement's request at `sequence` is still in the host's queue (published and not expired). */
-    public Holds(hostId: string, sequence: number): boolean
+    /**
+     * Drops the placement's requests up to `sequence` from the host's queue: its host answered them (a result for that
+     * version), or a newer one superseded them. A request carries the hive's one-time code, so it is kept no longer.
+     */
+    public async Settle(hostId: string, placementId: string, sequence: number): Promise<void>
     {
-        const record = this.store.Get(hostId + PlacementQueue.IdSeparator + String(sequence))
-        return record !== undefined && Date.parse(record.expiresAt) > this.now().getTime()
+        for (const record of this.store.List())
+        {
+            if (record.hostId === hostId && record.placementId === placementId && record.sequence <= sequence)
+            {
+                await this.store.Remove(record.id)
+            }
+        }
     }
 
     public After(hostId: string, after: number, max: number): PlacementQueueBatch
